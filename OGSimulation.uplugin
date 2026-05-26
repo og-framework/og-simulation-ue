@@ -1,0 +1,13 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "OG Simulation",
+  "Description": "Open Game deterministic simulation framework",
+  "Category": "Gameplay",
+  "EnabledByDefault": true,
+  "Modules": [
+    { "Name": "OGSimulation", "Type": "Runtime", "LoadingPhase": "Default" },
+    { "Name": "glm",          "Type": "Runtime", "LoadingPhase": "Default" }
+  ]
+}

@@ -1,0 +1,3 @@
+[submodule "extern/og-simulation"]
+	path = Source/OGSimulation/og-simulation
+	url = https://github.com/og-framework/og-simulation.git
