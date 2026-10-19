@@ -1,3 +1,6 @@
 [submodule "extern/og-simulation"]
 	path = Source/OGSimulation/og-simulation
 	url = https://github.com/og-framework/og-simulation.git
+[submodule "Source/OGSimulationJolt/og-simulation-jolt"]
+	path = Source/OGSimulationJolt/og-simulation-jolt
+	url = https://github.com/og-framework/og-simulation-jolt.git
