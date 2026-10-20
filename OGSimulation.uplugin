@@ -9,6 +9,11 @@
   "Modules": [
     { "Name": "OGSimulation", "Type": "Runtime", "LoadingPhase": "Default" },
     { "Name": "glm",          "Type": "Runtime", "LoadingPhase": "Default" },
-    { "Name": "OGSimulationJolt", "Type": "Runtime", "LoadingPhase": "Default" }
+    { "Name": "OGSimulationJolt", "Type": "Runtime", "LoadingPhase": "Default" },
+    { "Name": "OGSimulationUnreal", "Type": "Runtime", "LoadingPhase": "Default" },
+    { "Name": "OGSimulationJoltUnreal", "Type": "Runtime", "LoadingPhase": "Default" }
+  ],
+  "Plugins": [
+    { "Name": "EnhancedInput", "Enabled": true }
   ]
 }

@@ -3,7 +3,7 @@
 
 UE plugin shell wrapping [og-simulation](https://github.com/og-framework/og-simulation).
 
-This repo contains only the Unreal Engine integration layer (`.uplugin`, `Build.cs`, a GLM module stub). The pure C++ simulation source lives in `extern/og-simulation/` via submodule. No source is duplicated — UBT compiles it from the extern path via `ConditionalAddModuleDirectory`.
+This repo contains the Unreal Engine integration layer: the `.uplugin`, the module rules, a GLM module stub, and the two Unreal modules `OGSimulationUnreal` and `OGSimulationJoltUnreal` (below; in og-brawler-unreal's `Source/` until og-tickdriver task 16). The pure C++ simulation source lives in the `og-simulation` and `og-simulation-jolt` submodules. No source is duplicated — UBT compiles it from the submodule paths.
 
 ## Position in the og-framework graph
 
@@ -36,18 +36,25 @@ git submodule update --init --recursive Plugins/OGSimulation
 
 Then open your `.uproject` — UBT will discover `OGSimulation.uplugin` and compile the plugin.
 
-The plugin exposes two UE modules:
+The plugin exposes five UE modules, all `Runtime` with loading phase `Default`, in this order:
 
-- `OGSimulation` — the deterministic simulation core (source from `extern/og-simulation/OGSimulation/`)
-- `glm` — the vendored GLM math library (header-only, from `extern/og-simulation/Source/glm/`)
+- `OGSimulation` — the deterministic simulation core, engine-free (source from the `og-simulation` submodule at `Source/OGSimulation/og-simulation/`)
+- `glm` — the vendored GLM math library (header-only, from `Source/OGSimulation/og-simulation/glm/`)
+- `OGSimulationJolt` — the Jolt physics backend, engine-free (source from the `og-simulation-jolt` submodule at `Source/OGSimulationJolt/og-simulation-jolt/`, with Jolt vendored there)
+- `OGSimulationUnreal` — the Unreal adapter, game-agnostic: the tick driver's engine port and backend template, the Chaos adapters and engine traits, the replication relays, the input translator, the static-geometry importer and the startup timer-resolution honour
+- `OGSimulationJoltUnreal` — the Unreal side of the Jolt engine: the Jolt engine traits
+
+`OGSimulationUnreal` uses Enhanced Input, so `OGSimulation.uplugin` declares a dependency on the engine's `EnhancedInput` plugin; enabling this plugin enables it. Chaos and PhysicsCore are engine modules and need no entry.
 
 ## Layout
 
 ```
-OGSimulation.uplugin       Plugin descriptor
-Source/OGSimulation/       UE module stub + Build.cs
-Source/glm/                UE module stub for GLM (header-only)
-extern/og-simulation/      Submodule — pure simulation source
+OGSimulation.uplugin                   Plugin descriptor
+Source/OGSimulation/                   UE module rules + og-simulation/ (submodule — pure simulation source)
+Source/glm/                            UE module stub for GLM (header-only)
+Source/OGSimulationJolt/               UE module rules + og-simulation-jolt/ (submodule — Jolt backend source)
+Source/OGSimulationUnreal/             Unreal adapter module (code and docs/)
+Source/OGSimulationJoltUnreal/         Unreal + Jolt traits module (code and docs/)
 ```
 
 ## Canonical workflow
