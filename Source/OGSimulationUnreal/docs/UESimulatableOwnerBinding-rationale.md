@@ -98,8 +98,9 @@ class, so nothing about it is checked there: every member that reaches into `Own
 `derived()` (a `static_cast` to `OwnerT&`).
 
 **The session owner.** The RPC tail reaches the authority's session owner through `TraitsT::SessionOwner::instanceFor`,
-and from it the reception coordinator (`getReceptionCoordinator`) and the server reception tick
-(`getServerReceptionTick`), as the game component did with its own manager type; the coordinator's type is deduced. The
+and from its session (`session()`) the reception coordinator (`getReceptionCoordinator`) and the server reception tick
+(`getServerReceptionTick`), and it hands that session to the coordinator as both sinks; the coordinator's type is
+deduced. Until og-ue-simulationcomponentandmanagersplit task 26a the three were the owner's, as the game component had them on its own manager type. The
 stamp blocks reach the latency member through `UELatencyBudgetDiagnostics<TraitsT>::withInstance`.
 
 **`isNetSyncBound()`, and the diagnostics loop.** The latency template's server loop reads each delayed-input
@@ -203,7 +204,7 @@ coordinator's per-slot loop logs it through its logger and the router, so a log 
 
 ## §6 The staging write — `stageRelayedInput`
 
-The session owner's relay tap (the brawler: its manager's `relayRemoteInput`) calls `stageRelayedInput` on the
+The session's relay tap (`UESimulationSession::relayRemoteInput`, the session owner's until og-ue-simulationcomponentandmanagersplit task 26a) calls `stageRelayedInput` on the
 character's component. It takes the host and the staging target from the sibling (`getInputRelayHost`,
 `relayStagingTarget`, whose choice is the sibling's G-13) and puts the arrival in the target. Two reads of the same weak
 host pointer on the game thread, with no write between, agree. The host's `PreReplication` publishes the whole staged

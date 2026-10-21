@@ -70,7 +70,8 @@ The driver's executor half maps one-to-one onto the task graph:
 **The deferred task's two checks.** The game-thread task holds the owner through a weak object pointer (set in
 `begin`) and does nothing when the owner is gone; the driver's continuation then does nothing when the driver is
 stopped. The brawler's host unregisters the tick functions and then calls the driver's `stop()` as the first thing
-in `EndPlay`; `stop()` clears the driver's running flag **before** it waits. So a post-physics pass can never run on
+in the session's `endPlay` (the brawler actor's `EndPlay`, which calls it); `stop()` clears the driver's running flag
+**before** it waits. So a post-physics pass can never run on
 an owner that is tearing down, even when the task graph runs the held task inside that wait.
 
 ## 4. The frame's console variables (og-tickdriver task 15c)
@@ -124,7 +125,7 @@ test and FPlatformTime::Seconds are thread-safe.
   engine, then calls `begin`, which records the owner for the deferred task's weak pointer and registers the two tick
   functions on the persistent level, the end function with the start function as prerequisite. A second `begin` is a
   `checkf`.
-* `EndPlay`, its first statement (the brawler's `TickDriverBackendUImpl::onEndPlayBegin`): `unregisterTickFunctions`
+* `EndPlay`, through the session's `endPlay`, its first statement (the brawler's `TickDriverBackendUImpl::onEndPlayBegin`): `unregisterTickFunctions`
   first, so no new frame starts, and then the driver's `stop()` (`TickDriverBackendUImpl-guards.md` G-01).
 
 The lines the driver prints through this engine (`[SimHost.Frame]`, the catch-up cap Warning, `[SimHost.FirstStep]`

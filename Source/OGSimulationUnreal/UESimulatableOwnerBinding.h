@@ -313,7 +313,7 @@ void UESimulatableOwnerBinding<OwnerT, TraitsT>::receiveRemoteMoveBundle(const F
 	typename TraitsT::SessionOwner* authorityManager =
 		TraitsT::SessionOwner::instanceFor(/*isAuthority=*/true);
 	auto* coordinator =
-		(authorityManager != nullptr) ? authorityManager->getReceptionCoordinator() : nullptr;
+		(authorityManager != nullptr) ? authorityManager->session().getReceptionCoordinator() : nullptr;
 
 	// ⛔G-03  docs/UESimulatableOwnerBinding-guards.md
 	UNetConnection* rootConn =
@@ -351,14 +351,14 @@ void UESimulatableOwnerBinding<OwnerT, TraitsT>::receiveRemoteMoveBundle(const F
 
 	// ⛔G-05  docs/UESimulatableOwnerBinding-guards.md
 	coordinator->noteRttSample(
-		handle, id, authorityManager->getServerReceptionTick(),
+		handle, id, authorityManager->session().getServerReceptionTick(),
 		readRoundTripMs(rootConn), *m_netSync);
 
 	const uint8 playerSlot = GetPlayerSlotForActor(derived().GetOwner());
 
 	// ⛔G-06  docs/UESimulatableOwnerBinding-guards.md
 	coordinator->template receiveInputBundle<typename TraitsT::Simulatable>(
-		id, handle, playerSlot, bundle, *authorityManager, *authorityManager);
+		id, handle, playerSlot, bundle, authorityManager->session(), authorityManager->session());
 }
 
 OGSIM_OPTIMIZE_ON

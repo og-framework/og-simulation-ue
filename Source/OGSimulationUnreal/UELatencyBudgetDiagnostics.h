@@ -29,6 +29,8 @@
 
 class UWorld;
 
+template <typename TraitsT> class UESimulationSession;
+
 #if !UE_BUILD_SHIPPING
 OGSIMULATIONUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(LogOGLatencyBudget, Log, All);
 #endif
@@ -65,7 +67,7 @@ public:
 	}
 
 #if OG_LATENCY_BUDGET_DIAGNOSTICS
-	explicit UELatencyBudgetDiagnostics(const typename TraitsT::SessionOwner& owner) : m_owner(owner) {}
+	explicit UELatencyBudgetDiagnostics(const UESimulationSession<TraitsT>& session) : m_owner(session) {}
 
 	void begin(UWorld& world, bool isAuthority);
 	void end(UWorld& world);
@@ -99,13 +101,15 @@ private:
 
 	InputProvider wrap(unsigned int id, const typename TraitsT::Component& owner, InputProvider inputProvider);
 
-	const typename TraitsT::SessionOwner& m_owner;
+	const UESimulationSession<TraitsT>& m_owner;
 
 	static_assert(std::is_const_v<std::remove_reference_t<decltype(m_owner)>>,
-		"UELatencyBudgetDiagnostics reads its session owner's production state (m_manager, m_storage, "
-		"m_inputResolution, m_delayedInputComponentsById and the client clock) through a CONST reference only. It is "
-		"the owner's friend, so a mutable reference here would be a write door from a diagnostic into every private "
-		"member of the owner. Added by og-tickdriver task 18; moved to OGSimulationUnreal by task 19a.");
+		"UELatencyBudgetDiagnostics reads its session's production state (m_manager, m_storage, m_inputResolution and "
+		"the client clock, and m_delayedInputComponentsById) through a CONST reference "
+		"only. It is the session's and the owner's friend, so a mutable reference here would be a write door from a "
+		"diagnostic into every private member of both. Added by og-tickdriver task 18; moved to OGSimulationUnreal by "
+		"task 19a; its owner became the session in og-ue-simulationcomponentandmanagersplit task 24a, and the delayed-input "
+		"map the session's own in task 26a.");
 
 	// ⛔G-01  docs/UELatencyBudgetDiagnostics-guards.md
 	std::unique_ptr<latencyBudget::LatencyBudgetProbe> m_probe;
@@ -118,7 +122,7 @@ private:
 	std::unordered_map<unsigned int, uint32>           m_lastHandedCorrectionTick;
 	FDelegateHandle                                    m_postTickFlushHandle;
 #else
-	explicit UELatencyBudgetDiagnostics(const typename TraitsT::SessionOwner&) {}
+	explicit UELatencyBudgetDiagnostics(const UESimulationSession<TraitsT>&) {}
 
 	void begin(UWorld&, bool) {}
 	void end(UWorld&) {}
@@ -167,7 +171,7 @@ void UELatencyBudgetDiagnostics<TraitsT>::begin(UWorld& world, bool isAuthority)
 	m_mailbox      = std::make_unique<Mailbox>();
 	m_clockMailbox = std::make_unique<ClockMailbox>();
 	m_postTickFlushHandle =
-		world.OnPostTickFlush().AddWeakLambda(&m_owner, [this]() { onPostTickFlush(); });
+		world.OnPostTickFlush().AddWeakLambda(&m_owner.owner(), [this]() { onPostTickFlush(); });
 }
 
 template <typename TraitsT>

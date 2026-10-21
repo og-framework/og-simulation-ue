@@ -56,8 +56,9 @@ the design review's finding that a single per-call hook would not be statement-e
 null check on the weak pointer.
 
 **The prohibition.** ⛔ Keep this skip, and keep it before the correction-buffer read. Do not fold it into a getter
-that returns some other buffer, and do not replace it by erasing the map entry from this class: the map is the session
-owner's production state, which this class reads through a const reference only (rationale §4).
+that returns some other buffer, and do not replace it by erasing the map entry from this class: the map is the session's
+own production state (the session owner's until og-ue-simulationcomponentandmanagersplit task 26a), which this class
+reads through a const reference only (rationale §4).
 
 **The consequence.** A game component's `const` `getSyncedCorrectionStateBuffer()` forwards to its
 `USimulatableNetSyncComponent` through the binding's sibling pointer, which the component's teardown clears. Without

@@ -28,6 +28,7 @@ two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` →
 * **§7** is the log lines and the category.
 * **§8** is how it is built: a header-only template instantiated by the game, and a `.cpp` with one definition.
 * **§9** is the provenance.
+* **§10** is og-ue-simulationcomponentandmanagersplit task 24a: the owner is the session, and the weak-lambda owner stays the actor.
 
 ---
 
@@ -35,7 +36,8 @@ two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` →
 
 `UELatencyBudgetDiagnostics<TraitsT>` runs og-simulation's latency-budget probe (`latencyBudget::LatencyBudgetProbe`,
 `OGSimulation/LatencyBudgetProbe.h`, whose own rationale explains keys, joins, counters, windows and percentiles) for one
-session owner: it creates the probe at the owner's begin of play, wraps every client input provider, walks every
+session (`UESimulationSession`, since og-ue-simulationcomponentandmanagersplit task 24a; before, the session owner itself): it creates the probe at the
+owner's begin of play, wraps every client input provider, walks every
 simulatable on every step to post mailbox events, drains the mailbox every frame and logs at `Warning` every 10 s. The
 probe's only output is its log lines, `[LatencyBudget]` and `[LatencyBudget.Window]`, plus whatever per-window line the
 backend host's diagnostics view adds (§6), and nothing reads them back. Deleting it and every caller changes no
@@ -76,8 +78,8 @@ The template names no game type. Everything typed comes from `TraitsT`:
 |---|---|
 | `PlayerInput` | the provider's result type: `InputProvider` is `std::function<PlayerInput(const SimulationTimeStep&, const LocalInputCache<PlayerInput>&)>`, which the owner asserts is its own provider type, so the wrapper never converts (a second heap-allocated callable per registration) |
 | `Simulatable` | the type argument of the storage walks and of the two input-resolution reads, `getLastUsedCaptureTick` and `relayedReadObservations` |
-| `Component` | the registering component `wrapInputProvider` and `wrap` take, and the element type of the owner's delayed-input map, whose correction-buffer tick `tick_GameThread` reads through a const pointer (§4) |
-| `SessionOwner` | the owner: a const reference `m_owner` (§4), its static `instanceFor(bool)` and `editLatencyBudgetDiagnostics()`, which `instanceFor` calls, and the members the template reads (`m_manager`, `m_storage`, `m_inputResolution`, `m_delayedInputComponentsById`) |
+| `Component` | the registering component `wrapInputProvider` and `wrap` take, and the element type of the session's delayed-input map (the owner's until og-ue-simulationcomponentandmanagersplit task 26a), whose correction-buffer tick `tick_GameThread` reads through a const pointer (§4) |
+| `SessionOwner` | the session's owner: its static `instanceFor(bool)` and `editLatencyBudgetDiagnostics()`, which `instanceFor` calls (the owner's forwards to its session's). The template's const reference `m_owner` (§4) is to the session, `UESimulationSession<TraitsT>`, since og-ue-simulationcomponentandmanagersplit task 24a (to the owner before), and it reads the session's `m_manager`, `m_storage`, `m_inputResolution` and, since task 26a, `m_delayedInputComponentsById` (the owner's before, read through the session's `owner()`) |
 | `Game` | two static hooks, below |
 | `InputSampleSource` | the value `inputSampleSource` returns and the wrapper's lambda captures |
 
@@ -132,9 +134,10 @@ compiles there; only Shipping, where it is not declared, makes such a line a com
 
 ## §4 Reading production state
 
-The template reads its owner's `m_manager`, `m_storage`, `m_inputResolution` and `m_delayedInputComponentsById`, and the
-client clock through `m_manager`. It reaches them through **one const reference**, `m_owner`: the owner declares the
-template a friend, and every read goes through that const reference, so it can call only const members
+The template reads its session's `m_manager`, `m_storage`, `m_inputResolution` and `m_delayedInputComponentsById`
+(the session owner's, through the session's `owner()`, until og-ue-simulationcomponentandmanagersplit task 26a), and the client clock through `m_manager`. It reaches them
+through **one const reference**, `m_owner`, to the session (§10): the session and its owner each declare the template a
+friend, and every read goes through that const reference, so it can call only const members
 (`currentIntegratedTick`, `runsPrediction`, `getClientClock`, `forEachSimulatable`'s const overload,
 `getLastUsedCaptureTick`, `getDiagnostics`).
 
@@ -156,12 +159,14 @@ Since og-ue-simulationcomponentandmanagersplit task 21 that getter is `UESimulat
 
 **The loop skips a component that is not bound** (G-03), with the binding's `isNetSyncBound()`, a `const` query. The
 getter dereferences the sibling pointer, which the component's teardown clears. No shape that runs today reaches the
-skip: the owner erases a component's map entry in its unregistration (the brawler: `unregisterFromNewFramework`), the
+skip: the owner's unregistration (the brawler: `unregisterFromNewFramework`) calls the session's `forgetReceptionOwner`,
+which erases the component's map entry (the owner erased it itself until og-ue-simulationcomponentandmanagersplit task
+26a), the
 component's `EndPlay` runs that unregistration before it unbinds, and a component is added to the map only after its
 registration, which the owning actor's bind precedes. So the skip changes no output; it keeps the read from becoming a
 null dereference if a later change reorders the teardown or the map's erase (a lead ruling of that task, 2026-10-21). It is
 a skip in this diagnostics loop, compiled only while `OG_LATENCY_BUDGET_DIAGNOSTICS` is 1, rather than an erase of the
-owner's map entry, which is production state this class must not write.
+session's map entry, which is the session's own production state and which this class must not write.
 
 ---
 
@@ -257,7 +262,8 @@ bundles, a capture carried by more than one relay round), so a large number ther
 
 * **Header-only.** Every member is defined in the header: the in-class ones where they were, the out-of-line ones after
   the class, inside one `OGSIM_OPTIMIZE_OFF` / `OGSIM_OPTIMIZE_ON` pair under `#if OG_LATENCY_BUDGET_DIAGNOSTICS`. The game
-  instantiates the template with its traits; `tick_GameThread` is instantiated by the owner's call with its backend's view,
+  instantiates the template with its traits; `tick_GameThread` is instantiated by the session's call (in
+  `onPostPhysicsStep` since og-ue-simulationcomponentandmanagersplit task 27a, the owner's before) with its backend's view,
   so no explicit instantiation is needed.
 * ⚠ **The pair does not decide how the members compile.** MSVC compiles a template's instantiations, explicit ones
   included, with the `#pragma optimize` state in force at the **end** of the translation unit that instantiates them, and
@@ -276,3 +282,24 @@ Written by og-tickdriver task 18 as a game-module class over one game's manager;
 OGSimulationUnreal, under MPL-2.0, by og-ue-simulationcomponentandmanagersplit task 19a, with the statements unchanged
 (the type names come from the traits, the input sample from the two game hooks of §2). The probe's host side was written
 by og-simulationscheduler-withjolt task 1.
+
+---
+
+## §10 The session as the owner (og-ue-simulationcomponentandmanagersplit task 24a)
+
+Since task 24a the template is a member of OGSimulationUnreal's `UESimulationSession<TraitsT>` (`UESimulationSession-rationale.md`),
+declared first after the session's two references, and its constructor takes `const UESimulationSession<TraitsT>&`; the
+header forward-declares the session. Its member initializer is still `{ std::as_const(*this) }`, now the session's.
+
+* **The reads.** `m_manager`, `m_storage` and `m_inputResolution` are the session's, read with the same spellings; the
+  session befriends the template. `m_delayedInputComponentsById` stayed the owner's, read as
+  `m_owner.owner().m_delayedInputComponentsById` under the owner's friend line for the template, until task 26a moved it
+  into the session; it is read as `m_owner.m_delayedInputComponentsById` since. The `const` assertion
+  beside `m_owner` holds for the session reference; its message names both.
+* **The weak-lambda owner stays the actor.** `begin` binds the world's post-tick flush with `AddWeakLambda(&m_owner.owner(), …)`:
+  a delegate's weak object must be a `UObject`, the session is not one, and the owner is the object the binding tested
+  before.
+* **`instanceFor`** still finds the instance through `TraitsT::SessionOwner::instanceFor(isAuthority)` and the owner's
+  `editLatencyBudgetDiagnostics()`, which forwards to the session's. (Since og-ue-simulationcomponentandmanagersplit task
+  25 the owner's `instanceFor` itself forwards to the session's registry, `UESimulationSession-rationale.md` §9.)
+* **F1.** Nothing about how the members compile changed: they were already template members compiled optimized (§8).

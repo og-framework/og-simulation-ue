@@ -45,17 +45,19 @@ retired entries named were re-verified by og-tickdriver task 10 at their success
 **Site:** `m_tickBackend.stop();` in `onEndPlayBegin`, after the frame host's tick functions are unregistered. *Moved
 by og-tickdriver task 15d (2026-10-18): the site was `m_tickDriver->stop();` inside `if (m_tickDriver.has_value())`;
 the tick driver is og-simulation's `SimulationTickBackend`'s member since then, and its `stop()` makes the same call
-under the same condition. The prohibition and its id are unchanged.* `ASimulationManagerUImpl::EndPlay` calls `onEndPlayBegin` as its first
-statement. *Reworded by og-tickdriver task 8 (2026-10-16): the wait was the frame host's `waitForOutstandingSteps`
+under the same condition. The prohibition and its id are unchanged.* The session's `endPlay` calls `onEndPlayBegin` as its first
+statement (`UESimulationSession::endPlay`, which the brawler's actor calls from its `EndPlay` since
+og-ue-simulationcomponentandmanagersplit task 27a; the actor's `EndPlay` made the call before). *Reworded by og-tickdriver task 8 (2026-10-16): the wait was the frame host's `waitForOutstandingSteps`
 and is now the tick driver's `stop()`, which clears the driver's running flag and then waits for the pending and
 the blocking step task. The prohibition is unchanged.*
 
 **The prohibition** (og-simulationscheduler-withjolt task 54, design §9.1). ⛔ Do not move any
 `EndPlay` statement above this wait, and do not drop it. The order is: unregister the two tick
 functions (so no new step is dispatched), wait for the step task dispatched in this and earlier frames,
-then everything else (`SimulationManagerUImpl-guards.md` G-64's resets, the listener unregistration, the post-tick-flush unbind).
-The "do not move any `EndPlay` statement above" half is typed in `ASimulationManagerUImpl::EndPlay`, above its
-`m_backend.onEndPlayBegin();`, and is guarded there: `SimulationManagerUImpl-guards.md` G-85. This entry's tag
+then everything else (`UESimulationSession-guards.md` G-21's resets, the listener unregistration, the post-tick-flush unbind).
+The "do not move any statement above" half is typed in `UESimulationSession::endPlay`, above its
+`m_backend.onEndPlayBegin();`, and is guarded there: `UESimulationSession-guards.md` G-20 (the brawler's
+`SimulationManagerUImpl-guards.md` G-85 and G-64 until og-ue-simulationcomponentandmanagersplit task 27a). This entry's tag
 guards the wait itself (dropping it, or moving a statement above it inside `onEndPlayBegin`).
 
 **The consequence.** On a worker client the frame's step task runs on another thread through the rest

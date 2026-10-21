@@ -82,7 +82,8 @@ written never to see.
 
 ## G-05 — one RTT sample per bundle, never per slot
 
-**Site:** `coordinator->noteRttSample(handle, id, authorityManager->getServerReceptionTick(), readRoundTripMs(rootConn), *m_netSync);`
+**Site:** `coordinator->noteRttSample(handle, id, authorityManager->session().getServerReceptionTick(), readRoundTripMs(rootConn), *m_netSync);`
+(the reception tick is the session's since og-ue-simulationcomponentandmanagersplit task 26a, reached through the owner's `session()`)
 (Was `SimmableUpdateComponent-guards.md` G-22.)
 
 **Correction (R0, task 21).** The site line there still ended `*this)`; since og-ue-simulationcomponentandmanagersplit
@@ -98,7 +99,8 @@ couples smoothing to redundancy depth.
 
 ## G-06 — the delay is applied exactly once, park-to-release, on the original capture tick
 
-**Site:** `coordinator->template receiveInputBundle<typename TraitsT::Simulatable>(id, handle, playerSlot, bundle, *authorityManager, *authorityManager);`
+**Site:** `coordinator->template receiveInputBundle<typename TraitsT::Simulatable>(id, handle, playerSlot, bundle, authorityManager->session(), authorityManager->session());`
+(the two sinks are the session's since og-ue-simulationcomponentandmanagersplit task 26a; they were the owner, `*authorityManager`, before)
 (Was `SimmableUpdateComponent-guards.md` G-23.)
 
 **As shipped:**

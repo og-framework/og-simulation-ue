@@ -116,7 +116,8 @@ private:
 			"callback from the manager's client clock when it goes, so the tick backend must go first. Keep m_frameHost "
 			"and m_tickDriverGame < m_tickBackend; that its driver goes before its presenter and the presenter before the "
 			"render source is og-simulation's SimulationTickBackend's own row; that all of them go while the manager is "
-			"alive is the session's own row (GameBindingT::Session's m_manager < m_backend); and that the world host "
+			"alive is the session's own row (UESimulationSession's m_manager < m_backend, GameBindingT::Session since "
+			"og-ue-simulationcomponentandmanagersplit task 24a); and that the world host "
 			"(m_backendWorlds) outlives the driver is asserted in startDriverStepping. Was the rows 'm_frameHost, "
 			"m_tickDriverGame and m_presenter < m_tickDriver' and 'm_frameHost and m_renderSource < m_presenter' until "
 			"og-tickdriver task 15d moved the presenter, the driver and the render source into the tick backend.");
@@ -265,7 +266,7 @@ void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::startD
 {
 	static_assert(__builtin_offsetof(Session, m_backendWorlds)
 	                  < __builtin_offsetof(Session, m_backend),
-		"The session's members (GameBindingT::Session) destruct in REVERSE declaration order. The tick driver built here "
+		"The session's members (GameBindingT::Session, a UESimulationSession) destruct in REVERSE declaration order. The tick driver built here "
 		"(in m_backend) holds the world host (in m_backendWorlds) by pointer and locks it and steps its world until it "
 		"stops, so the world host must outlive the driver. Keep m_backendWorlds < m_backend. Was implied by the owner's "
 		"two rows until og-tickdriver task 10, when the driver's world host moved out of this class.");
@@ -275,7 +276,7 @@ void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::startD
 	typename TickBackend::Driver& tickDriver = m_tickBackend.start(static_cast<double>(dt), worldIsAuthority,
 		UETickDriverHost::requestedMaxCatchUpSteps());
 
-	m_frameHost.begin(m_owner, *world.PersistentLevel, tickDriver);
+	m_frameHost.begin(m_owner.owner(), *world.PersistentLevel, tickDriver);
 }
 
 OGSIM_OPTIMIZE_ON
