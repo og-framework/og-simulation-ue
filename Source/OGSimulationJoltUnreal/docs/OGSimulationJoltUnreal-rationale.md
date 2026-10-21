@@ -51,7 +51,9 @@ module keeps its name, so a game's module rules name it as before; the game enab
 module. The module's rules name no project module, and its code includes nothing of a game. Task 16 re-ran the
 one-module check of §3 over the module's objects at their new place, the plugin's intermediate folder.
 
-The module's rules set `MinSourceFilesForUnityBuildOverride` to 32, as OGSimulationUnreal's do: Unreal's build tool
+The module's rules set `MinSourceFilesForUnityBuildOverride` to 32, as OGSimulationUnreal's did until
+og-ue-simulationcomponentandmanagersplit task 19 (OGSimulationUnreal's set `bUseUnity = false` since;
+`OGSimulationUnreal-rationale.md` §4): Unreal's build tool
 builds a module with fewer than 32 source files one translation unit per file only when its rules lie under a
 project's Source folder, so in the plugin the module would build as one unity translation unit. The override keeps
 the compile mode it had as a project module; task 16 found the module's code identical to the pre-move build.

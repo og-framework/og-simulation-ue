@@ -262,9 +262,15 @@ every process.
   use needs (EnhancedInput); the module's rules dropped `DVolumeModule`, a project module that nothing in the module
   named: a module of this game's project, which another game that takes the plugin does not have (the build accepted
   the dependency in this project; task 16 checked that). The module keeps its name, so the game's module rules name it as
-  before. Its `StartupModule` now runs later in the Default phase (§2.2). Its rules set
+  before. Its `StartupModule` now runs later in the Default phase (§2.2). Its rules then set (until the next bullet)
   `MinSourceFilesForUnityBuildOverride` to 32: Unreal's build tool builds a module with fewer than 32 source files one
   translation unit per file only when its rules lie under a project's Source folder, so in the plugin the module would
   build as one unity translation unit, and about a fifth of its code would compile differently. The override keeps
   the compile mode it had as a project module; task 16 compared the code with the pre-move build and found it
   identical apart from names that encode the source path (the lead's ruling L1).
+* **Built one translation unit per file, always (og-ue-simulationcomponentandmanagersplit task 19, ruling Q-A).** The
+  rules set `bUseUnity = false` in place of the override. The override only held the mode while the module stayed
+  below 32 unity inputs: it had 28 (21 source files, the per-module inline file and six generated files that the
+  build merges), and the files that initiative adds to the plugin would have reached 32 and turned the module unity
+  without notice. Task 19 rebuilt the module's 23 objects under the new rules: Unreal's build tool wrote the same
+  compile commands, and every object's code was identical to the build before the edit.
