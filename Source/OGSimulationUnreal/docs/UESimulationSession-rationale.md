@@ -39,6 +39,8 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
   post-visualization hook, and the test hitch cvar in the `.cpp`.
 * **§11** is the start-up (task 27b): `beginPlay`, the game's six start-up hooks and their inline check, the neutral input
   on both roles, the field-diff gate, the step-length check and the backend line.
+* **§12** is the registration sequences (task 28): `tryRegister` and `unregisterFromNewFramework`, the pending record, the
+  game's four registration hooks and their inline checks, and the name-clash row over all ten hooks.
 
 ---
 
@@ -58,12 +60,13 @@ reception (§9.7): the reception coordinator, the delayed-input map, the two rec
 release, the reap and the forget. **Since task 26b** it holds the rest of the transport: the three session knobs (§9.8)
 and the per-frame work before the steps with its two probes, PROBE A and PROBE 6 (§9.9). **Since task 27a** it holds
 the teardown, `endPlay`, and the post-physics pass, `onPostPhysicsStep`, with the test hitch cvar's accessor in its
-`.cpp` (§10). **Since task 27b** it holds the start-up, `beginPlay`, with the game's six start-up hooks (§11). The
-registration sequences (task 28) are still the owner's, and the owner reads and writes the session's members directly
-while they are (§4).
+`.cpp` (§10). **Since task 27b** it holds the start-up, `beginPlay`, with the game's six start-up hooks (§11). **Since
+task 28** it holds the registration sequences, `tryRegister` and `unregisterFromNewFramework`, with the pending record and
+`TryRegisterStatus`, and calls the game's four registration hooks (§12). The owner keeps the wrappers that turn its game's
+character id into the storage key, and reaches no private member any more (§4).
 
-**The brawler** is the one user: `ASimulationManagerUImpl` holds `UESimulationSession<BrawlerSessionTraitsUImpl>` as its
-member `m_session` (`SimulationManagerUImpl-rationale.md` §2, in OGBrawlerUnreal's docs).
+**The brawler** is the one user: `AOGBrawlerSimulationManager` holds `UESimulationSession<BrawlerSessionTraitsUImpl>` as its
+member `m_session` (`OGBrawlerSimulationManager-rationale.md` §2, in OGBrawlerUnreal's docs).
 
 **Not copyable.** The copy constructor and assignment are deleted: the members bind each other by reference (§2), and
 the backend holds the session by reference.
@@ -85,6 +88,7 @@ m_owner&, m_game& → m_latencyBudgetDiagnostics → m_backendWorlds → m_physA
     → m_replicatedTierConsumer, m_lastPublishedEffectiveInputDelayTicks
     → m_receptionCoordinator, m_frameHealthProbe, m_relayWriteProbe, m_connectionBudgetProbe, m_delayedInputComponentsById
     → m_onTimingInfoReceivedCallback, m_timingRelay
+    → m_pendingRegistrations
 ```
 
 * **`m_owner` and `m_game` come first.** They are references, which have no destruction order, and the backend is
@@ -110,6 +114,13 @@ is observable; the coordinator borrows the manager's `TimeConfig` and is asserte
 (task 26b) sit where the owner declared them, PROBE A after the coordinator and PROBE 6 after PROBE 5; both hold plain
 counters, so their destruction is not observable either.
 
+**The pending registrations come last** (task 28), as manager design §4.5 placed them. In the owner the map was declared
+after the session member, so it was destroyed before the whole session; here it is destroyed first among the session's
+members, but after the destructor's body, which clears the registry slots (`⛔G-10`). A record holds a simulatable value
+and the game's input provider (the brawler's: a lambda that captures its input component's pointer and the id), and
+neither one's destruction touches the registry, so the change is not observable. Its declaration is not asserted: nothing
+borrows from it.
+
 **What is asserted.** `compositionContractsHold()` holds six `static_assert`s over `__builtin_offsetof` (four before
 task 25, five before task 26a), the `ManagerType` and `getTimeConfigPtr` rows, and since task 26a the two reception sink
 concepts (§9.7), and the
@@ -133,7 +144,7 @@ asserted chain is unprotected, and a reordered member inside it would still comp
 has not bitten because every peer constructor is a trivial reference store: none calls into a sibling peer during
 construction, so a reorder today would only bind a reference to a not-yet-constructed object that is not yet accessed.
 It becomes load-bearing the day a peer constructor's body calls a method on one of those sibling references. *Moved from
-`SimulationManagerUImpl-rationale.md` §2 ("The reorder hazard, stated exactly"), where task 11 of the brawler's comment
+`OGBrawlerSimulationManager-rationale.md` §2 ("The reorder hazard, stated exactly"), where task 11 of the brawler's comment
 extraction first asserted it; that task poisoned three reorders and each fired its assertion.*
 
 **Seen failing (task 24a).** Swapping the declarations of `m_manager` and `m_backendWorlds` fails the build with the
@@ -161,7 +172,7 @@ emplaced in the role branches.
 `m_backend` is destroyed first (on Jolt the tick backend with its driver and presenter, then the render-target table,
 the game binding and the frame host, while the manager still lives), then the manager, the integration layer and the
 adapters, and last the worlds (on Jolt the world host and its engine). The two rows of §2 assert it, the same in both
-configurations. *Moved from `SimulationManagerUImpl-rationale.md` §2 ("The backend's two members and the destruction
+configurations. *Moved from `OGBrawlerSimulationManager-rationale.md` §2 ("The backend's two members and the destruction
 order", og-simulationscheduler-withjolt task 83).*
 
 **The seam.** The owner calls the backend through one fixed set of entry points, each from exactly one site. The set is
@@ -181,8 +192,8 @@ emplacement, the storage), and og-simulation's tick-driver binding hands out `Ma
 friends, not accessor users, and their spellings did not change: `m_owner.m_manager`, `m_owner.m_physAdapter`,
 `*m_session.m_manager` read the session's members exactly as they read the owner's.
 
-**The owner is a friend too.** The owner's start-up, teardown, registration and the rest of the
-transport still live in the owner and read and write the session's members (`m_session.m_manager`, `m_session.m_storage`,
+**The owner was a friend too, until task 28.** The owner's start-up, teardown, registration and the rest of the
+transport lived in the owner and read and write the session's members (`m_session.m_manager`, `m_session.m_storage`,
 …), and since task 25 its private transport members too: the owner writes the registry slots, calls `beginTierConsumer`,
 `replayLatchedClientValues`, `logRelayDelayFloorAdvisory`, `findTimingRelay` and `publishServerClock_GameThread` at the
 positions of the statements they hold, and reset the tier consumer in its `EndPlay` until task 27a. Since task 26a it
@@ -195,13 +206,14 @@ Since task 27a its teardown and its post-physics pass are the session's own too 
 `BeginPlay` calls `Super`, then the public `beginPlay`, and reads no member; the registry writes, the listener
 registrations and every helper call of the start-up are the session's own statements.
 
-**The line stays until task 28 (task 27b's finding F27b-1).** The design dropped the owner's friendship with the start-up,
-but the owner's two registration functions, which task 28 moves, still reach private members: `tryRegister` calls the
-backend's two registration entry points, the body adapter's resolvability test, the four-peer registration and the
-manager's registration notice, and `unregisterFromNewFramework` the manager's notice, the four-peer unregistration,
-`forgetReceptionOwner` and the backend's unregistration. Task 27b measured it: with the line deleted, those two functions
-fail to compile (`C2248` on `m_backend`, `m_physAdapter`, `m_storage`, the three peers, `m_manager` and
-`forgetReceptionOwner`), and nothing else does. The task's notes carry the lead's ruling.
+**The line went with task 28 (ruling F27b-1).** The design dropped the owner's friendship with the start-up, but task 27b
+measured that the owner's two registration functions still reached private members: `tryRegister` called the backend's
+two registration entry points, the body adapter's resolvability test, the four-peer registration and the manager's
+registration notice, and `unregisterFromNewFramework` the manager's notice, the four-peer unregistration,
+`forgetReceptionOwner` and the backend's unregistration (with the line deleted, `C2248` on `m_backend`, `m_physAdapter`,
+`m_storage`, the three peers, `m_manager` and `forgetReceptionOwner`, and nowhere else). The lead ruled the line kept until
+those two moved. Task 28 moved them (§12) and deleted `friend SessionOwner;`; every configuration builds without it, so the
+owner reaches only the public surface. Since then the class befriends exactly the three Q-G friends above.
 
 **The public surface is narrow.** `owner()` (const and mutable), the latency member's `get`/`edit` pair, since task
 24b the composition reads and doors of §8, and since task 25 the transport's public members (§9): `instanceFor`, the five
@@ -211,8 +223,14 @@ listener overrides, `getSyncedTimingBuffer` and `setOnTimingInfoReceivedCallback
 three accessors, which the component binding's RPC tail calls, the route's registration, and the two sinks, which the
 coordinator calls; and since task 27a `endPlay`, which the owner calls (public, so it still can once task 27b drops the
 owner's friendship), and two const reads for the game's post-visualization hook, `getSystemsExec` and
-`getDelayedInputComponentsById` (§10); and since task 27b `beginPlay`, which the owner calls after its `Super` (§11). The owner keeps its own `getLatencyBudgetDiagnostics()` /
-`editLatencyBudgetDiagnostics()`, which forward here, so its latency lookups (`instanceFor`) are unchanged. No accessor
+`getDelayedInputComponentsById` (§10); and since task 27b `beginPlay`, which the owner calls after its `Super` (§11); and
+since task 28 `tryRegister` and `unregisterFromNewFramework`, which the owner's wrappers call (§12; since task 29 the
+component's registration skeleton, `UESimulatableOwnerBinding`, calls `tryRegister` and `noteDelayedInputComponent`
+directly). The owner keeps its own
+`getLatencyBudgetDiagnostics()` / `editLatencyBudgetDiagnostics()`, which forward here, so its latency lookups (`instanceFor`)
+are unchanged. *R0, task 28:* the mutable one keeps one caller, the latency member's own `instanceFor`
+(`UELatencyBudgetDiagnostics.h`), which reaches it through `TraitsT::SessionOwner::instanceFor`; the const one has no caller
+left in code (the self-scheduled host reads the session's own pair). No accessor
 hands a game's UI or its parts a mutable production peer: the mutable members of §8 are the storage, the server clock,
 the reconciliation and the visualization doors, each one the owner already exposed publicly before task 24b, kept with
 its signature (§8). Their one game caller, the brawler's component visualization, only reads the simulatable's
@@ -287,42 +305,47 @@ way. A call typed anywhere in the header is a compile error; task 24a saw one fa
   compiles under its own pair. `bindCorrectionFieldDiffGate` is defined in the class, outside every pair, as it was
   outside the owner's (a file-local function above the owner's `OGSIM_OPTIMIZE_OFF`); a template member compiles optimized
   anyway (ruling F1).
+* **The registration sequences of task 28,** `tryRegister` and `unregisterFromNewFramework`, are defined after the
+  sequences' pair in a pair of their own. By ruling F1 they compile optimized; in the owner, non-template members of its
+  `.cpp` under its pair, they compiled unoptimized. They hold no floating-point arithmetic. The game's four registration
+  hooks keep their state: they are non-template functions the game compiles under its own pair (the brawler's
+  `OGBrawlerSimulationManager.cpp`), and so do the game's parts they call.
 * **The `.cpp` (task 27a)** holds what a header cannot: the test hitch console variable, a namespace-scope object that
   must be registered once, its exported accessor and the exported sleep (§10). The plugin compiles it on its own (the
   module is not unity), and the two functions, non-templates, sit in a pair of their own, so their statements keep the
   unoptimized state they had in the owner's post-physics step: the sleep's division compiles to `divss` by `1000.0f`, as
   in the owner, not to a multiply by its reciprocal. The game's post-visualization hook is likewise a non-template function in
-  the game's own `.cpp` (the brawler's `SimulationManagerUImpl.cpp`, under its pair).
+  the game's own `.cpp` (the brawler's `OGBrawlerSimulationManager.cpp`, under its pair).
 * **One member is explicitly instantiated** (task 25): `onInputRelayHostReady` casts to the game's character, so its body
   needs the character's complete type. A virtual member is instantiated wherever the class's vtable is emitted, which
   includes the owner's generated code (its vtable-helper constructor builds the owner's members, the session among them),
   which does not include the character's header. So the game declares that one member `extern template` beside the owner's class and instantiates it once
-  in the owner's `.cpp` (the brawler's `SimulationManagerUImpl.h` and `.cpp`), the pattern the component binding uses for
+  in the owner's `.cpp` (the brawler's `OGBrawlerSimulationManager.h` and `.cpp`), the pattern the component binding uses for
   the whole class.
 
 ---
 
 ## §7 Provenance
 
-Created by og-ue-simulationcomponentandmanagersplit task 24a (2026-10-21) from `ASimulationManagerUImpl`'s members and
-its `compositionContractsHold()` rows (`SimulationManagerUImpl.h`, the brawler's session actor). The member declarations
+Created by og-ue-simulationcomponentandmanagersplit task 24a (2026-10-21) from `AOGBrawlerSimulationManager`'s members and
+its `compositionContractsHold()` rows (`OGBrawlerSimulationManager.h`, the brawler's session actor). The member declarations
 and their initializers moved unchanged except: the owner's cvar member and its static-data initializer became the game
 hook `makeStaticData()`; `*this` in the backend's and the latency member's initializers is the session; the types come
-from the traits. The guard on the systems executor moved with it (`SimulationManagerUImpl-guards.md` G-75 → G-01 here).
+from the traits. The guard on the systems executor moved with it (`OGBrawlerSimulationManager-guards.md` G-75 → G-01 here).
 
 Task 24b (2026-10-21) moved the owner's composition reads, its three visualization doors, `getVizSlice` and
 `onPostSimulationGameThread` here, statement for statement (§8), with the guard on `getVizSlice`
-(`SimulationManagerUImpl-guards.md` G-04 → G-02 here) and the `getTimeConfigPtr` assertion.
+(`OGBrawlerSimulationManager-guards.md` G-04 → G-02 here) and the `getTimeConfigPtr` assertion.
 
 Task 25 (2026-10-21) moved the transport's registry, the three relay listener interfaces, the tier and floor helpers, the
 effective input delay, the stall request and the timing relay here (§9), with eight guards
-(`SimulationManagerUImpl-guards.md` G-03, G-15, G-16, G-61, G-62, G-65, G-66 and G-79 → G-03 to G-10 here), the owner's
+(`OGBrawlerSimulationManager-guards.md` G-03, G-15, G-16, G-61, G-62, G-65, G-66 and G-79 → G-03 to G-10 here), the owner's
 destructor (now this class's), a new order row (the tier consumer) and a new guard, the transport seam (G-11). The
 rationale came from the owner's §1 (its transport parts), §5 and §6 (the host boundary).
 
 Task 26a (2026-10-21) moved the input reception here (§9.7): the coordinator and its emplace (now
 `beginReceptionCoordinator`), its three accessors, the delayed-input map and its registration, the two sinks with PROBE 5
-(its member too, with its guard: `SimulationManagerUImpl-guards.md` G-17 → G-12 here), the per-step release, and the reap
+(its member too, with its guard: `OGBrawlerSimulationManager-guards.md` G-17 → G-12 here), the per-step release, and the reap
 and the forget (now `forgetReceptionOwner`). It added a guard (G-13, the map's erase), an order row (the coordinator) and
 the two sink concepts, asserted on the session where the owner asserted them on itself. The rationale came from the
 owner's §1 (the wart), §6 (the relay tap), §7 and §8 (PROBE 5).
@@ -330,14 +353,14 @@ owner's §1 (the wart), §6 (the relay tap), §7 and §8 (PROBE 5).
 Task 26b (2026-10-21) moved the rest of the transport here: the three session knobs, as three functions the owner calls at
 the positions of the statements they hold (§9.8), and the per-frame work before the steps, `onFrameStepsDue_GameThread`,
 with PROBE A, the coordinator test, the `[PacketBudget]` line and PROBE 6, and the two probes' members (§9.9). Six guards
-moved with them (`SimulationManagerUImpl-guards.md` G-57, G-56, G-58, G-63, G-70 and G-72 → G-14 to G-19 here, in that
+moved with them (`OGBrawlerSimulationManager-guards.md` G-57, G-56, G-58, G-63, G-70 and G-72 → G-14 to G-19 here, in that
 order) and one derivation (its D-50 → D-01 here). The rationale came from the owner's §3, the PROBE A and PROBE 6 parts of
 its §8, and its §13.8. The seam script gained the four functions (§9.1).
 
 Task 27a (2026-10-21) moved the owner's teardown and its post-physics pass here, as `endPlay` and `onPostPhysicsStep`,
 straight-line and statement for statement (§10): the latency member's `end` and `tick_GameThread` became the session's
 own statements, and the brawler's ring-out score push became the game's hook `afterVisualization`, at its position. Two
-guards moved with them (`SimulationManagerUImpl-guards.md` G-85 and G-64 → G-20 and G-21 here). The test hitch console
+guards moved with them (`OGBrawlerSimulationManager-guards.md` G-85 and G-64 → G-20 and G-21 here). The test hitch console
 variable moved, unchanged, into the new `UESimulationSession.cpp`, read through the exported accessor
 `consumeTestGameThreadHitchMs`, its sleep through `sleepTestGameThreadHitch` (the lead's F1-b ruling). The owner's `EndPlay` became `endPlay` then `Super`, and both hosts call
 `onPostPhysicsStep`. The rationale came from the owner's §1 (its thread table's rows), §2 (the teardown), §16 (the latency
@@ -347,10 +370,18 @@ Task 27b (2026-10-21) moved the owner's start-up here, as `beginPlay`, straight-
 with the owner's file-local `bindCorrectionFieldDiffGate` as a private static member. The latency member's `begin` became
 the session's own statement, the step-length check reads `TraitsT::NetConfig` and its `checkf` texts are neutral, and the
 brawler statements became six hooks of `TraitsT::Game`, each at its statements' position. Two guards moved with it
-(`SimulationManagerUImpl-guards.md` G-50 and G-59 → G-22 and G-23 here); G-17's "after both branches" half became G-24 at
+(`OGBrawlerSimulationManager-guards.md` G-50 and G-59 → G-22 and G-23 here); G-17's "after both branches" half became G-24 at
 the call, and G-06 and G-07 were re-sited at their calls. The owner's third guard of the start-up, G-60 (the neutral input's
 value), stayed with the game's hook (ruling Q-J). The rationale came from the owner's §2 (the start-up's order), §4 (the
 field-diff gate), §5 (the neutral input on both roles) and §18 (the backend line and the step length).
+
+Task 28 (2026-10-21) moved the owner's registration sequences here, `tryRegister` and `unregisterFromNewFramework`, with
+the pending record and `TryRegisterStatus`, statement for statement (§12). The latency member's input-provider wrap and its
+forget became the session's own statements, the character cast reads `TraitsT::Character` and its `checkf` text is neutral,
+and the brawler statements became four hooks of `TraitsT::Game`, each at its statements' position. Two guards moved with
+them (`OGBrawlerSimulationManager-guards.md` G-69 and G-73 → G-25 and G-26 here). The owner's interim friendship was deleted
+(§4), and the sentence of the start-up's hook check that no session member shares a hook's name became a compile-time row
+(§12.5). The rationale came from the owner's §10 and the generic part of its §13.4.
 
 ---
 
@@ -421,7 +452,8 @@ body is a template member, compiled only where it is used, in the owner's `.cpp`
 **The game's parts read through `const Session&`** (the initiative's review, finding m-13). A part (the brawler's
 input-history feed) holds a const reference to the session, bound in the owner's member initializer to the owner's
 `m_session` member before that member is constructed, and read only after it is: the parts are called from the
-component's tick, the game's HUD and the owner's unregistration, never from a constructor. Binding a reference to the session object is
+component's tick, the game's HUD and the unregistration (the game's `onUnregistered` hook, from the session's
+`unregisterFromNewFramework` since task 28; the owner's unregistration before), never from a constructor. Binding a reference to the session object is
 well-defined then; binding one to a member of the session before the session's construction began would not be
 ([class.cdtor]/1), which is why no part holds a reference into the session. A part reads only const members, so it
 needs no friendship. What it reads of the transport (the tier consumer and the effective delay) are the session's own
@@ -518,7 +550,7 @@ once per tick in `collectInputAll` and once per resimulated tick in `collectResi
 apply a new delay one tick late. Everything else in the transport is game-thread-only: the listeners are called from the
 relays' replication callbacks, and the registry, the tier consumer and the timing relay pointer are read and written only
 there, in the owner's start-up, and in the session's teardown and post-physics pass (§10; the owner's until task 27a). *Moved from the brawler's
-`SimulationManagerUImpl-rationale.md` §1 ("The write crossing carries one scalar"); R0, task 25: the resimulation load was
+`OGBrawlerSimulationManager-rationale.md` §1 ("The write crossing carries one scalar"); R0, task 25: the resimulation load was
 not listed.*
 
 **Why the passthroughs are narrow.** `requestInputDelayIncreaseStall` and `publishClientEffectiveInputDelayTicks` are
@@ -623,7 +655,7 @@ client `BeginPlay` replays it if it turns up later.
 intake: the owner's ini override at start-up and the floor listener's two entry points. It is advisory only (`⛔G-04`,
 `⛔G-09`): floor `0` is the documented off mode and is never flagged, and floor `1` is a legal configuration.
 
-*Moved from the brawler's `SimulationManagerUImpl-rationale.md` §5 (all but "The zero input" and "Inbound-hit routing",
+*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §5 (all but "The zero input" and "Inbound-hit routing",
 which are the brawler's and stayed), made game-neutral, with the R0 corrections above.*
 
 ### 9.5 The relay ring: the host boundary
@@ -643,7 +675,7 @@ with every spawn, death and travel, for nothing.
 while still unlinked; the sibling's `attachInputRelayHost` absorbs the repeats (it returns when the host is already its
 own). Every hop can legitimately fail during the join window, and every failure is a plain "not yet".
 
-*Moved from the brawler's `SimulationManagerUImpl-rationale.md` §6 ("The host boundary"); R0, task 25: the moved text
+*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §6 ("The host boundary"); R0, task 25: the moved text
 named the brawler component as the attach target and its callback as the arrival's destination; the host has been the
 sibling's since og-ue-simulationcomponentandmanagersplit task 20b, and since task 25 the session attaches to the sibling
 directly. The relay tap ("stage, do not write") describes `relayRemoteInput`, a reception sink that was the owner's until
@@ -686,7 +718,7 @@ path (manager design §9, step 5), so it stays in this class under M4, and the s
 | `deliverRemoteInput`, `relayRemoteInput` | the delivery sink and the relay sink; the relay sink holds PROBE 5's write |
 | `m_relayWriteProbe` | PROBE 5 (`⛔G-12`) |
 | `releaseDelayedInputsForStep` | the per-step release (the drain) |
-| `forgetReceptionOwner` | the reap and the forget: the coordinator's `forgetOwner`, the map's erase (`⛔G-13`) and PROBE 5's `forgetOwner`, extracted from the owner's unregistration and called at their position |
+| `forgetReceptionOwner` | the reap and the forget: the coordinator's `forgetOwner`, the map's erase (`⛔G-13`) and PROBE 5's `forgetOwner`, extracted from the owner's unregistration and called at their position (since task 28 the unregistration is the session's own, §12.3) |
 
 Every body moved statement for statement; the task's notes hold the token comparison. The spellings changed where the
 owner reached the session (`m_session.m_manager` is `m_manager`), where the owner named the brawler's types (the map's
@@ -724,7 +756,8 @@ coordinator, the server's reception tick and the route's registration) and the t
 policy. A fourth accessor, `hasServerTierWiring`, has no caller in the tree.
 
 *R0, task 26a:* the moved text said the route is registered "from the RPC adapter". It is registered by the game
-component's own registration, once, on the authority (the brawler's `USimmableUpdateComponent::tryRegisterWithNewFramework`).
+component's own registration, once, on the authority (the binding's registration skeleton,
+`UESimulatableOwnerBinding::tryRegisterWithNewFramework`, since task 29; the brawler component's own loop before).
 
 #### The two sinks
 
@@ -743,7 +776,7 @@ and the input discarded, because a dead component has nothing to receive it.
 `m_delayedInputComponentsById` exists because the core claim map is **id-keyed** (an engine-free container cannot hold a
 `TWeakObjectPtr`), so the coordinator's `deliver` callback hands back an id and this map resolves it. The id is the storage
 key. The map is filled by `noteDelayedInputComponent`; pruned by both sinks and by the drain's callback when a weak handle
-has gone stale; erased in `forgetReceptionOwner`, inside the owner's unregistration and so before the component unbinds
+has gone stale; erased in `forgetReceptionOwner`, inside the unregistration (the session's own since task 28, §12.3; the owner's before) and so before the component unbinds
 from its sibling (`⛔G-13`); and cleared in `endPlay` (the owner's `EndPlay` until task 27a).
 
 *R0, task 26a:* the moved text listed only the drain's prune and the unregistration's erase; both sinks prune too, and
@@ -771,7 +804,7 @@ A frame's game-thread reception work is three pieces (og-simulationscheduler-wit
 The drain hands over only the game-thread-safe upcoming sim tick and the per-id callback. Where each host calls the three
 pieces is the host's: the driver-scheduled host drains per authority step and reaps once per frame after the inline steps;
 the self-scheduled host drains the whole frame's batch up front and then reaps, once per frame. The brawler's two hosts and
-their call patterns are its `SimulationManagerUImpl-rationale.md` §7, in OGBrawlerUnreal's docs.
+their call patterns are its `OGBrawlerSimulationManager-rationale.md` §7, in OGBrawlerUnreal's docs.
 
 *R0, task 26a:* the moved text named the router's table `kOGLogRoutes`; it is `kOGAdapterLogRoutes` since
 og-ue-simulationcomponentandmanagersplit task 19.
@@ -787,7 +820,7 @@ post-physics pass and teardown (the owner's until task 27a).
 thread with no synchronization. The RTT sample path has always tolerated this, and the tier average is insensitive to a
 one-tick skew. It was left as it is so that relocating the reception subsystem into the core stayed a pure relocation; a
 follow-up may source it from the host's mapped tick, the way the drain's tick already is. *Moved from the brawler's
-`SimulationManagerUImpl-rationale.md` §1 ("One acknowledged wart").*
+`OGBrawlerSimulationManager-rationale.md` §1 ("One acknowledged wart").*
 
 #### The relay tap: stage, do not write
 
@@ -821,7 +854,7 @@ the host (the binding counts each overflow drop there).
 read fallback (`getRelayedInputRing` with no host); the staging fallback is `m_detachedRelayStagingRing`
 (`USimulatableNetSyncComponent::relayStagingTarget`).
 
-*Moved from the brawler's `SimulationManagerUImpl-rationale.md` §6 ("The relay tap: stage, do not write"), with the R0
+*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §6 ("The relay tap: stage, do not write"), with the R0
 above. Its history of the retired dual write, and the brawler's visualization read of the relayed input, stayed there.*
 
 #### PROBE 5: relay writes per frame (`m_relayWriteProbe`), server only
@@ -856,12 +889,12 @@ by its capture ticks, and by its owner id.
 
 *R0, task 26a:* the moved text said owner ids "are per-process and do not match across logs". The id is the storage key,
 which for the brawler has been its pawn's replicated character id since the sim-id change (the brawler's
-`SimulationManagerUImpl-rationale.md` §15), the same number on every peer.
+`OGBrawlerSimulationManager-rationale.md` §15), the same number on every peer.
 
 **Volume: two `Warning` lines per 120 writing frames per relayed character** (og-simulation's `kRelayWriteProbeWindowRuns`).
 Nothing per write is emitted at any verbosity, deliberately: a per-write line is a per-tick line.
 
-*Moved from the brawler's `SimulationManagerUImpl-rationale.md` §8 ("PROBE 5") with the R0 above. PROBE A and PROBE 6
+*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §8 ("PROBE 5") with the R0 above. PROBE A and PROBE 6
 followed in task 26b (§9.9); the resim-gate feeds, the rewind-push probe and the Jolt host's window line stayed in the
 brawler's §8.*
 
@@ -999,7 +1032,7 @@ and the rotation width's. It replaces the two ⛔ RETIRED prose fences that mark
 absence fence:** the identifier it is about occurs nowhere in this tree, so there is no symbol to grep and the guard is the
 only record.
 
-*Moved from the brawler's `SimulationManagerUImpl-rationale.md` §3 ("The session knobs"), made game-neutral, with the R0
+*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §3 ("The session knobs"), made game-neutral, with the R0
 above. Its history (§11 C1, C17, C18) stayed there.*
 
 ### 9.9 The frame probes: PROBE A and PROBE 6 (task 26b)
@@ -1014,7 +1047,7 @@ body is three pieces, in order:
    **PROBE 6**, the per-connection send budget.
 
 Where each host calls it is the host's: the brawler's two hosts (the tick-driver binding at `TG_StartPhysics`, and the Chaos
-host's per-frame input hook) are its `SimulationManagerUImpl-rationale.md` §7 and §8, in OGBrawlerUnreal's docs.
+host's per-frame input hook) are its `OGBrawlerSimulationManager-rationale.md` §7 and §8, in OGBrawlerUnreal's docs.
 
 The body moved statement for statement; the task's notes hold the token comparison. The spellings changed where the owner
 reached the session (`m_session.m_manager` is `m_manager`, its coordinator `m_receptionCoordinator`) and where the owner
@@ -1127,7 +1160,7 @@ tree, so the running engine gets to be the referee, once, cheaply, from the real
 `MaxPacketHandlerBits` is the term that can move it, and it can only move it **down** (encryption or any registered packet
 handler reserves bits out of the same budget), so a game's pinned literal is an **upper bound**: if the value logged here is
 ever smaller than that literal, the literal is optimistic and must be lowered (the brawler's literal and its test are its
-`SimulationManagerUImpl-rationale.md` §8). **One shot per process, on the first client connection it sees, at `Warning`:**
+`OGBrawlerSimulationManager-rationale.md` §8). **One shot per process, on the first client connection it sees, at `Warning`:**
 the value is a property of the build and the handler stack, not of the connection.
 
 *R0, task 26b:* the moved text said "one shot per session". The latch is a function-local `static` of
@@ -1160,7 +1193,7 @@ The brawler's source banner over that block, carried:
 
 (Its last line is the per-session claim the R0 above corrects: the latch is per process.)
 
-*Moved from the brawler's `SimulationManagerUImpl-rationale.md` §8 ("PROBE A", "PROBE 6") and §13.8 (the word rounding,
+*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §8 ("PROBE A", "PROBE 6") and §13.8 (the word rounding,
 its D-50, retired there; this heading carries D-01), made game-neutral, with the R0 above. The brawler's hosts' calls and
 its packet-budget literal stayed in its §7 and §8.*
 
@@ -1233,7 +1266,7 @@ the one hitch site for every backend.
   thread, never from a step; in Shipping neither the variable nor the accessor exists, and the call is compiled out
   with them.
 
-*Moved from the brawler's `SimulationManagerUImpl-rationale.md` §1 (the post-physics pass's row), §2 (the teardown), §16
+*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §1 (the post-physics pass's row), §2 (the teardown), §16
 (the latency member's `end` and `tick_GameThread` call sites) and §18 (the backend seam's teardown and post-physics call
 sites, and the hitch variable), made game-neutral. R0, task 27a: the hitch paragraph said the reset catches "a value set
 from the console or `-ExecCmds`"; console priority is above every ini priority too, and the harness sets the variable
@@ -1300,7 +1333,8 @@ site (the task's notes show what it checked).
   a signature the session cannot call, fails there with one message naming all six, beside the call's own error. It is in
   the member body, as the component binding's key-hook check is, so it is checked where the hooks are called (manager
   design §4.3). No member of the session shares a hook's name, so an unqualified call in the session can never reach a
-  hook, and a hook call can never reach a session member. *Seen failing (task 27b):* with `emplaceSystems` deleted from the
+  hook, and a hook call can never reach a session member; since task 28 the compiler checks that (§12.5), where task 27b
+  checked it by grep. *Seen failing (task 27b):* with `emplaceSystems` deleted from the
   brawler's game class, the build fails with `C2338` on the check's message (and `C2039` at the two calls).
 * **The arguments are evaluated before the hook's body runs.** `beforeWorldBuild`'s net mode and `compositionExists` were
   read inside the game's statements before the move; they are const reads with no side effect, and nothing between the
@@ -1323,7 +1357,7 @@ each character's replicated applied-input with it at `registerAuthorityOwner` (t
 `m_neutralInputs`). Deleting the call would make the authority simulate, and publish to every peer, the value-initialized
 input for the whole of every join window; `registerAuthorityOwner` warns if the call has not run before it. **Ordering is
 load-bearing: it precedes every `registerAuthorityOwner` call**, and registration happens per character, later, from the
-owner's registration path. `⛔G-23` guards the authority call. The value is the game's (`neutralInput()`), and a game's
+registration path (`tryRegister`, the session's own since task 28, §12). `⛔G-23` guards the authority call. The value is the game's (`neutralInput()`), and a game's
 neutral input is often not its value-initialized input (the brawler's aims at `(0,0,1)`); the guard on that value is the
 game's (the brawler's: `BrawlerSessionGameUImpl-guards.md` G-01, in OGBrawlerUnreal's docs).
 
@@ -1375,7 +1409,7 @@ live `UE_LOG_ACTIVE` answers as expected in a running editor is unverified, so t
 *R0, task 27b:* verified: og-simulation's `correctionFieldDiff::enabled()` tests that a predicate is set before it calls
 it, so it is false while the predicate is empty; the correction cache's gate is ahead of the walk's call;
 the test file exists and counts walks with `walkCount`. The brawler's ini sets the category to `Verbose`
-(`SimulationManagerUImpl-rationale.md` §4, in OGBrawlerUnreal's docs).
+(`OGBrawlerSimulationManager-rationale.md` §4, in OGBrawlerUnreal's docs).
 
 ### 11.5 The step length
 
@@ -1399,6 +1433,151 @@ The three state checks (no world, an occupied registry slot) and the step-length
 checks are equivalence). Their conditions and format arguments are unchanged. The game's own checks, in its hooks, keep
 the game's text.
 
-*Moved from the brawler's `SimulationManagerUImpl-rationale.md` §2 (the start-up's order), §4 (the field-diff gate), §5 (the
+*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §2 (the start-up's order), §4 (the field-diff gate), §5 (the
 neutral input on both roles) and §18 (the backend line and `dt`), made game-neutral. The brawler's hooks and its statements
 are `BrawlerSessionGameUImpl-rationale.md` §6, in OGBrawlerUnreal's docs.*
+
+---
+
+## §12 The registration sequences (task 28)
+
+**What moved.** The owner's `tryRegister` and `unregisterFromNewFramework`, after their first statements, became the
+session's `tryRegister` and `unregisterFromNewFramework`; the owner's pending record, `PendingRegistration`, and its map
+became the session's, and `TryRegisterStatus` moved to the session's header, at namespace scope, so a game's component
+spells it unchanged. The owner keeps a wrapper for each: the brawler's turns its character id into the storage key
+(`toStorageKey`), after a fatal check that the id is assigned (`tryRegister` only), and calls the session's sequence with
+the key. Both run on the game thread, from the owner's component: `tryRegister` from its registration loop, once per
+attempt until it returns `Ready`, and `unregisterFromNewFramework` from its `EndPlay`. **Since task 29** that loop is the
+generic skeleton of the component's binding (`UESimulatableOwnerBinding-rationale.md` §9), which calls this
+`tryRegister` (and `noteDelayedInputComponent`) itself, with the storage key its game's hook resolved; the brawler's
+`tryRegister` and `noteDelayedInputComponent` wrappers have no caller since, and its `unregisterFromNewFramework`
+wrapper is still the component's `EndPlay` call. Task 28's `transcribe.py` compares
+both sequences, statement by statement, with the owner's functions as they stood before task 25, every hook and helper
+inlined (the task's notes show what it checked).
+
+### 12.1 `tryRegister`: a two-phase contract
+
+The first call creates bodies; later calls re-test resolvability and, once every body resolves, perform the registration
+and return `Ready`. Every call before that returns `Pending`, and the component calls again on a later tick.
+
+1. **The inline hook check,** at compile time (§12.5).
+2. **The pending record.** The first call for an id records the simulatable, the input provider and the role; a later call
+   for the same id finds the record and leaves its own simulatable and provider unused (the component builds a fresh pair
+   on each attempt). The parameters are rvalue references, so the owner's wrapper moves its by-value arguments straight
+   through, as the old function moved them into the record (since task 29 the binding's skeleton moves its two locals
+   straight in, with no wrapper between).
+3. **The first-call pass** (the record has no bodies yet):
+   * the cast of the component's owner actor to `TraitsT::Character`, and a fatal check that it succeeded. The backend
+     builds the bodies from that class's own components, so the cast IS the registration path, not an accessor: a game
+     that changes its character's base class must keep this type the one its pawns are. `checkf` compiles out in
+     Shipping, where a wrong owner type is a null dereference on the next line; that is why the text names the exact type;
+   * the backend's `createBodies_GameThread(owner, character, simulatable, id)`; `false` returns `Pending` with the record
+     unchanged, so the next call retries the whole pass;
+   * under `DO_CHECK`, a walk of every physics declaration asserting that the creation fold populated its own and its
+     parent body id;
+   * the game's `afterBodiesCreated(simulatable, character, id, isAuthority, netMode)`, where a game seeds the new
+     character from its bodies (the brawler: its capsule body id, its spawn pose and its ring-out spawn slot); the net mode
+     is the owner's;
+   * the record is marked, and the call returns `Pending`. The first-call pass never returns `Ready`.
+4. **The resolvability gate:** the game's root body (`Game::rootBodyId(simulatable)`) is tested first, then every
+   declaration's own body; any unresolvable body returns `Pending`. The named, order-first read says out loud which body a
+   `Pending` waits on. When the root body is one of the declarations' own bodies, as the brawler's is, the walk tests it
+   again and the first read adds no guarantee the walk does not give.
+5. **The registration:** the authority registers the simulatable with the component as both its prediction and its
+   authority owner; a client registers it with the component and the input provider, wrapped by the latency member
+   (`wrapInputProvider`, the capture stamp; `UELatencyBudgetDiagnostics-rationale.md`). The wrap is the session's own
+   statement. Then the line `tryRegister: registered simulatable id=%u isAuthority=%d` (`LogOGMgmt`, `Log`), which prints
+   this call's role; a component passes the same role on every attempt (its world's net mode).
+6. **The game's `afterRegistered(id, isAuthority)`** (the brawler: its pre-diet cap), then the systems executor's notify
+   (`⛔G-25`, §12.4), then the backend's `onRegistered_GameThread`; the record is erased, and the call returns `Ready`.
+
+**Generic creation, hand-written collision.** Each physics declaration names its own slice, so a game that adds a
+body-owning sub-simulation edits neither this session nor a backend's creation fold to have the body created, bound,
+captured, rewound and checksummed. That is the whole of the claim. Making the body collidable or queryable is still the game's
+hand-written work: its collision category needs a row in the game's category table for each backend configuration (the
+brawler's are the `categoryChannels` tables of its Chaos and Jolt bindings). *R0, task 28:* verified: both backends' creation
+folds (the tick-driver host's `acquireAndBind` path and the brawler's self-scheduled host's `forEach` over the composite) and
+the DO_CHECK walk name no declaration type; the brawler's two `categoryChannels` tables exist, one per configuration.
+
+### 12.2 The pending record
+
+`PendingRegistration` holds the simulatable (an `optional`, emptied by the move into storage), whether its bodies were
+created, the input provider and the role. The map is keyed by the storage key. It is the session's last member (§2).
+
+*An observation, routed, not fixed (equivalence):* `unregisterFromNewFramework` does not erase a pending record, and nothing
+else does but the `Ready` path. A component that ends play while its registration is `Pending` leaves its record until the
+session is destroyed; a later `tryRegister` for the same id would resume it. The brawler never issues an id twice (its
+character-id allocator never reuses one), so for the brawler this is at most one stale record per abandoned id, bounded by
+the id space. It is the owner's behaviour as it stood before the move.
+
+### 12.3 `unregisterFromNewFramework`: a contract, not a garbage-collection hope
+
+In order:
+1. **The inline hook check,** at compile time (§12.5).
+2. **The systems executor's notify, behind the storage test** (`⛔G-26`): it runs before `unregisterSimulatable` destroys
+   the character, while it is still in storage, so a system's unregister hook can still reach it; and only for a character
+   that is in storage, because one whose registration never reached `Ready` has nothing to drop, and a hook's
+   `view.get<>(id)` would have nothing to return.
+3. **`unregisterSimulatable`:** the owner callbacks, then the containers.
+4. **`forgetReceptionOwner(id)`** (§9.7): the reception coordinator drops this owner's claim and its dedup watermark, the
+   delayed-input map drops the id (`⛔G-13`: this erase stays here, ahead of the component's unbind from its sibling), and
+   PROBE 5 drops its per-owner state. Promptly, rather than waiting for garbage collection to make an engine handle stale:
+   the coordinator's claim map is keyed by id and cannot hold an engine weak pointer. PROBE 5's map then stays bounded by
+   live ids, as the coordinator's does; a half-open run belonging to a dead owner is discarded rather than reported, which
+   is correct, since its length is unknowable. The coordinator is a no-op on a pure client.
+5. **The game's `onUnregistered(id)`** (the brawler: its roster's forget, then its input-history feed's forget).
+6. **The latency member's forget,** the session's own statement.
+7. **The backend's `onUnregistered_GameThread`,** then the line `NewFramework: unregistered simulatable id=%u`.
+
+It is called for every component that ends play, registered or not.
+
+### 12.4 The executor's notify runs on both roles
+
+*Correction (R0, task 28).* The owner's §10 said that "on the authority path, registration also notifies the systems
+executor". Both notifies are unconditional, on both roles: the manager forwards each to the systems executor with the
+role, and the executor calls a system only where its role affinity fires (`SimulationSystemsExecutor`'s `firesOnRole`).
+The brawler's hit-routing and hit-detection systems fire on every role; its ring-out score system on the authority only.
+What the authority-only score system relies on, and why the notify must precede `Ready`, is `⛔G-25`.
+
+### 12.5 The four registration hooks, their inline checks, and the name-clash row
+
+| hook | kind | where the session calls it | what the session passes |
+|---|---|---|---|
+| `rootBodyId(simulatable)` | static, returns a `BodyId` | `tryRegister`, as the gate's first read | the record's simulatable (const) |
+| `afterBodiesCreated(simulatable, character, id, isAuthority, netMode)` | member of the game object (`m_game`) | `tryRegister`'s first-call pass, after the bodies and the DO_CHECK walk | the record's simulatable (mutable: the game seeds it), the character, the key, the record's role, the owner's net mode |
+| `afterRegistered(id, isAuthority)` | member of the game object | `tryRegister`, after the registration line, before the notify | the key, the record's role |
+| `onUnregistered(id)` | member of the game object | `unregisterFromNewFramework`, after the reception forget, before the latency forget | the key |
+
+* **Each hook is at its statements' position,** as §11.1's are. Three are members of the game object, because their
+  statements reach the game's own parts (the brawler's roster and input-history feed); `rootBodyId` reads only the
+  simulatable, so it is static.
+* **The inline checks.** `tryRegister`'s first statement is a `static_assert` over a requires-expression that calls its
+  three hooks with the argument types it passes and checks `rootBodyId`'s return type; `unregisterFromNewFramework`'s
+  first statement checks `onUnregistered`. Each sits in the member body that calls the hooks, as `beginPlay`'s does.
+  *Seen failing (task 28):* with `afterRegistered` deleted from the brawler's game class, the build fails with `C2338` on
+  `tryRegister`'s check (and `C2039` at the call); with `onUnregistered` deleted, on `unregisterFromNewFramework`'s.
+* **The name-clash row.** `compositionContractsHold()` asserts that no member of the session, public or private, own or
+  inherited, of any kind, shares a name with one of the ten hooks it calls (§11.1's six and these four). The concept
+  `ueSimulationSessionHookNames::SharesNoHookName` derives a probe class from the session and from a struct with one
+  `int` member per hook name, and takes the address of each name through the probe: when the session has a member of that
+  name, the lookup is ambiguous between the two bases, the expression is ill-formed, and the concept is false. A
+  requires-expression inside the session itself could not test for a member it lacks without a hard error (task 27b's
+  A8), and one that names the hook as a qualified member of the session sees only accessible members, and never a non-static member function; the probe
+  sees every member, because ambiguity is decided by lookup, before access. *Seen failing (task 28):* a private non-static `rootBodyId()` added to
+  the session fails the build with `C2338` on the row's message; so does a public static `neutralInput()` (the reviewer's
+  task 27b arm); without either it builds. A scratch compile with MSVC (`/std:c++20 /permissive-`) also saw a private
+  overloaded, a private template, a private data member and a public type alias of a hook's name fail it.
+* **The hook order is checked by `transcribe.py` and the reviewer,** not by a test: the session does not compile over a
+  fake owner without a fake composition, backend and character, so no automation test can record the order.
+
+### 12.6 The `checkf` text
+
+The cast's check names `UESimulationSession::tryRegister` and `TraitsT::Character` instead of the owner's component and
+the game's character class (design Q7, ruled); its condition and second line are unchanged. The DO_CHECK walk's two
+checks were already game-neutral and are unchanged. The `SimCharacterId::None` check is the owner's, in its wrapper
+(since task 29 off the component's path: the binding's skeleton calls this function directly, and the game's
+`resolveRegistrationKey` hook answers `retry()` for a null id before the call).
+
+*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §10 and the generic part of its §13.4 (task 28), made
+game-neutral, with the R0 lines above. The brawler's hooks, its statements and the source's own quoted comments are
+`BrawlerSessionGameUImpl-rationale.md` §7, in OGBrawlerUnreal's docs.*

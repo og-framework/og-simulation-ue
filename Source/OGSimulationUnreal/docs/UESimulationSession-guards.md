@@ -17,6 +17,9 @@ the destruction-order rows (since task 25 also the tier consumer's, and since ta
 below the manager), and the constructor asserts `compositionContractsHold()` (rationale §2). So is the shape of
 `getTimeConfigPtr` (a pointer, rationale §8), so is the session's being both reception sinks (rationale §9.7), and so is
 PROBE A's window length against the resim-gate probe's (a `static_assert` in `onFrameStepsDue_GameThread`, rationale §9.9).
+So are the game's hooks: each sequence that calls them checks them first (`beginPlay`, rationale §11.1; `tryRegister` and
+`unregisterFromNewFramework`, rationale §12.5), and since task 28 `compositionContractsHold()` asserts that no session member
+shares a hook's name (rationale §12.5).
 
 ---
 
@@ -38,7 +41,7 @@ backend switch. The prohibition is the same in every configuration: a body-readi
 step itself reads, never the reader. *R0, og-ue-simulationcomponentandmanagersplit task 24a:* the moved text said
 "only the Chaos configuration builds today"; both configurations build, and the Jolt one is the default since
 og-simulationscheduler-withjolt task 18. The verification of the wrong adapter's behaviour is the Chaos configuration's,
-and it names the brawler's detector, so it stayed with the game (`SimulationManagerUImpl-rationale.md` §2, in
+and it names the brawler's detector, so it stayed with the game (`OGBrawlerSimulationManager-rationale.md` §2, in
 OGBrawlerUnreal's docs).
 
 **What breaks if the edit is made.**
@@ -50,7 +53,7 @@ OGBrawlerUnreal's docs).
   `std::optional`s emplaced in the role branches, so a default-constructed executor would hold pointers into empty
   optionals. Emplaced after `m_manager`, the manager would bind a reference to an empty `std::optional`'s storage.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-75 (og-netcode-v2-field-defects task 9, 2026-09-23) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-75 (og-netcode-v2-field-defects task 9, 2026-09-23) by
 og-ue-simulationcomponentandmanagersplit task 24a, with the declaration it marks; the text is that entry's, with the
 brawler's type names replaced by the session's and the R0 line above.*
 
@@ -80,7 +83,7 @@ the presenter then writes the rendered body poses into the copy's body states (`
 `updateVisualization_GameThread`). A slice that is not a body state, such as the brawler's ring-out state, is the plain
 copy in both configurations.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-04 (og-netcode-v2-field-defects task 11, on `getRingoutVizState`;
+*Moved from `OGBrawlerSimulationManager-guards.md` G-04 (og-netcode-v2-field-defects task 11, on `getRingoutVizState`;
 `getVizSlice` since og-ue-simulationcomponentandmanagersplit task 22) by og-ue-simulationcomponentandmanagersplit task
 24b, with the accessor it marks; the text is that entry's, made game-neutral, with the R0 line above.*
 
@@ -102,7 +105,7 @@ manager that does not predict ends the process: not a wrong number, a dead serve
 `getClientClock` both terminate on an empty client clock). The fence the entry was converted from named `getClientClock()`;
 the call this guard protects is `editClientClock()`, as the brawler's task 11 already noted.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-03 (og-netcode-v2-field-defects task 11) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-03 (og-netcode-v2-field-defects task 11) by
 og-ue-simulationcomponentandmanagersplit task 25, with the member it marks; the text is that entry's without the
 header-fence quotation, which stays in the retired entry.*
 
@@ -126,7 +129,7 @@ different wrong edits would be typed (one would change the function's contract, 
 entry points, the change (`onRelayDelayFloorReceived`) and the replay (`onRelayDelayFloorReplayed`), and both reach this
 function through `applyReplicatedRelayDelayFloor`, so there are three call paths over two intake sources.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-15 (og-netcode-v2-field-defects task 11) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-15 (og-netcode-v2-field-defects task 11) by
 og-ue-simulationcomponentandmanagersplit task 25, with the declaration it marks.*
 
 ---
@@ -154,7 +157,7 @@ connection. Its return value is the change in published delay, which is how a ca
 *R0, task 25:* verified against `ReplicatedTierConsumer.h` and `ServerInputDelayQueue.h`; "the same derivation the
 server's queue mirrors" is exact in the sense above (both ends call the same shared lookups), not a shared function.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-16 (og-netcode-v2-field-defects task 11) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-16 (og-netcode-v2-field-defects task 11) by
 og-ue-simulationcomponentandmanagersplit task 25, with the declaration it marks; the two header-fence quotations stay in
 the retired entry.*
 
@@ -182,7 +185,7 @@ publishing when the consumer is empty, and the local input path reads the atomic
 *R0, task 27b:* re-checked at the new site: `beginPlay` calls `beginTierConsumer()` on both branches, the authority's after
 `applySessionKnobs` and before the connection and input listener registrations, the client's after the neutral input.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-61 (og-netcode-v2-field-defects task 12) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-61 (og-netcode-v2-field-defects task 12) by
 og-ue-simulationcomponentandmanagersplit task 25. Its site was the authority branch's emplace in the owner's `BeginPlay`;
 the emplace and the baseline publish moved into `beginTierConsumer`, and the tag moved with the emplace.*
 
@@ -212,7 +215,7 @@ order until task 27b moves the start-up here.
 precedes `simlog::setGlobal`; both pulls are still `replayLatchedClientValues`'s two statements. Deleting a pull is typed in
 that body, which no longer has a tag; the call site's tag is the one that names both halves.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-62 (og-netcode-v2-field-defects task 12) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-62 (og-netcode-v2-field-defects task 12) by
 og-ue-simulationcomponentandmanagersplit task 25. Its site was the owner's client-branch registration; the two pulls moved
 into `replayLatchedClientValues`, and the tag moved with them.*
 
@@ -230,7 +233,7 @@ first. The first real tier resolution then requests a spurious stall.
 
 *R0, task 25:* verified: `ReplicatedTierConsumer::onReplicatedTierReceived` sets its received flag unconditionally.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-65 (og-netcode-v2-field-defects task 12) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-65 (og-netcode-v2-field-defects task 12) by
 og-ue-simulationcomponentandmanagersplit task 25, with the statement it marks.*
 
 ---
@@ -250,7 +253,7 @@ never flags it.
 
 *R0, task 25:* verified against `classifyRelayDelayFloor` (`<= 0` is `None`, uniform-D is tested first, then `== 1`).
 
-*Moved from `SimulationManagerUImpl-guards.md` G-66 (og-netcode-v2-field-defects task 12) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-66 (og-netcode-v2-field-defects task 12) by
 og-ue-simulationcomponentandmanagersplit task 25, with the statement it marks.*
 
 ---
@@ -281,7 +284,7 @@ removes the inject-inputs and post-tick handles and unregisters the solver callb
 owner destroyed without `EndPlay`. *Since task 27a* both are statements of `endPlay` (rationale §10), which the owner's
 `EndPlay` calls; the destructor is still the backstop.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-79 (og-brawler-uploadtosteam task 12) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-79 (og-brawler-uploadtosteam task 12) by
 og-ue-simulationcomponentandmanagersplit task 25: the owner registry moved here, and the owner's destructor, whose whole
 body this was, became the session's.*
 
@@ -382,7 +385,7 @@ The session-configurable depth that once sized the ring was retired with the rep
 *R0, task 26a:* verified. The probe takes the capacity as a `RelayStageCapacity` and treats 0 as 1; its observable count
 is each frame's write run capped at that capacity, summed (og-simulation's `RelayWritePathProbe.h`); `kMaxDepth` is 8.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-17 (task 11's conversion of the owner's header fence) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-17 (task 11's conversion of the owner's header fence) by
 og-ue-simulationcomponentandmanagersplit task 26a, with the member it marks.*
 
 ---
@@ -391,9 +394,9 @@ og-ue-simulationcomponentandmanagersplit task 26a, with the member it marks.*
 
 **Tag site:** `UESimulationSession.h`, directly above `m_delayedInputComponentsById.erase(id);` in `forgetReceptionOwner`.
 
-**The prohibition.** ⛔ `forgetReceptionOwner` erases the character's map entry, and the owner calls it from its
-unregistration (the brawler's `unregisterFromNewFramework`, at the position of the statements it holds). Do not drop the
-erase, move it out of this function, or move the call out of the unregistration: a game component unregisters first and
+**The prohibition.** ⛔ `forgetReceptionOwner` erases the character's map entry, and the unregistration calls it
+(`unregisterFromNewFramework`, at the position of the statements it holds: the session's own since task 28, the owner's
+before). Do not drop the erase, move it out of this function, or move the call out of the unregistration: a game component unregisters first and
 only then unbinds from its sibling, so the erase must have run by the time the unbind does.
 
 **What breaks if the edit is made.** The map is walked or resolved by three readers, and an entry that outlives the
@@ -435,7 +438,7 @@ authority-only for a different and weaker reason (a client read has no reader).
 `onRelayDelayFloorReplayed` clamp it and hand it to the manager (`applyReplicatedRelayDelayFloor`); `applySessionKnobs`
 runs on the authority only (the owner calls it in its authority branch).
 
-*Moved from `SimulationManagerUImpl-guards.md` G-57 (the brawler's, its task 12 conversion) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-57 (the brawler's, its task 12 conversion) by
 og-ue-simulationcomponentandmanagersplit task 26b, with the intake it marks.*
 
 ---
@@ -473,7 +476,7 @@ record.
 read inside the codec and fed to PROBE 5 from the same constant (`⛔G-12`); the manager has no depth setter
 (`SimulationManager.h` carries its own absence fence for one).
 
-*Moved from `SimulationManagerUImpl-guards.md` G-56 (the brawler's, its task 12 conversion) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-56 (the brawler's, its task 12 conversion) by
 og-ue-simulationcomponentandmanagersplit task 26b, with the intakes it sits between.*
 
 ---
@@ -516,7 +519,7 @@ og-simulation-tests' `ResimGatePolicyTest.cpp`). The manager's `onCheckIsSimilar
 reads the policy through `resimGate::policyEnforcesDepthCeiling` with no synchronization, and `setResimTriggerPolicy` also
 pushes it into the reconciliation peer's correction caches (og-simulation's `SimulationManager.h`).
 
-*Moved from `SimulationManagerUImpl-guards.md` G-58 (the brawler's, its task 12 conversion) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-58 (the brawler's, its task 12 conversion) by
 og-ue-simulationcomponentandmanagersplit task 26b, with the intake it marks.*
 
 ---
@@ -554,7 +557,7 @@ on today's tree: the brawler project's `Config/DefaultEngine.ini` sets `LogOGNet
 holds today. The line's other reason, that it is unconditional, holds: the `[ResimGate] session` line is printed on every
 path through the function, with the values read back from the manager's `TimeConfig`.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-63 (the brawler's, its task 12 conversion) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-63 (the brawler's, its task 12 conversion) by
 og-ue-simulationcomponentandmanagersplit task 26b. Its site was the bare scope block after the role branches in the
 owner's `BeginPlay`; the block's statements are `applyResimTriggerPolicy`'s body, and the tag moved to its first statement.*
 
@@ -584,7 +587,7 @@ and a self-scheduled host tests it before its drain and reap (the brawler's Chao
 *R0, task 26b:* verified against the session (`releaseDelayedInputsForStep`'s first statement is its own test) and the
 brawler's two hosts (`BrawlerTickDriverGameUImpl.h`, `ChaosTickBackendUImpl.cpp`).
 
-*Moved from `SimulationManagerUImpl-guards.md` G-70 (the brawler's; re-sited on the session's coordinator by task 26a) by
+*Moved from `OGBrawlerSimulationManager-guards.md` G-70 (the brawler's; re-sited on the session's coordinator by task 26a) by
 og-ue-simulationcomponentandmanagersplit task 26b, with the test it marks.*
 
 ---
@@ -604,7 +607,7 @@ window silently loses whatever was reset in the middle.
 *R0, task 26b:* verified: the call passes `OutTotalBytes`, `OutTotalPackets` and `OutTotalPacketsLost`, and the probe's
 own declaration states the same rule (og-simulation's `RelayWritePathProbe.h`, `ConnectionBudgetProbe::noteSample`).
 
-*Moved from `SimulationManagerUImpl-guards.md` G-72 (the brawler's, its task 12 conversion; the call moved into
+*Moved from `OGBrawlerSimulationManager-guards.md` G-72 (the brawler's, its task 12 conversion; the call moved into
 `onFrameStepsDue_GameThread` by og-simulationscheduler-withjolt task 51) by og-ue-simulationcomponentandmanagersplit task
 26b, with the call it marks.*
 
@@ -640,7 +643,7 @@ reception coordinator (it is emplaced on the authority only, §9.7); the tier co
 what a worker step reads (the manager, the storage and the three peers, which `endPlay` does not reset); the rule keeps
 every teardown, present or added later, after the wait.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-85 (og-simulationscheduler-withjolt task 83, rework 1; the half of the
+*Moved from `OGBrawlerSimulationManager-guards.md` G-85 (og-simulationscheduler-withjolt task 83, rework 1; the half of the
 old G-80 that is typed in the owner's teardown) by og-ue-simulationcomponentandmanagersplit task 27a, with the call it
 marks: the owner's `EndPlay` statements before `Super` became `endPlay`.*
 
@@ -673,7 +676,7 @@ the coordinator's since task 26a), so member destruction destroys both borrowers
 rule is held by the compiler. What the tag still guards is the order inside `endPlay`: the resets stay above any
 teardown of the manager.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-64 (the brawler's task 12 conversion of its `EndPlay` and header
+*Moved from `OGBrawlerSimulationManager-guards.md` G-64 (the brawler's task 12 conversion of its `EndPlay` and header
 fences) by og-ue-simulationcomponentandmanagersplit task 27a, with the statements it marks: the two resets, the map's
 clear and the tier consumer's reset are the session's own statements in `endPlay`.*
 
@@ -715,7 +718,7 @@ and `RouteOGMessage`'s `DivergenceProbe` arm; its other code mentions are the `D
 every other mention is a comment. og-simulation's predicate is empty until a host sets one, and
 `correctionFieldDiff::enabled()` is false while it is empty.
 
-*Moved from `SimulationManagerUImpl-guards.md` G-50 (the brawler's task 12 conversion) by og-ue-simulationcomponentandmanagersplit task 27b, with the function
+*Moved from `OGBrawlerSimulationManager-guards.md` G-50 (the brawler's task 12 conversion) by og-ue-simulationcomponentandmanagersplit task 27b, with the function
 it marks: the brawler's file-local `bindCorrectionFieldDiffGate` became the session's private static member, unchanged,
 and the start-up that calls it became `beginPlay`.*
 
@@ -749,9 +752,9 @@ brawler's: `BrawlerSessionGameUImpl-guards.md` G-01, in OGBrawlerUnreal's docs; 
 the authority's input collection substitutes it for a character with no input (the provider-miss and underrun arms); and
 `SimulationNetSync::registerAuthorityOwner` logs `[Warning][NeutralInput] registerAuthorityOwner id=%u ran BEFORE
 setNeutralInput` when it has not run, so a late call is reported, not silent. Registration runs per character, from the
-owner's registration path, after `beginPlay`.
+owner's registration path, after `beginPlay` (since task 28 the session's own `tryRegister`, called by the owner's wrapper).
 
-*Moved from `SimulationManagerUImpl-guards.md` G-59 (the brawler's task 12 conversion) by og-ue-simulationcomponentandmanagersplit task 27b, with the call it
+*Moved from `OGBrawlerSimulationManager-guards.md` G-59 (the brawler's task 12 conversion) by og-ue-simulationcomponentandmanagersplit task 27b, with the call it
 marks: the authority branch's neutral input is the session's own statement in `beginPlay`, its value the game's hook.*
 
 ---
@@ -773,6 +776,69 @@ or proves a policy the other does not, and the `[ResimGate] session` line no lon
 
 *Split from G-17 by og-ue-simulationcomponentandmanagersplit task 27b (manager design §4.3; task 26b's A5): G-17's "after both branches" half is typed at the
 call, which moved here with the start-up; G-17 keeps the body's three prohibitions.*
+
+---
+
+## G-25 — the systems executor is notified only once the character is in storage, and before `Ready`
+
+**Tag site:** `UESimulationSession.h`, directly above `m_manager->notifyCharacterRegistered(id);` in `tryRegister`, after
+`registerSimulatable` and the game's `afterRegistered` hook, before the backend's `onRegistered_GameThread` and the
+`return TryRegisterStatus::Ready;`.
+
+**The prohibition, as it stood in the source:**
+
+> Notify the executor: the character is IN STORAGE, so
+> brawlerHitRouting::System::onCharacterRegistered can index it and read capsuleBodyId. §10
+>
+> ⛔ The notify and the drop of the adapter's m_byRootBodyId insert land TOGETHER.
+
+**Why, in the session's terms.** The notify reaches every system of the systems executor whose role affinity fires on this
+peer, synchronously on the game thread, and hands each a storage view: a system's `onCharacterRegistered` may read the
+just-registered character out of storage. So the notify must follow `registerSimulatable`, which puts the character there,
+and must run before `tryRegister` returns `Ready`, after which the owner's component starts using the registration (the
+authority's route entry, `noteDelayedInputComponent`, is written by the component's registration loop after `Ready`:
+the binding's skeleton since og-ue-simulationcomponentandmanagersplit task 29, `UESimulatableOwnerBinding-guards.md`
+G-11).
+
+**The consequence.** A notify moved above `registerSimulatable` hands a system a character that is not in storage. A notify
+moved after the `return` (into the owner's loop) lets a reader of the route table reach a character whose systems have not
+indexed it. The brawler has both kinds of dependant: its hit-routing and hit-detection systems read the character's
+capsule body id out of storage in `onCharacterRegistered`, and its ring-out score system seeds the roster entry the score
+push's fatal check requires (`BrawlerSessionGameUImpl-rationale.md` §7, in OGBrawlerUnreal's docs).
+
+*R0, task 28:* verified: `SimulationManager::notifyCharacterRegistered` forwards to `SimulationSystemsExecutor::notifyCharacterRegistered`
+with the storage and the role, which calls each system whose `firesOnRole` holds with a `projectTo` view. The quoted second
+line is history: the adapter-owned root-body map is gone; the root-body map is the brawler's hit-routing system's own
+(`m_byRootBodyId`), written only by its `onCharacterRegistered`. The source's §10 said the notify ran on the authority path; it
+runs on both roles, unconditionally, and the role filter is per system (rationale §12.4).
+
+*Moved from `OGBrawlerSimulationManager-guards.md` G-69 (the brawler's task 12 conversion) by og-ue-simulationcomponentandmanagersplit task 28, with the call it
+marks: `tryRegister` became the session's own sequence.*
+
+---
+
+## G-26 — unregistration notifies the executor before `unregisterSimulatable`, behind the `has<>` guard
+
+**Tag site:** `UESimulationSession.h`, directly above `if (m_storage.template has<Simulatable>(id))` at the top of
+`unregisterFromNewFramework` (after its hook check).
+
+**The prohibition, as it stood in the source:**
+
+> ⛔ Drop the routing entry BEFORE unregisterSimulatable destroys it, while still in storage. §10
+>
+> ⛔ The has<> guard is preserved: an unregistered character's view.get<>(id) is unsafe.
+
+**The consequence.** A notify after the destroy lets a system's unregister hook reach a character that storage has already
+freed. Dropping the guard notifies for a character that never finished registering (its `tryRegister` returned `Pending`, or
+never ran), and a hook's `view.get<>(id)` then has nothing to return.
+
+*R0, task 28:* verified: the brawler's hit-routing system's `onCharacterUnregistered` takes `&view.get<SimulatableBrawler>(id)`
+and erases its root-body entries by that pointer, so it needs the character still in storage; the hit-detection and score
+systems erase by id. `unregisterSimulatable` is the call that removes the character from storage. The unregistration is
+called for any component ending play, including one whose registration never reached `Ready`.
+
+*Moved from `OGBrawlerSimulationManager-guards.md` G-73 (the brawler's task 12 conversion) by og-ue-simulationcomponentandmanagersplit task 28, with the test it
+marks: `unregisterFromNewFramework` became the session's own sequence.*
 
 ---
 

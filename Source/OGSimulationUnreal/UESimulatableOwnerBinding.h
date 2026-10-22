@@ -4,6 +4,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "TimerManager.h"
 
 #include "InputRedundancyBundleBuilder.h"
 #include "RelayedInputRing.h"
@@ -13,6 +14,7 @@
 #include "UEConnectionHandle.h"
 #include "UELatencyBudgetDiagnostics.h"
 #include "UESimulationLogRoutes.h"
+#include "UESimulationSession.h"
 
 #include "OGSimulation/CompilerControl.h"
 #include "OGSimulation/CorrectionStateBufferCodec.h"
@@ -46,6 +48,23 @@ static_assert(!std::is_destructible_v<ISimulatableOwnerBinding>
 		&& !std::has_virtual_destructor_v<ISimulatableOwnerBinding>,
 	"ISimulatableOwnerBinding is never destroyed through a base pointer: the sibling only calls through it, and the "
 	"owning game component is destroyed as itself. Its destructor stays protected and non-virtual.");
+
+namespace ueSimulatableOwnerRegistration
+{
+	enum class Initialization { Ready, Retry };
+
+	enum class KeyStep { Ready, Retry, Abandon };
+
+	struct ResolvedKey
+	{
+		KeyStep      step;
+		unsigned int key;
+
+		static constexpr ResolvedKey ready(unsigned int storageKey) { return ResolvedKey{ KeyStep::Ready, storageKey }; }
+		static constexpr ResolvedKey retry() { return ResolvedKey{ KeyStep::Retry, 0u }; }
+		static constexpr ResolvedKey abandon() { return ResolvedKey{ KeyStep::Abandon, 0u }; }
+	};
+}
 
 template <typename TraitsT>
 concept UESimulatableOwnerBindingTraits = requires
@@ -127,6 +146,8 @@ public:
 protected:
 	~UESimulatableOwnerBinding() = default;
 
+	void beginRegistration();
+
 	USimulatableNetSyncComponent& netSync();
 	void unbindNetSync();
 
@@ -139,6 +160,15 @@ private:
 	void receiveRemoteMoveBundle(const FInputRedundancyBundle& bundle) final;
 	void noteRelayedRingArrived(const FRelayedInputRing& ring) final;
 	std::function<void(const FRelayedInputRing&)> makeRingFlushedCallback() final;
+
+	static constexpr int32 kMaxRegistrationAttempts = 600;
+
+	void tryInitializeWithManager();
+	void tryRegisterWithNewFramework();
+	void scheduleNextInitializationAttempt();
+	void scheduleNextRegistrationAttempt();
+	int32 m_initializationAttempts = 0;
+	int32 m_registrationAttempts = 0;
 
 	USimulatableNetSyncComponent* m_netSync = nullptr;
 
@@ -215,9 +245,9 @@ relayedInputRing::StageArrivalOutcome UESimulatableOwnerBinding<OwnerT, TraitsT>
 		"UESimulatableOwnerBinding::stageRelayedInput takes NO depth parameter. The stage's capacity is "
 		"relayedInputRing::kMaxDepth, fixed inside the codec; a depth passed down here would cap every "
 		"round at one entry and silently restore the replace-latest behaviour the staging removed. "
-		"Was the 'NO DEPTH PARAMETER, and that is the fence' prose fence of SimmableUpdateComponent.h "
-		"and its .cpp one-liner (task 25 conversion); moved from that component by "
-		"og-ue-simulationcomponentandmanagersplit task 21.");
+		"Was the 'NO DEPTH PARAMETER, and that is the fence' prose fence of the owning game "
+		"component's header and its .cpp one-liner, which moved into this binding together "
+		"with the stage.");
 
 	ASimulationInputRelay* host = m_netSync->getInputRelayHost();
 	FRelayedInputRing& stage = m_netSync->relayStagingTarget();
@@ -359,6 +389,198 @@ void UESimulatableOwnerBinding<OwnerT, TraitsT>::receiveRemoteMoveBundle(const F
 	// ⛔G-06  docs/UESimulatableOwnerBinding-guards.md
 	coordinator->template receiveInputBundle<typename TraitsT::Simulatable>(
 		id, handle, playerSlot, bundle, authorityManager->session(), authorityManager->session());
+}
+
+template <typename OwnerT, typename TraitsT>
+	requires UESimulatableOwnerBindingTraits<TraitsT>
+void UESimulatableOwnerBinding<OwnerT, TraitsT>::beginRegistration()
+{
+	if (UWorld* world = derived().GetWorld())
+	{
+		world->GetTimerManager().SetTimerForNextTick(
+			FTimerDelegate::CreateWeakLambda(&derived(), [this]() { tryInitializeWithManager(); }));
+	}
+}
+
+template <typename OwnerT, typename TraitsT>
+	requires UESimulatableOwnerBindingTraits<TraitsT>
+void UESimulatableOwnerBinding<OwnerT, TraitsT>::tryInitializeWithManager()
+{
+	static_assert(requires(OwnerT& owner, typename TraitsT::SessionOwner& manager, AActor& ownerActor)
+		{
+			{ owner.initializeWithManager(manager, ownerActor) } -> std::same_as<ueSimulatableOwnerRegistration::Initialization>;
+		},
+		"UESimulatableOwnerBinding<OwnerT, TraitsT>::tryInitializeWithManager calls the game component's registration hook "
+		"initializeWithManager(manager, owner) once the session owner exists and the component has an owner: a private (or "
+		"public) member of OwnerT, with the binding befriended, that returns ueSimulatableOwnerRegistration::Initialization "
+		"(Ready, or Retry to be called again next frame against the same attempt budget). Its name is its own: a game member "
+		"named like an ISimulatableOwnerBinding member would override that member, which the final overrides refuse "
+		"(review B-2). Added by og-ue-simulationcomponentandmanagersplit task 29 (ruling Q-M6).");
+
+	++m_initializationAttempts;
+
+	// ⛔G-07  docs/UESimulatableOwnerBinding-guards.md
+	const bool isAuthority = (derived().GetNetMode() != NM_Client);
+	typename TraitsT::SessionOwner* manager = TraitsT::SessionOwner::instanceFor(isAuthority);
+	AActor* Owner = derived().GetOwner();
+	if (manager == nullptr)
+	{
+		if (m_initializationAttempts >= kMaxRegistrationAttempts)
+			checkf(false, TEXT("UESimulatableOwnerBinding: manager never spawned after %d attempts (netmode=%d)"),
+				kMaxRegistrationAttempts, (int)derived().GetNetMode());
+		scheduleNextInitializationAttempt();
+		return;
+	}
+
+	if (Owner == nullptr)
+		return;
+
+	// ⛔G-08  docs/UESimulatableOwnerBinding-guards.md
+
+	if (derived().initializeWithManager(*manager, *Owner) == ueSimulatableOwnerRegistration::Initialization::Retry)
+	{
+		if (m_initializationAttempts >= kMaxRegistrationAttempts)
+			checkf(false,
+				TEXT("UESimulatableOwnerBinding: '%s' was not initialized after %d attempts (netmode=%d): its ")
+				TEXT("initializeWithManager hook answered Retry each time (a hook that waits for a physics slot: the ")
+				TEXT("manager logs a [SimHost.Slot] wait line naming what it waits for)."),
+				*Owner->GetName(), kMaxRegistrationAttempts, (int)derived().GetNetMode());
+		scheduleNextInitializationAttempt();
+		return;
+	}
+
+	if (UWorld* world = derived().GetWorld())
+	{
+		world->GetTimerManager().SetTimerForNextTick(
+			FTimerDelegate::CreateWeakLambda(&derived(), [this]() { tryRegisterWithNewFramework(); }));
+	}
+}
+
+template <typename OwnerT, typename TraitsT>
+	requires UESimulatableOwnerBindingTraits<TraitsT>
+void UESimulatableOwnerBinding<OwnerT, TraitsT>::scheduleNextInitializationAttempt()
+{
+	if (UWorld* world = derived().GetWorld())
+	{
+		world->GetTimerManager().SetTimerForNextTick(
+			FTimerDelegate::CreateWeakLambda(&derived(), [this]() { tryInitializeWithManager(); }));
+	}
+}
+
+template <typename OwnerT, typename TraitsT>
+	requires UESimulatableOwnerBindingTraits<TraitsT>
+void UESimulatableOwnerBinding<OwnerT, TraitsT>::scheduleNextRegistrationAttempt()
+{
+	if (UWorld* world = derived().GetWorld())
+	{
+		world->GetTimerManager().SetTimerForNextTick(
+			FTimerDelegate::CreateWeakLambda(&derived(), [this]() { tryRegisterWithNewFramework(); }));
+	}
+}
+
+template <typename OwnerT, typename TraitsT>
+	requires UESimulatableOwnerBindingTraits<TraitsT>
+void UESimulatableOwnerBinding<OwnerT, TraitsT>::tryRegisterWithNewFramework()
+{
+	static_assert(requires(OwnerT& owner, typename TraitsT::SessionOwner& manager, bool isAuthority, unsigned int key)
+		{
+			{ owner.resolveRegistrationKey(manager, isAuthority) } -> std::same_as<ueSimulatableOwnerRegistration::ResolvedKey>;
+			{ owner.makeInputProvider(key) } -> std::same_as<typename UELatencyBudgetDiagnostics<TraitsT>::InputProvider>;
+			{ owner.makeSimulatable() } -> std::same_as<typename TraitsT::Simulatable>;
+		},
+		"UESimulatableOwnerBinding<OwnerT, TraitsT>::tryRegisterWithNewFramework calls three registration hooks of the game "
+		"component, each at the position of the game statements it replaced: resolveRegistrationKey(manager, isAuthority) "
+		"returning ueSimulatableOwnerRegistration::ResolvedKey (ready(storage key), retry() to be called again next frame, "
+		"or abandon() to stop for good), makeInputProvider(key) returning UELatencyBudgetDiagnostics<TraitsT>::InputProvider "
+		"(called for a locally predicted owner only) and makeSimulatable() returning TraitsT::Simulatable. Each is a private "
+		"(or public) member of OwnerT, with the binding befriended, named unlike every ISimulatableOwnerBinding member. "
+		"Added by og-ue-simulationcomponentandmanagersplit task 29 (ruling Q-M6).");
+
+	++m_registrationAttempts;
+
+	const bool isAuthority = (derived().GetNetMode() != NM_Client);
+	typename TraitsT::SessionOwner* regManager = TraitsT::SessionOwner::instanceFor(isAuthority);
+	if (regManager == nullptr)
+	{
+		if (m_registrationAttempts >= kMaxRegistrationAttempts)
+			checkf(false, TEXT("DeferredReg: manager never spawned after %d attempts (id=%u)"),
+				kMaxRegistrationAttempts, derived().storageKeyOfOwner());
+		scheduleNextRegistrationAttempt();
+		return;
+	}
+
+	const ueSimulatableOwnerRegistration::ResolvedKey resolved = derived().resolveRegistrationKey(*regManager, isAuthority);
+	if (resolved.step == ueSimulatableOwnerRegistration::KeyStep::Abandon)
+		return;
+	if (resolved.step == ueSimulatableOwnerRegistration::KeyStep::Retry)
+	{
+		if (m_registrationAttempts >= kMaxRegistrationAttempts)
+			checkf(false,
+				TEXT("DeferredReg: the owner's registration key was not resolved after %d attempts (its ")
+				TEXT("resolveRegistrationKey hook answered Retry each time)"),
+				kMaxRegistrationAttempts);
+		scheduleNextRegistrationAttempt();
+		return;
+	}
+
+	const AActor* ownerActor = derived().GetOwner();
+	// ⛔G-09  docs/UESimulatableOwnerBinding-guards.md
+	const bool isLocallyPredicted = !isAuthority
+		&& ownerActor != nullptr
+		&& ownerActor->GetLocalRole() == ROLE_AutonomousProxy;
+
+	typename UELatencyBudgetDiagnostics<TraitsT>::InputProvider inputProvider;
+	if (isLocallyPredicted)
+	{
+		inputProvider = derived().makeInputProvider(resolved.key);
+	}
+
+	typename TraitsT::Simulatable newSimulatable = derived().makeSimulatable();
+
+	const TryRegisterStatus status = regManager->session().tryRegister(
+		resolved.key,
+		std::move(newSimulatable),
+		derived(),
+		std::move(inputProvider),
+		isAuthority);
+
+	if (status == TryRegisterStatus::Pending)
+	{
+		if (m_registrationAttempts >= kMaxRegistrationAttempts)
+			checkf(false,
+				TEXT("DeferredReg: id=%u not ready after %d attempts"),
+				resolved.key, kMaxRegistrationAttempts);
+		scheduleNextRegistrationAttempt();
+		return;
+	}
+
+	netSync().setHasLocalInputProvider(isLocallyPredicted);
+
+	// ⛔G-10  docs/UESimulatableOwnerBinding-guards.md
+	if (isAuthority)
+	{
+		if (UWorld* world = derived().GetWorld())
+		{
+			if (AActor* ownerActor2 = derived().GetOwner())
+			{
+				attachInputRelayHost(
+					ASimulationInputRelay::spawnForCharacter(*world, *ownerActor2));
+			}
+		}
+	}
+	else
+	{
+		attachInputRelayHost(
+			ASimulationInputRelay::findForOwner(derived().GetWorld(), derived().GetOwner()));
+	}
+
+	// ⛔G-11  docs/UESimulatableOwnerBinding-guards.md
+	if (isAuthority)
+		regManager->session().noteDelayedInputComponent(resolved.key, derived());
+
+	UE_LOG(LogOGMgmt, Log,
+		TEXT("NewFramework: registered id=%u isAuthority=%d isLocallyPredicted=%d"),
+		resolved.key, isAuthority ? 1 : 0, isLocallyPredicted ? 1 : 0);
 }
 
 OGSIM_OPTIMIZE_ON

@@ -13,7 +13,7 @@ class ASimulationInputRelay;
 //  design_task38_input_first_replication.md §5.1.)
 //
 // WHY THIS EXISTS AT ALL. The relay ring used to be a UPROPERTY on
-// `USimmableUpdateComponent`, so its OnRep already stood on the object that
+// `UOGBrawlerSimulatableComponent`, so its OnRep already stood on the object that
 // consumes it. T39 moves the property onto its own Iris root object so the ring
 // can be scheduled, prioritised and skipped independently of the (much larger)
 // correction state — and that host lives in OGSimulationUnreal, which MUST NOT

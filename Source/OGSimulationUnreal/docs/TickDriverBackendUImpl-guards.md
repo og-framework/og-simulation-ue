@@ -5,7 +5,7 @@ The prohibition on the Jolt host: the end-of-play wait. The render apply's telep
 og-tickdriver task 9 (§R, G-04). The bind under the world mutex, the shadow world's construction and mirroring, and
 the slot decision left with the world, the slots, the bind and the shadow world in og-tickdriver task 10 (§R, G-02,
 G-03, G-05). Every entry here moved from
-`SimulationManagerUImpl-guards.md` in og-simulationscheduler-withjolt task 83, with the code it guards; each names its
+`OGBrawlerSimulationManager-guards.md` in og-simulationscheduler-withjolt task 83, with the code it guards; each names its
 old id. In the source a single line `// ⛔G-nn  docs/TickDriverBackendUImpl-guards.md` sits directly above the statement or
 declaration where the forbidden edit would be typed.
 
@@ -40,7 +40,7 @@ retired entries named were re-verified by og-tickdriver task 10 at their success
 
 ## G-01 — `EndPlay` waits for every outstanding step task before any teardown
 
-*Was `SimulationManagerUImpl-guards.md` G-80; moved here by og-simulationscheduler-withjolt task 83, when the Jolt host left the UImpl. Only its site and its cross-references changed.*
+*Was `OGBrawlerSimulationManager-guards.md` G-80; moved here by og-simulationscheduler-withjolt task 83, when the Jolt host left the UImpl. Only its site and its cross-references changed.*
 
 **Site:** `m_tickBackend.stop();` in `onEndPlayBegin`, after the frame host's tick functions are unregistered. *Moved
 by og-tickdriver task 15d (2026-10-18): the site was `m_tickDriver->stop();` inside `if (m_tickDriver.has_value())`;
@@ -57,7 +57,7 @@ functions (so no new step is dispatched), wait for the step task dispatched in t
 then everything else (`UESimulationSession-guards.md` G-21's resets, the listener unregistration, the post-tick-flush unbind).
 The "do not move any statement above" half is typed in `UESimulationSession::endPlay`, above its
 `m_backend.onEndPlayBegin();`, and is guarded there: `UESimulationSession-guards.md` G-20 (the brawler's
-`SimulationManagerUImpl-guards.md` G-85 and G-64 until og-ue-simulationcomponentandmanagersplit task 27a). This entry's tag
+`OGBrawlerSimulationManager-guards.md` G-85 and G-64 until og-ue-simulationcomponentandmanagersplit task 27a). This entry's tag
 guards the wait itself (dropping it, or moving a statement above it inside `onEndPlayBegin`).
 
 **The consequence.** On a worker client the frame's step task runs on another thread through the rest
@@ -76,7 +76,7 @@ this file's sources.
 ### G-02 — RETIRED by og-tickdriver task 10 (2026-10-16): the bind and the release moved into og-simulation-jolt's world host
 
 **Was:** *"the Jolt bind runs under the world mutex, and the game thread never applies occupancy"* (before it
-`SimulationManagerUImpl-guards.md` G-81). Its tag sat above the world-mutex scope (JoltWorldLockScopeUImpl, since
+`OGBrawlerSimulationManager-guards.md` G-81). Its tag sat above the world-mutex scope (JoltWorldLockScopeUImpl, since
 deleted) in this class's `createBodies_GameThread`.
 
 **Why it retired.** Task 10 deleted the bind and the release from this class: `createBodies_GameThread` now asks the
@@ -90,7 +90,7 @@ at another statement than the lock, so its successor is split.
 ### G-03 — RETIRED by og-tickdriver task 10 (2026-10-16): the shadow world moved into og-simulation-jolt's world host
 
 **Was:** *"the shadow world is built by the step world's calls, and every bind and release is mirrored into it"*
-(before it `SimulationManagerUImpl-guards.md` G-82). Its tag sat above the shadow world's construction in this
+(before it `OGBrawlerSimulationManager-guards.md` G-82). Its tag sat above the shadow world's construction in this
 class's buildShadowWorld (since deleted).
 
 **Why it retired.** Task 10 deleted the shadow world from this class: its construction, its statics, its adapters,
@@ -102,7 +102,7 @@ construction, so the successor is split.
 
 ### G-04 — RETIRED by og-tickdriver task 9 (2026-10-16): the render apply's teleport moved into the Unreal render sink
 
-**Was:** *"the render apply teleports the capsule: no sweep"* (before it `SimulationManagerUImpl-guards.md` G-83).
+**Was:** *"the render apply teleports the capsule: no sweep"* (before it `OGBrawlerSimulationManager-guards.md` G-83).
 Its tag sat above the actor move (the engine's SetActorLocationAndRotation) in this class's render apply.
 
 **Why it retired.** Task 9 deleted the render apply from this class: the pose build, the apply loop and the checks
@@ -114,7 +114,7 @@ written by og-tickdriver task 9 with the code.
 ### G-05 — RETIRED by og-tickdriver task 10 (2026-10-16): the slot decision moved into og-simulation's slot table
 
 **Was:** *"a client never picks a Jolt slot itself: it binds the slot the authority chose, or waits"* (before it
-`SimulationManagerUImpl-guards.md` G-84). Its tag sat above the `decideBodySlot` call in this class's slot acquire
+`OGBrawlerSimulationManager-guards.md` G-84). Its tag sat above the `decideBodySlot` call in this class's slot acquire
 (tryAcquireJoltSlot, since deleted).
 
 **Why it retired.** Task 10 deleted the slot table from this class: the decision and the waits are og-simulation's

@@ -34,8 +34,8 @@ public:
 	}
 
 	// NOTE: this method is called from the GAME THREAD by
-	// SimulationManagerUImpl::tryRegister during the register-with-Chaos
-	// polling loop (SimulationManagerUImpl.cpp ~lines 630/635). All other
+	// OGBrawlerSimulationManager::tryRegister during the register-with-Chaos
+	// polling loop (OGBrawlerSimulationManager.cpp ~lines 630/635). All other
 	// methods on this adapter are called from the physics thread by the sim
 	// and can use the private resolveProxy() (PT-side proxy registry) safely.
 	//

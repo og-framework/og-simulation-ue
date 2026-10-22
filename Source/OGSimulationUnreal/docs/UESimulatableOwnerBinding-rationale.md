@@ -2,6 +2,7 @@
 <!-- ================= DECLARED LINT ESCAPES ==================================
      Every token below is CORRECT and cannot resolve. ========================= -->
 <!-- lint-external-ref: UE_LOG -- Unreal Engine macro, outside every scan root -->
+<!-- lint-external-ref: PostLogin -- Unreal Engine method, outside every scan root; moved here with the spawn-order account (task 29) -->
 # `UESimulatableOwnerBinding.h` — rationale
 
 Companion to `Plugins/OGSimulation/Source/OGSimulationUnreal/UESimulatableOwnerBinding.h`. The header carries only code,
@@ -20,6 +21,8 @@ assertion messages, log strings, the docs pointer and one-line tags `⛔G-nn` �
 * **§6** is the staging write.
 * **§7** is how it is built and what that does to the code.
 * **§8** is the provenance.
+* **§9** is the registration skeleton (task 29): the two polling loops, the four registration hooks, the attempt budget,
+  provider presence, the spawn order, the provider latch and the delivery route.
 
 ---
 
@@ -74,6 +77,7 @@ owner type; the core's `SimulatableOwnerTraits` names the game component, not th
 | the type-free forwarders | the correction-state callback pair, both `getSyncedCorrectionStateBuffer` overloads, both `getRelayedInputRing` overloads, the relayed-ring callback pair, `attachInputRelayHost`: one-liners onto the sibling |
 | the typed owner-concept members | `sendLocalInputToAuthority` (builds the redundancy bundle, hands it to the sibling's `sendInputBundleToAuthority`, stamps), the remote-move callback pair and its member, `deliverDelayedRemoteInput`, `stageRelayedInput` (§6) |
 | the sibling pointer | `m_netSync`, set by `bindNetSync` (public: the owning actor calls it) and cleared by `unbindNetSync` (protected: the component's teardown calls it); the protected `netSync()` accessor `checkf`s that the pointer is set; the public `isNetSyncBound()` says whether it is |
+| the registration skeleton (task 29, §9) | the protected `beginRegistration()` (the game component's `BeginPlay` calls it); the private loops `tryInitializeWithManager` and `tryRegisterWithNewFramework`, their next-tick reschedulers, the two attempt counters and `kMaxRegistrationAttempts`; the game supplies four private hooks |
 
 The `const` buffer and ring getters reach the sibling's `const` overloads through a `const` view of the sibling. (Task
 20a's `const` buffer forwarder called the sibling's non-`const` overload; the buffer is the same object, so only the
@@ -238,9 +242,16 @@ the `#pragma optimize` state in force at the end of the instantiating translatio
 `OGSIM_OPTIMIZE_ON`; so the out-of-line members compile optimized in Development, although the pair is there. The pair
 documents intent. Task 21's notes list the functions whose Development state moved from unoptimized to optimized.
 
-**Includes.** The template needs the sibling, the redundancy bundle builder, the relay host (`noteStageOverflowDrop`),
-the connection helpers, the latency template, the log routes and og-sim's queue and codec headers. The sibling's own
-header forward-declares the base; the sibling's `.cpp` includes this header for the base's complete type.
+**Includes.** The template needs the sibling, the redundancy bundle builder, the relay host (`noteStageOverflowDrop`,
+and since task 29 its spawn and find), the connection helpers, the latency template, the log routes and og-sim's queue and
+codec headers; since task 29 also the engine's timer manager (the next-tick reschedules) and the session's header, for
+`TryRegisterStatus`, the namespace-scope enum the skeleton tests the session's answer against (a non-dependent name,
+so it must be declared where the template is defined). The sibling's own header forward-declares the base; the sibling's
+`.cpp` includes this header for the base's complete type, and so since task 29 also compiles the session's header. That
+adds no plugin object code: no template member is instantiated there (the one-module proof), and the three og-sim inline
+variables whose initializers that translation unit now also carries (`simlog::g_sink`,
+`simulationLog::detail::t_integrateScope`, `correctionFieldDiff::g_enabledPredicate`) were already in the plugin through
+the latency template's and the session's own `.cpp`, one definition each.
 
 ---
 
@@ -249,9 +260,9 @@ header forward-declares the base; the sibling's `.cpp` includes this header for 
 * **Task 20a** created the header with `ISimulatableOwnerBinding` (three members); **task 20b** added the last two.
 * **Task 21** (2026-10-21):
   * **Step 0, the spike:** the brawler's base `public ISimulatableOwnerBinding` became
-    `public UESimulatableOwnerBinding<USimmableUpdateComponent, BrawlerSessionTraitsUImpl>` with the template empty; the
+    `public UESimulatableOwnerBinding<UOGBrawlerSimulatableComponent, BrawlerSessionTraitsUImpl>` with the template empty; the
     Jolt Editor (header tool and build), the Chaos Editor and the Development Game and Server targets built.
-  * Then the typed half moved in, statement for statement, from `SimmableUpdateComponent.h` and `.cpp`: the five
+  * Then the typed half moved in, statement for statement, from `OGBrawlerSimulatableComponent.h` and `.cpp`: the five
     overrides (now `final`), the forwarders (generic; the `const` buffer getter now reaches the sibling's `const`
     overload), the typed owner-concept members, the sibling pointer with `bindNetSync`/`unbindNetSync` and the new
     `netSync()`/`isNetSyncBound()`, the aliases, the five stamp blocks and the stage with its signature assertion. The
@@ -262,3 +273,165 @@ header forward-declares the base; the sibling's `.cpp` includes this header for 
     this code (it is the game's registration, §3); the moved §15 did not say the core logs the same `[ServerReceive]`
     tag on the wire path (§5); the moved §14 pointed at the game's hop table for the template's stamp points (§4 now
     points at the latency template's §6).
+* **Task 29** (2026-10-22): the brawler component's registration loop became the skeleton of §9, statement for statement
+  (`BeginPlay`'s next-tick call, `tryInitializeWithManager`, the two reschedulers, `tryRegisterWithNewFramework`, the
+  counters and the bound), with the brawler's statements left in four hooks of the component. Its guards G-02, G-03,
+  G-04, G-06 and G-07 are G-07 … G-11 here; its rationale §3, §4, the attempt-budget paragraph of §2, the spawn-order and
+  provider-latch parts of §6 and the delivery-route part of §7 are §9.2 … §9.6 here, game-neutral (the brawler's own
+  reasons stay in its component's rationale, §19 there).
+  * **R0 corrections made on the way:** the tier consumer is emplaced on both roles, by the session's `beginPlay` (G-08;
+    "client-side", "the manager's `BeginPlay`" were stale); the latched provider decision and its guard are the sibling's
+    since task 20b (G-09); the delivery route is also what `relayRemoteInput` resolves the staging write against (G-11,
+    §9.6); the role-test entry's slot is the session's registry, filled by the session's `beginPlay` (G-07).
+
+---
+
+## §9 The registration skeleton (og-ue-simulationcomponentandmanagersplit task 29, ruling Q-M6)
+
+### 9.1 The shape: two loops, four hooks, three outcomes
+
+The game component's `BeginPlay` calls the protected `beginRegistration()` after its super call; everything after that
+is the binding's, on the game thread, one attempt per frame:
+
+```
+beginRegistration                schedule loop one for the next tick
+tryInitializeWithManager         until the session owner exists (TraitsT::SessionOwner::instanceFor); then, if the
+                                 component has an owner, the hook initializeWithManager(owner of the session, owner
+                                 actor): Ready, or Retry (again next frame); then schedule loop two
+tryRegisterWithNewFramework      until the session owner exists; then the hook resolveRegistrationKey(owner of the
+                                 session, isAuthority): ready(storage key), retry() or abandon(); the local-prediction
+                                 test; makeInputProvider(key) for a locally predicted owner only; makeSimulatable(); the
+                                 session's tryRegister, again next frame while it answers Pending; then the provider
+                                 latch on the sibling, the relay host's spawn (authority) or find (client), the delivery
+                                 route (authority) and the `NewFramework: registered` line
+```
+
+**The four hooks** are private members of the game component, which declares its binding specialization a friend
+(task 21). They hold only game statements, and each sits where those statements stood:
+
+| hook | returns | what the brawler puts there (its component's rationale §19) |
+|---|---|---|
+| `initializeWithManager(manager, owner)` | `ueSimulatableOwnerRegistration::Initialization`: `Ready` or `Retry` | the input-collection cache, the target query volume (`Retry` while the Jolt slot waits) and the three visualization states |
+| `resolveRegistrationKey(manager, isAuthority)` | `ueSimulatableOwnerRegistration::ResolvedKey`: `ready(key)`, `retry()` or `abandon()` | the character cast, the authority's id allocation (`abandon()` on a refusal) and the replicated id's wait (`retry()`) |
+| `makeInputProvider(key)` | the latency member's `InputProvider` (`UELatencyBudgetDiagnostics`) | the provider lambda over the input collection and the id |
+| `makeSimulatable()` | `TraitsT::Simulatable` | the simulatable built from the component's static data |
+
+**The outcome types are the skeleton's vocabulary, not flags.** `Initialization` has no `Abandon`, so a game cannot
+abandon loop one by accident; the loop it could not abandon before stays so. `ResolvedKey` carries its key only through
+`ready`, and the skeleton reads `key` only after both other answers have returned. Every retry answer is handled by the
+skeleton, with the same attempt check, `checkf` and reschedule the game code used to write at each site (§9.3).
+
+**The hook checks are inline requires-expressions** in the two loop bodies, as for the key hook (§2): each loop's first
+statement is a `static_assert` over the hooks it calls, with their parameter and return types; a namespace-scope concept
+cannot see private hooks. Deleting a hook fails there, with the message naming the hooks and the ruling (task 29 saw both
+fail: `makeSimulatable` deleted, and `initializeWithManager` deleted, `C2338` each).
+
+**No hook shares a name with an interface member.** The interface's five members are the binding's `final` overrides,
+so a game member with an interface member's name and signature is a compile error (`C3248`; task 29 saw it for
+`simulationKey()` and `onCorrectionStateAccepted()`). A same-named member with another signature would only hide the
+interface member in the game class, which the sibling never calls through; the four hook names are unlike all five, so
+neither case arises.
+
+**Which session door the skeleton calls.** The session's own: `regManager->session().tryRegister(key, …)` and
+`regManager->session().noteDelayedInputComponent(key, derived())`, with the storage key the hook resolved. The brawler's
+session owner keeps its two wrappers that take the game's character id (task 28); the skeleton does not use them, because
+a generic skeleton has no game id type. The wrapper's one extra statement, a `checkf` that the id is not the null id,
+guarded a condition the hook's `retry()` already excludes on this path.
+
+### 9.2 Reaching the session owner: two polling loops, and why both poll
+
+The component's `BeginPlay` cannot do the work, because the session owner's `BeginPlay` and the character's race and
+neither order is guaranteed. So `beginRegistration` schedules loop one for the next tick and returns.
+
+**Loop one** waits for the session owner to exist, and for the component to have an owner. Then it runs the game's
+per-character initialization (`initializeWithManager`); a hook that answers `Retry` is called again next frame, and the
+skeleton schedules loop two only after a `Ready`. A game that registers a query volume through the session's
+`registerVizVolume` waits here in the Jolt configuration, where the volume needs the character's physics slot and the
+session answers "not yet" until it can acquire one. The wait is logged by the slot table of the session's Jolt host
+(og-sim's `TickSlotTable`, a `[SimHost.Slot] wait=…` line naming the slot and its holder); the retry `checkf` keeps the
+shipped phrase "the manager logs", the session owner owning that host.
+
+**Loop two** waits for the session owner, then for the game's key (`retry()`), then for the character's bodies to become
+resolvable — the session's `tryRegister` answers `Pending` until it has created them and the physics adapter resolves
+every one — and on success does four things in a deliberate order: register with the core, latch the provider decision
+(§9.5), spawn or find the relay host (§9.5), and, on the authority only, register the id → component delivery route
+(§9.6). Then it logs `NewFramework: registered`.
+
+Every step of both loops can legitimately answer "not yet", repeatedly, and "not yet" is never an error. Only exhausting
+`kMaxRegistrationAttempts` is. A game's `abandon()` is not "not yet": it ends loop two for good, with nothing logged by
+the skeleton (the brawler's refusal is logged where it is decided).
+
+### 9.3 The attempt budget
+
+`kMaxRegistrationAttempts = 600` bounds both loops. Each attempt is one `SetTimerForNextTick`, i.e. one **game frame**,
+so the budget is ten seconds only at 60 fps (2.5 s at 240 fps). Long enough for scene start-up on a slow load, short
+enough that a genuine wiring bug fails loudly rather than hanging forever. Both loops count against it independently
+(`m_initializationAttempts`, `m_registrationAttempts`), and every wait ends in a `checkf` rather than a silent give-up.
+Within loop one the session-owner wait and the hook's retries share `m_initializationAttempts`; within loop two the
+session-owner wait, the key's retries and the `Pending` wait share `m_registrationAttempts`.
+
+The next-tick delegates are weak lambdas on the component (`&derived()`): a component destroyed before the next frame
+cancels the call. The lambda captures the binding's `this`, the same component, and calls the binding's loop.
+
+### 9.4 Provider presence, and what absence buys
+
+A **local input provider** is a callable the component hands to the core at registration. It is made for exactly one
+kind of owner: on a pure client, the locally controlled one (`ROLE_AutonomousProxy`). Every other owner — every simulated
+proxy, and every owner on the authority — registers with an empty provider (G-09).
+
+That is not a convenience null-check. **Provider presence is the identity test**, and the core branches on it in
+`SimulationNetSync::registerPredictionOwner`:
+
+- **provider present** → `SimulationInputResolution::registerLocalCharacter` builds the local delay line, and the core
+  adds a sender-map entry so this owner's captures go on the wire.
+- **provider absent** → `SimulationInputResolution::registerRemoteCharacter` builds a neutral-seeded remote input store
+  for the id, and the core binds the relayed-input callbacks by id. The core then predicts that owner from the store
+  through the scheduled read, instead of extrapolating the last correction.
+
+The skeleton asks the game for a provider (`makeInputProvider`) only inside `if (isLocallyPredicted)`. The session wraps
+it for the latency stamps (`UELatencyBudgetDiagnostics::wrapInputProvider`) and keeps it in the pending record until
+the registration completes.
+
+### 9.5 The spawn ordering, and the provider latch
+
+**The relay host is spawned on the authority at the moment registration completes, above the delivery-route
+registration, and that order is load-bearing** (G-10). `noteDelayedInputComponent` is what lets the session's
+`relayRemoteInput` find this component at all; if the host were not linked by then, the first relay writes would stage
+into the sibling's no-host fallback, invisible to every client and with nothing logged. Spawning first closes that window
+by construction rather than by timing. A client finds its host (`findForOwner`) and attaches it; a host that has not
+replicated yet is found as null, which the sibling's `attachInputRelayHost` ignores, and the session's
+`onInputRelayHostReady` attaches it to the sibling when it arrives (`SimulatableNetSyncComponent-rationale.md` §10).
+
+This is also why the host is not spawned on demand from the write path, the way the connection relay is: that actor
+has no always-reached creation point earlier than its first write, and `PostLogin` misses seamless travel. This one
+does. The teardown has a synchronous signal for the same reason, the character ending play; who destroys and who unbinds
+is the sibling's §10.
+
+**The provider latch.** Once the session answers `Ready`, the skeleton writes its provider decision to the sibling
+(`netSync().setHasLocalInputProvider(isLocallyPredicted)`), and the sibling's owner-skip check reads it
+(`SimulatableNetSyncComponent-guards.md` G-15). The decision is the same evaluation the core registered with, written
+once per completed registration and never on a `Pending` attempt.
+
+### 9.6 The delivery route
+
+The id → component route that the session's `deliverRemoteInput` (the core's malformed-slot path and the release drain)
+and `relayRemoteInput` (the staging write) resolve against is registered once, at registration time
+(`noteDelayedInputComponent`, G-11), paired with the erase in the session's `unregisterFromNewFramework` (its
+`forgetReceptionOwner`) — not per parked slot inside the receive loop — so it exists for the whole registered lifetime
+of the component. **Authority only:** the reception coordinator, the delay queue and the drain exist only on the authority
+(the session's `beginPlay` begins the coordinator in its authority branch), and the core wires the inbound delivery
+callback only at registration, so the route and its target come up together. The erase side is a pair as well: the
+session drops the coordinator's claim through `ServerReceptionCoordinator::forgetOwner` at the same moment. A game may read
+the same map (`getDelayedInputComponentsById`) as its list of registered characters.
+
+### 9.7 Equivalence (task 29)
+
+Statement for statement and on the game thread, as the component ran it: `transcribe.py` (`map_29.json`, the loop's
+units against the pre-task-25 pin) inlines each hook body at its call site and maps each outcome to the skeleton's
+handler, and reports no difference. No log line changed (`NewFramework: registered`, and the session's own lines, keep
+text, level, category and arguments). Three `checkf` texts became game-neutral (ruling Q7, fatal-only): loop one's two
+(the session-owner wait names this class; the retry names the hook's answer and keeps the `[SimHost.Slot]` pointer) and
+loop two's key wait (it names the hook's answer, not the brawler's id). **Optimization (lead ruling F1):** the moved
+bodies are template members, so they compile optimized in Development, as §7 says; none does floating-point arithmetic
+(task 29's notes list the functions and their disassembly reading). The hook bodies stay non-template members of the
+component and keep its file's optimization state.

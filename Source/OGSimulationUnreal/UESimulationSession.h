@@ -8,6 +8,7 @@
 #include "Engine/NetConnection.h"
 #include "Engine/NetDriver.h"
 #include "Misc/ConfigCacheIni.h"
+#include "OGSimulation/BodyId.h"
 #include "OGSimulation/CompilerControl.h"
 #include "OGSimulation/SimulationComparison.h"
 #include "OGSimulation/SimulationLog.h"
@@ -28,6 +29,7 @@
 #include "OGSimulation/RelayedInputRingCodec.h"
 #include "OGSimulation/ResimGateProbe.h"
 #include "OGSimulation/SimulationInputResolution.h"
+#include "OGSimulation/SimulationNetSync.h"
 #include "OGSimulation/Network/ConnectionTierTable.h"
 #include "OGSimulation/Network/CorrectionRotation.h"
 #include "OGSimulation/Network/LocalInputCache.h"
@@ -56,6 +58,43 @@ OGSIMULATIONUNREAL_API void sleepTestGameThreadHitch(int32 hitchMs);
 #endif
 
 #define HasAuthority HasAuthority_is_not_the_peer_role_in_UESimulationSession_use_worldIsAuthority_or_runsPrediction
+
+enum class TryRegisterStatus { Pending, Ready };
+
+namespace ueSimulationSessionHookNames
+{
+	struct Names
+	{
+		int beforeWorldBuild;
+		int emplaceSystems;
+		int neutralInput;
+		int installGameLoggers;
+		int afterSessionConfigured;
+		int backendFingerprint;
+		int rootBodyId;
+		int afterBodiesCreated;
+		int afterRegistered;
+		int onUnregistered;
+	};
+
+	template <typename SessionT>
+	struct Probe : SessionT, Names {};
+
+	template <typename SessionT>
+	concept SharesNoHookName = requires
+	{
+		&Probe<SessionT>::beforeWorldBuild;
+		&Probe<SessionT>::emplaceSystems;
+		&Probe<SessionT>::neutralInput;
+		&Probe<SessionT>::installGameLoggers;
+		&Probe<SessionT>::afterSessionConfigured;
+		&Probe<SessionT>::backendFingerprint;
+		&Probe<SessionT>::rootBodyId;
+		&Probe<SessionT>::afterBodiesCreated;
+		&Probe<SessionT>::afterRegistered;
+		&Probe<SessionT>::onUnregistered;
+	};
+}
 
 template <typename TraitsT>
 class UESimulationSession : public ISimulationTimingRelayListener,
@@ -87,7 +126,6 @@ private:
 	friend typename TraitsT::template Backend<UESimulationSession>;
 	friend typename TraitsT::template TickDriverGame<UESimulationSession>;
 	friend LatencyBudgetDiagnostics;
-	friend SessionOwner;
 
 	using Composition     = typename TraitsT::Composition;
 	using EngineTraits    = typename TraitsT::EngineTraits;
@@ -103,6 +141,7 @@ private:
 	using Simulatable     = typename TraitsT::Simulatable;
 	using PlayerInput     = typename TraitsT::PlayerInput;
 	using NetConfig       = typename TraitsT::NetConfig;
+	using InputProvider   = typename LatencyBudgetDiagnostics::InputProvider;
 
 public:
 	const ServerTickClock& getServerClock() const { return m_manager->getServerClock(); }
@@ -235,6 +274,11 @@ public:
 		return static_cast<int32>(getServerClock().getSimulationStep().getTick());
 	}
 
+	TryRegisterStatus tryRegister(unsigned int id, Simulatable&& simulatable, typename TraitsT::Component& owner,
+		InputProvider&& inputProvider, bool isAuthority);
+
+	void unregisterFromNewFramework(unsigned int id, typename TraitsT::Component& owner, bool isAuthority);
+
 	void noteDelayedInputComponent(unsigned int id, typename TraitsT::Component& component);
 
 	void deliverRemoteInput(unsigned int id, uint32 captureTick, const PlayerInput& input);
@@ -353,6 +397,15 @@ private:
 
 	inline static UESimulationSession* s_instances[2] = { nullptr, nullptr };
 
+	struct PendingRegistration
+	{
+		std::optional<Simulatable> simulatable;
+		bool bodiesCreated = false;
+		InputProvider inputProvider;
+		bool isAuthority = false;
+	};
+	std::unordered_map<unsigned int, PendingRegistration> m_pendingRegistrations;
+
 	static constexpr bool compositionContractsHold()
 	{
 		static_assert(__builtin_offsetof(UESimulationSession, m_storage)
@@ -436,6 +489,14 @@ private:
 			"owner's class, itself the 'Pointer, so pre-construction is not UB' prose fence of the owner's header "
 			"(og-netcode-v2-field-defects task 11); re-expressed on the session by "
 			"og-ue-simulationcomponentandmanagersplit task 24b.");
+		static_assert(ueSimulationSessionHookNames::SharesNoHookName<UESimulationSession>,
+			"No member of UESimulationSession, public or private, own or inherited, may share a name with one of the ten "
+			"phase hooks of TraitsT::Game it calls: beforeWorldBuild, emplaceSystems, neutralInput, installGameLoggers, "
+			"afterSessionConfigured and backendFingerprint (beginPlay), rootBodyId, afterBodiesCreated and afterRegistered "
+			"(tryRegister), onUnregistered (unregisterFromNewFramework). The session calls every hook qualified, as "
+			"Game::hook or m_game.hook, so a clash changes no call; it makes a reader take the game's statement for the "
+			"session's own. Was a sentence of beginPlay's hook check (task 27b) that nothing enforced; made a compile-time "
+			"check, over every member, by og-ue-simulationcomponentandmanagersplit task 28.");
 		return true;
 	}
 };
@@ -1136,8 +1197,8 @@ void UESimulationSession<TraitsT>::beginPlay()
 		"afterSessionConfigured(netMode) on the session's Game& (they reach the game's own parts), and the static "
 		"emplaceSystems(systemsExec, bodyAdapter, queryAdapter), neutralInput() (the PlayerInput a delay window is filled "
 		"with), installGameLoggers(isAuthority) and backendFingerprint() (a std::string_view). No member of "
-		"UESimulationSession shares a hook's name. Added by og-ue-simulationcomponentandmanagersplit task 27b (manager "
-		"design 4.3).");
+		"UESimulationSession shares a hook's name (compositionContractsHold asserts it). Added by "
+		"og-ue-simulationcomponentandmanagersplit task 27b (manager design 4.3).");
 
 	UWorld* uWorld = m_owner.GetWorld();
 	if (uWorld == nullptr)
@@ -1305,6 +1366,146 @@ void UESimulationSession<TraitsT>::onPostPhysicsStep()
 	Game::afterVisualization(*this);
 
 	m_latencyBudgetDiagnostics.tick_GameThread(m_backend.editDiagnostics());
+}
+
+OGSIM_OPTIMIZE_ON
+
+OGSIM_OPTIMIZE_OFF
+
+template <typename TraitsT>
+TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
+    unsigned int id,
+    Simulatable&& simulatable,
+    typename TraitsT::Component& owner,
+    InputProvider&& inputProvider,
+    bool isAuthority)
+{
+    static_assert(requires(Game& game, const Simulatable& constSimulatable, Simulatable& simulatable,
+            typename TraitsT::Character& character, unsigned int id, bool flag, ENetMode netMode)
+        {
+            { Game::rootBodyId(constSimulatable) } -> std::same_as<BodyId>;
+            game.afterBodiesCreated(simulatable, character, id, flag, netMode);
+            game.afterRegistered(id, flag);
+        },
+        "UESimulationSession<TraitsT>::tryRegister calls three registration hooks of TraitsT::Game, each at the position "
+        "of the game statements it replaced: the static rootBodyId(simulatable) (the BodyId the resolvability gate tests "
+        "first), and afterBodiesCreated(simulatable, character, id, isAuthority, netMode) and afterRegistered(id, "
+        "isAuthority) on the session's Game& (they reach the game's own parts). Added by "
+        "og-ue-simulationcomponentandmanagersplit task 28 (manager design 4.3).");
+
+    auto it = m_pendingRegistrations.find(id);
+    if (it == m_pendingRegistrations.end())
+    {
+        PendingRegistration record;
+        record.simulatable.emplace(std::move(simulatable));
+        record.inputProvider = std::move(inputProvider);
+        record.isAuthority   = isAuthority;
+        auto inserted = m_pendingRegistrations.emplace(id, std::move(record));
+        it = inserted.first;
+    }
+
+    PendingRegistration& record = it->second;
+
+    if (!record.bodiesCreated)
+    {
+        typename TraitsT::Character* character = Cast<typename TraitsT::Character>(owner.GetOwner());
+        checkf(character != nullptr,
+               TEXT("UESimulationSession::tryRegister: the component must be attached to a TraitsT::Character — the ")
+               TEXT("first-call body pass reads that class's own root capsule"));
+        if (!m_backend.createBodies_GameThread(owner, *character, *record.simulatable, id))
+            return TryRegisterStatus::Pending;
+
+#if DO_CHECK
+        record.simulatable->getPhysicsComposite().forEach([&](const auto& decl)
+        {
+            checkf(decl.bindings.ownBodyId.value != 0,
+                   TEXT("PhysicsDeclaration bindings.ownBodyId not populated by fold (id=%u)"), id);
+            checkf(decl.bindings.parentBodyId.value != 0,
+                   TEXT("PhysicsDeclaration bindings.parentBodyId not populated by fold (id=%u)"), id);
+        });
+#endif
+
+        m_game.afterBodiesCreated(*record.simulatable, *character, id, record.isAuthority, m_owner.GetNetMode());
+
+        record.bodiesCreated = true;
+        return TryRegisterStatus::Pending;
+    }
+
+    const BodyId rootId = Game::rootBodyId(*record.simulatable);
+    bool allResolvable = m_physAdapter->isBodyResolvable(rootId);
+    if (allResolvable)
+    {
+        record.simulatable->getPhysicsComposite().forEach([&](const auto& decl)
+        {
+            if (!m_physAdapter->isBodyResolvable(decl.bindings.ownBodyId))
+                allResolvable = false;
+        });
+    }
+
+    if (!allResolvable)
+        return TryRegisterStatus::Pending;
+
+    if (record.isAuthority)
+    {
+        registerSimulatable<Simulatable>(
+            m_storage, m_reconciliation, m_inputResolution, m_netSync,
+            id, std::move(*record.simulatable),
+            /*predictionOwner=*/owner,
+            /*authorityOwner=*/owner);
+    }
+    else
+    {
+        registerSimulatable<Simulatable>(
+            m_storage, m_reconciliation, m_inputResolution, m_netSync,
+            id, std::move(*record.simulatable),
+            /*owner=*/owner,
+            /*inputProvider=*/m_latencyBudgetDiagnostics.wrapInputProvider(
+                id, owner, std::move(record.inputProvider)));
+    }
+    UE_LOG(LogOGMgmt, Log, TEXT("tryRegister: registered simulatable id=%u isAuthority=%d"), id, isAuthority ? 1 : 0);
+
+    m_game.afterRegistered(id, record.isAuthority);
+
+    // ⛔G-25  docs/UESimulationSession-guards.md
+    m_manager->notifyCharacterRegistered(id);
+
+    m_backend.onRegistered_GameThread(owner, id);
+
+    m_pendingRegistrations.erase(it);
+    return TryRegisterStatus::Ready;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::unregisterFromNewFramework(
+    unsigned int id, typename TraitsT::Component& owner, bool isAuthority)
+{
+    static_assert(requires(Game& game, unsigned int id) { game.onUnregistered(id); },
+        "UESimulationSession<TraitsT>::unregisterFromNewFramework calls the registration hook onUnregistered(id) of "
+        "TraitsT::Game on the session's Game& (it reaches the game's own parts), at the position of the game statements "
+        "it replaced: after the reception forget, before the latency forget. Added by "
+        "og-ue-simulationcomponentandmanagersplit task 28 (manager design 4.3).");
+
+    // ⛔G-26  docs/UESimulationSession-guards.md
+    if (m_storage.template has<Simulatable>(id))
+    {
+        m_manager->notifyCharacterUnregistered(id);
+    }
+
+    unregisterSimulatable<Simulatable>(
+        m_storage, m_reconciliation, m_inputResolution, m_netSync,
+        id,
+        /*predictionOwner=*/&owner,
+        /*authorityOwner=*/isAuthority ? &owner : nullptr);
+
+    forgetReceptionOwner(id);
+
+    m_game.onUnregistered(id);
+
+    m_latencyBudgetDiagnostics.forgetCharacter(id);
+
+    m_backend.onUnregistered_GameThread(owner, id);
+
+    UE_LOG(LogOGMgmt, Log, TEXT("NewFramework: unregistered simulatable id=%u"), id);
 }
 
 OGSIM_OPTIMIZE_ON

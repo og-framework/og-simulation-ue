@@ -159,9 +159,9 @@ Since og-ue-simulationcomponentandmanagersplit task 21 that getter is `UESimulat
 
 **The loop skips a component that is not bound** (G-03), with the binding's `isNetSyncBound()`, a `const` query. The
 getter dereferences the sibling pointer, which the component's teardown clears. No shape that runs today reaches the
-skip: the owner's unregistration (the brawler: `unregisterFromNewFramework`) calls the session's `forgetReceptionOwner`,
-which erases the component's map entry (the owner erased it itself until og-ue-simulationcomponentandmanagersplit task
-26a), the
+skip: the unregistration (`unregisterFromNewFramework`, the session's own since og-ue-simulationcomponentandmanagersplit
+task 28, the owner's before) calls the session's `forgetReceptionOwner`, which erases the component's map entry (the owner
+erased it itself until task 26a), the
 component's `EndPlay` runs that unregistration before it unbinds, and a component is added to the map only after its
 registration, which the owning actor's bind precedes. So the skip changes no output; it keeps the read from becoming a
 null dereference if a later change reorders the teardown or the map's erase (a lead ruling of that task, 2026-10-21). It is

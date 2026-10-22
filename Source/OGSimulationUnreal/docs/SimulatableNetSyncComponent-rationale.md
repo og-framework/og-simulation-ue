@@ -15,7 +15,7 @@ The non-template base the component calls the game through is `ISimulatableOwner
 <!-- lint-external-ref: EndReplication -- Unreal Engine UActorComponent method, outside every scan root -->
 
 > **Licence.** MPL-2.0, as the code it describes (og-ue-simulationcomponentandmanagersplit ruling Q1). The code and
-> this narrative moved here from the game module's `USimmableUpdateComponent` in tasks 20a and 20b (2026-10-21); the
+> this narrative moved here from the game module's `UOGBrawlerSimulatableComponent` in tasks 20a and 20b (2026-10-21); the
 > brawler's own side of the boundary stays in that component's rationale.
 
 ---
@@ -192,7 +192,7 @@ teardown with no network dispatch in between, so the order is unobservable [I].
 
 ## §8 Provenance (task 20a)
 
-Moved verbatim from `USimmableUpdateComponent` (`Source/OGBrawlerUnreal/`, BUSL-1.1 then) by
+Moved verbatim from `UOGBrawlerSimulatableComponent` (`Source/OGBrawlerUnreal/`, BUSL-1.1 then) by
 og-ue-simulationcomponentandmanagersplit task 20a: the replicated buffer, `OnRep_CorrectionState`, the mismatch latch and
 the toast key, `ServerReceiveRemoteMove` and its two fences, `GetLifetimeReplicatedProps`, the correction-state callback
 pair and both buffer getters. Two statements replaced typed code at its position: the call to `onCorrectionStateAccepted`
@@ -200,7 +200,7 @@ where the OnRep read the state, and the call to `receiveRemoteMoveBundle` where 
 `checkf`s and `sendInputBundleToAuthority` (the public send the game component calls in place of the RPC) are new. This
 file's §1, §4 and §5 are that component's rationale §1, §8 and §9, R0-checked and made game-neutral.
 
-| guard here | was (`SimmableUpdateComponent-guards.md`) |
+| guard here | was (`OGBrawlerSimulatableComponent-guards.md`) |
 |---|---|
 | G-01, G-02 | G-36, G-37 |
 | G-03, G-04, G-05 | G-09, G-10, G-11 |
@@ -221,7 +221,7 @@ component at all; it replicates from `ASimulationConnectionRelay`, whose **owner
 (`bOnlyRelevantToOwner`) performs the narrowing the replication condition used to perform. The absence fence at that
 site is G-10, in this component's `GetLifetimeReplicatedProps` (§5). ⚠ **Correction (R0, task 20a).** The game
 component's account said another file in the tree cites that fence as evidence the condition is gone; the file that
-cites a fence here (`SimulationManagerUImpl-rationale.md`) cites the ring's (G-09), not the tier's.
+cites a fence here (`OGBrawlerSimulationManager-rationale.md`) cites the ring's (G-09), not the tier's.
 
 **`sendConnectionTierToOwningClient` is pure transport.** The core (`ServerReceptionCoordinator::noteRttSample`) has
 already skipped a "no reading yet" sample (a negative round-trip time) and deduplicated per owner, and it calls this
@@ -348,7 +348,7 @@ After the check the component calls the binding's `noteRelayedRingArrived`, then
 
 ## §11 Provenance (task 20b)
 
-Moved verbatim from `USimmableUpdateComponent` by og-ue-simulationcomponentandmanagersplit task 20b: `m_inputRelayHost`,
+Moved verbatim from `UOGBrawlerSimulatableComponent` by og-ue-simulationcomponentandmanagersplit task 20b: `m_inputRelayHost`,
 the two `UPROPERTY(Transient)` rings, the provider flag and the divergence latch, both `getRelayedInputRing`
 overloads, the relayed-ring callback pair and its member, `attachInputRelayHost`, `onRelayedInputRingArrived`, the
 G-12 staging choice (now `relayStagingTarget`), the relay detach (now `detachInputRelayHost`), and
@@ -358,7 +358,7 @@ where the relayed-ring stamp block was, and `m_binding->simulationKey()` for `to
 tier send's `check` and log and the owner-skip lines. `getInputRelayHost`, `setHasLocalInputProvider` and the `EndPlay`
 override are new. This file's §9 and §10 are that component's rationale §5 and §6, R0-checked and made game-neutral.
 
-| guard here | was (`SimmableUpdateComponent-guards.md`) |
+| guard here | was (`OGBrawlerSimulatableComponent-guards.md`) |
 |---|---|
 | G-11 | — (new: the unbound-only detach in `EndPlay`) |
 | G-12 | G-08 |

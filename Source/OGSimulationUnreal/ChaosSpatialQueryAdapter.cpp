@@ -117,7 +117,7 @@ constexpr std::uint64_t categoryReportBit(uint32_t category)
 // The shipped map after task 43 is body,guard,queryRouting,projectile,world,character = 0..5.
 //
 // ⭐ [movement-sim T43] `character` (5) JOINED THE TABLE on 2026-09-05 — see the two
-// m_queryAdapter.emplace tables in SimulationManagerUImpl.cpp for the channel (GTC6, user ruling
+// m_queryAdapter.emplace tables in OGBrawlerSimulationManager.cpp for the channel (GTC6, user ruling
 // #6) and for why an unmapped `character` was not merely undocumented but actively wrong.
 // kPreT43Mask is kept BESIDE the shipped mask rather than deleted, and that is deliberate: the
 // rows below that document what an unmapped category DOES to a query are the reason this block

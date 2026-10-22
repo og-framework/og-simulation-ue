@@ -30,7 +30,7 @@ Who logs on it:
 
 * this module: the tick driver's engine port (`UETickDriverHost.cpp`; see `UETickDriverHost-rationale.md` §1) and the
   render target table (`UERenderTargetTable.cpp`; see `UERenderTargetTable-rationale.md`);
-* the brawler: `SimulationManagerUImpl.cpp` (its `[SimHost.Backend]` line, in both physics configurations);
+* the brawler: `OGBrawlerSimulationManager.cpp` (its `[SimHost.Backend]` line, in both physics configurations);
 * OGSimulationJoltUnreal: the Jolt engine traits' log sink (`JoltEngineTraitsUImpl.cpp`;
   `JoltEngineTraitsUImpl-rationale.md` §2), the brawler's until og-tickdriver task 15e.
 

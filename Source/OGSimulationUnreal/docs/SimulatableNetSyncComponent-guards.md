@@ -18,7 +18,7 @@ is spent forever. A retired id may be **named** in prose or an assertion message
 
 ⛔ **Nothing in this file is a rationale.** The reasoning lives in `SimulatableNetSyncComponent-rationale.md`.
 
-**Provenance.** G-01 … G-10 and G-12 … G-16 moved from `SimmableUpdateComponent-guards.md` (the game module's
+**Provenance.** G-01 … G-10 and G-12 … G-16 moved from `OGBrawlerSimulatableComponent-guards.md` (the game module's
 component, BUSL-1.1 then) with their code, in og-ue-simulationcomponentandmanagersplit tasks 20a (G-01 … G-10) and 20b
 (G-12 … G-16), 2026-10-21. The text is unchanged apart from its site, its new id, its cross-references, and the
 component's name where it names the site. Each entry names the id it had there; that id is retired in that file's §R.
@@ -30,7 +30,7 @@ R0 found the shipped text false, the entry says so under **Correction**.
 ## G-01 — absence (header): the replicated correction-input property
 
 **Site:** absence tag in the private section of `SimulatableNetSyncComponent.h`, after the `ServerReceiveRemoteMove`
-declaration. (Was `SimmableUpdateComponent-guards.md` G-36, at the same position in `SimmableUpdateComponent.h`. Until
+declaration. (Was `OGBrawlerSimulatableComponent-guards.md` G-36, at the same position in `OGBrawlerSimulatableComponent.h`. Until
 og-syncedInput-rework task 9, 2026-10-03, it followed `m_clientToServerInputSyncedBuffer`, which sat between the two.)
 
 **As shipped:**
@@ -59,7 +59,7 @@ holds no input sync buffer in either direction now; the input leaves through `se
 
 ## G-02 — absence (header): the relayed-input ring as a property of this component
 
-**Site:** absence tag after G-01. (Was `SimmableUpdateComponent-guards.md` G-37.)
+**Site:** absence tag after G-01. (Was `OGBrawlerSimulatableComponent-guards.md` G-37.)
 
 **As shipped (the retirement paragraph; the host-link paragraph that followed it is the game component's rationale
 §6):**
@@ -78,7 +78,7 @@ ownership (`COND_SkipOwner` on an actor owned by the character).
 
 ## G-03 — once a wire-format mismatch is latched, every later `OnRep_CorrectionState` no-ops
 
-**Site:** `if (m_wireFormatMismatchDetected) return;` (Was `SimmableUpdateComponent-guards.md` G-09.)
+**Site:** `if (m_wireFormatMismatchDetected) return;` (Was `OGBrawlerSimulatableComponent-guards.md` G-09.)
 
 **As shipped:**
 > ⛔ ONCE A MISMATCH IS LATCHED EVERY LATER OnRep NO-OPS -- a mismatched peer must not correct. §8
@@ -90,7 +90,7 @@ ownership (`COND_SkipOwner` on an actor owned by the character).
 
 ## G-04 — absence: `OnRep_CorrectionInput` stood here
 
-**Site:** absence tag after `OnRep_CorrectionState`'s definition. (Was `SimmableUpdateComponent-guards.md` G-10.)
+**Site:** absence tag after `OnRep_CorrectionState`'s definition. (Was `OGBrawlerSimulatableComponent-guards.md` G-10.)
 
 **As shipped:**
 > ⛔ `OnRep_CorrectionInput` STOOD HERE, all of it retired -- see SimulationNetSync::sendCorrectionAll. §9
@@ -102,7 +102,7 @@ its registration (G-08) and its core binding were retired together (rationale §
 
 ## G-05 — absence: `OnRep_RelayedInputRing()` stood here
 
-**Site:** absence tag after G-04. (Was `SimmableUpdateComponent-guards.md` G-11.)
+**Site:** absence tag after G-04. (Was `OGBrawlerSimulatableComponent-guards.md` G-11.)
 
 **As shipped:**
 > ⛔ `OnRep_RelayedInputRing()` STOOD HERE -- it moved to the relay host with its property. §6
@@ -115,7 +115,7 @@ its registration (G-08) and its core binding were retired together (rationale §
 ## G-06 — an empty input bundle is idle traffic, not a version mismatch
 
 **Site:** `if (bundle.wireBytes.Num() == 0) return;` in `ServerReceiveRemoteMove_Implementation`. (Was
-`SimmableUpdateComponent-guards.md` G-17.)
+`OGBrawlerSimulatableComponent-guards.md` G-17.)
 
 **As shipped:**
 > ⛔ AN EMPTY BUNDLE IS IDLE TRAFFIC, NOT A MISMATCH -- no wire header means no version byte. §8
@@ -127,7 +127,7 @@ its registration (G-08) and its core binding were retired together (rationale §
 ## G-07 — refuse a mismatched bundle, but do not disconnect here
 
 **Site:** the `return;` closing the version-mismatch branch of `ServerReceiveRemoteMove_Implementation`. (Was
-`SimmableUpdateComponent-guards.md` G-18.)
+`OGBrawlerSimulatableComponent-guards.md` G-18.)
 
 **As shipped:**
 > ⛔ REFUSE, BUT DO NOT DISCONNECT HERE -- the disconnect path is engine-managed. §8
@@ -140,7 +140,7 @@ this fence (rationale §4).
 ## G-08 — absence: the `m_replicatedInputSyncedBuffer` lifetime registration
 
 **Site:** absence tag in `GetLifetimeReplicatedProps`, after the state-buffer registration. (Was
-`SimmableUpdateComponent-guards.md` G-32.)
+`OGBrawlerSimulatableComponent-guards.md` G-32.)
 
 **As shipped:**
 > ⛔ THE `m_replicatedInputSyncedBuffer` REGISTRATION STOOD HERE -- removed in the SAME edit
@@ -152,7 +152,7 @@ this fence (rationale §4).
 
 ## G-09 — absence: the ring's registration on this component
 
-**Site:** absence tag after G-08. (Was `SimmableUpdateComponent-guards.md` G-33.)
+**Site:** absence tag after G-08. (Was `OGBrawlerSimulatableComponent-guards.md` G-33.)
 
 **As shipped:**
 > ⛔ `DOREPLIFETIME(USimmableUpdateComponent, m_relayedInputRing)` STOOD HERE, with NO COND_.
@@ -161,14 +161,14 @@ this fence (rationale §4).
 > ⛔ THE COND_ COULD NOT HAVE BEEN ADDED HERE -- the shared atomic batch is what forced it. §6
 
 **Consequence.** Re-adding it here — even with the condition — re-couples the ring to the correction state's atomic
-replication batch (rationale §5). `SimulationManagerUImpl-rationale.md` cites this fence as evidence the per-character
+replication batch (rationale §5). `OGBrawlerSimulationManager-rationale.md` cites this fence as evidence the per-character
 components no longer carry the ring.
 
 ---
 
 ## G-10 — absence: the `COND_OwnerOnly` tier registration
 
-**Site:** absence tag after G-09. (Was `SimmableUpdateComponent-guards.md` G-34.)
+**Site:** absence tag after G-09. (Was `OGBrawlerSimulatableComponent-guards.md` G-34.)
 
 **As shipped:**
 > ⛔ THE COND_OwnerOnly TIER REGISTRATION IS GONE -- owner-only RELEVANCY narrows it now. §5
@@ -196,7 +196,7 @@ the game component; the session stayed clean only because `detachInputRelayHost`
 
 ## G-12 — on teardown the authority destroys the relay host; a client only unbinds it
 
-**Site:** the inner `if (isAuthority)` in `detachInputRelayHost`. (Was `SimmableUpdateComponent-guards.md` G-08, in that
+**Site:** the inner `if (isAuthority)` in `detachInputRelayHost`. (Was `OGBrawlerSimulatableComponent-guards.md` G-08, in that
 component's `EndPlay`.)
 
 **As shipped:**
@@ -212,7 +212,7 @@ is `ASimulationInputRelay::detachFromParentAndDestroy`, which clears the callbac
 ## G-13 — the no-host staging fallback is `m_detachedRelayStagingRing`, never `m_detachedRelayRing`
 
 **Site:** `FRelayedInputRing& stage = (host != nullptr) ? host->editRelayedInputStagingRing() : m_detachedRelayStagingRing;`
-in `relayStagingTarget`. (Was `SimmableUpdateComponent-guards.md` G-12, in that component's `stageRelayedInput`.)
+in `relayStagingTarget`. (Was `OGBrawlerSimulatableComponent-guards.md` G-12, in that component's `stageRelayedInput`.)
 
 **As shipped (header, at `m_detachedRelayStagingRing`):**
 > [T34] The same fallback, for the flush STAGE. `stageRelayedInput` must have somewhere to write when
@@ -228,7 +228,7 @@ replicated. The edit is typed here, which is why the tag sits at this statement 
 ## G-14 — the host callback captures a weak pointer, never a raw `this`
 
 **Site:** `host->setOnRelayedInputReceivedCallback([weakSelf](const FRelayedInputRing& ring) { ... });` in
-`attachInputRelayHost`. (Was `SimmableUpdateComponent-guards.md` G-14.)
+`attachInputRelayHost`. (Was `OGBrawlerSimulatableComponent-guards.md` G-14.)
 
 **As shipped:**
 > ⛔ WEAK CAPTURE, NEVER A RAW `this` -- the host can outlive this component by a frame. §6
@@ -240,7 +240,7 @@ replicated. The edit is typed here, which is why the tag sits at this statement 
 ## G-15 — the owner-skip check stays gated on `num() > 0` and reads the LATCHED provider decision
 
 **Site:** `if (m_hasLocalInputProvider && ring.num() > 0 && !m_loggedOwnerSkipDivergence)` in
-`onRelayedInputRingArrived`. (Was `SimmableUpdateComponent-guards.md` G-15.)
+`onRelayedInputRingArrived`. (Was `OGBrawlerSimulatableComponent-guards.md` G-15.)
 
 **As shipped (two fences, merged because they govern the same condition):**
 > ⛔ DO NOT DROP THE `num() > 0` GATE -- the host replicates to its owner, so empty is normal.
@@ -249,7 +249,8 @@ replicated. The edit is typed here, which is why the tag sits at this statement 
 > is only meaningful if it reads literally this evaluation. §6
 
 (The second stood at the brawler component's provider latch in `tryRegisterWithNewFramework`, which since task 20b
-writes this component's flag through `setHasLocalInputProvider`; the edit it forbids — a fresh role test in place of the
+writes this component's flag through `setHasLocalInputProvider`, and since task 29 is the binding's registration
+skeleton (`UESimulatableOwnerBinding.h`); the edit it forbids — a fresh role test in place of the
 latch — is typed here.)
 
 **Consequence.** `ASimulationInputRelay` is `bAlwaysRelevant` and does reach its owner (only the property is
@@ -262,7 +263,7 @@ check no longer tests what it claims.
 ## G-16 — the owner-skip divergence is an `ensure`, never a `check`
 
 **Site:** `ensureMsgf(false, TEXT("[InputRelay] relay ring arrived for a provider-present character (id=%u)"), ...)`
-in `onRelayedInputRingArrived`. (Was `SimmableUpdateComponent-guards.md` G-16.)
+in `onRelayedInputRingArrived`. (Was `OGBrawlerSimulatableComponent-guards.md` G-16.)
 
 **As shipped:**
 > ⛔ `ensure`, NEVER `check`, one-shot -- a bandwidth regression must stay playable to diagnose.
