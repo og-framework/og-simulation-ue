@@ -309,13 +309,15 @@ way. A call typed anywhere in the header is a compile error; task 24a saw one fa
   sequences' pair in a pair of their own. By ruling F1 they compile optimized; in the owner, non-template members of its
   `.cpp` under its pair, they compiled unoptimized. They hold no floating-point arithmetic. The game's four registration
   hooks keep their state: they are non-template functions the game compiles under its own pair (the brawler's
-  `OGBrawlerSimulationManager.cpp`), and so do the game's parts they call.
+  `BrawlerSessionGameUImpl.cpp` since its task 33, `OGBrawlerSimulationManager.cpp` before), and so do the game's parts
+  they call.
 * **The `.cpp` (task 27a)** holds what a header cannot: the test hitch console variable, a namespace-scope object that
   must be registered once, its exported accessor and the exported sleep (§10). The plugin compiles it on its own (the
   module is not unity), and the two functions, non-templates, sit in a pair of their own, so their statements keep the
   unoptimized state they had in the owner's post-physics step: the sleep's division compiles to `divss` by `1000.0f`, as
   in the owner, not to a multiply by its reciprocal. The game's post-visualization hook is likewise a non-template function in
-  the game's own `.cpp` (the brawler's `OGBrawlerSimulationManager.cpp`, under its pair).
+  the game's own `.cpp` (the brawler's `BrawlerSessionGameUImpl.cpp` since its task 33, `OGBrawlerSimulationManager.cpp`
+  before, under its pair).
 * **One member is explicitly instantiated** (task 25): `onInputRelayHostReady` casts to the game's character, so its body
   needs the character's complete type. A virtual member is instantiated wherever the class's vtable is emitted, which
   includes the owner's generated code (its vtable-helper constructor builds the owner's members, the session among them),
