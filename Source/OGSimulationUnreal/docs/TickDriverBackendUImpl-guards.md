@@ -56,7 +56,7 @@ the blocking step task. The prohibition is unchanged.*
 functions (so no new step is dispatched), wait for the step task dispatched in this and earlier frames,
 then everything else (`UESimulationSession-guards.md` G-21's resets, the listener unregistration, the post-tick-flush unbind).
 The "do not move any statement above" half is typed in `UESimulationSession::endPlay`, above its
-`m_backend.onEndPlayBegin();`, and is guarded there: `UESimulationSession-guards.md` G-20 (the brawler's
+`m_physicsBackend.onEndPlayBegin();`, and is guarded there: `UESimulationSession-guards.md` G-20 (the brawler's
 `OGBrawlerSimulationManager-guards.md` G-85 and G-64 until og-ue-simulationcomponentandmanagersplit task 27a). This entry's tag
 guards the wait itself (dropping it, or moving a statement above it inside `onEndPlayBegin`).
 

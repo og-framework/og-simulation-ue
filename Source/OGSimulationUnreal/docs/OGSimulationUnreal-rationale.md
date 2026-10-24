@@ -28,14 +28,16 @@ the brawler's game module logs on it too.
 
 Who logs on it:
 
-* this module: the tick driver's engine port (`UETickDriverHost.cpp`; see `UETickDriverHost-rationale.md` §1) and the
-  render target table (`UERenderTargetTable.cpp`; see `UERenderTargetTable-rationale.md`);
-* the brawler: `OGBrawlerSimulationManager.cpp` (its `[SimHost.Backend]` line, in both physics configurations);
+* this module: the tick driver's engine port (`UETickDriverHost.cpp`; see `UETickDriverHost-rationale.md` §1), the
+  render target table (`UERenderTargetTable.cpp`; see `UERenderTargetTable-rationale.md`) and the session's `beginPlay`
+  (`UESimulationSession.h`, its `[SimHost.Backend]` line, in both physics configurations; the brawler's
+  `OGBrawlerSimulationManager.cpp` until og-ue-simulationcomponentandmanagersplit task 27b). The session is a template, so
+  that line compiles into the game module that instantiates it (the brawler's);
 * OGSimulationJoltUnreal: the Jolt engine traits' log sink (`JoltEngineTraitsUImpl.cpp`;
   `JoltEngineTraitsUImpl-rationale.md` §2), the brawler's until og-tickdriver task 15e.
 
 Its name is the one the brawler's host lines have always used, so the `LogOGSimHost=Warning` row of
-`Config/DefaultEngine.ini` (line 372) still governs it: in a default run only its `Warning` lines are written.
+`Config/DefaultEngine.ini`'s `[Core.Log]` section still governs it: in a default run only its `Warning` lines are written.
 
 ## 2. The module class, and when it starts
 

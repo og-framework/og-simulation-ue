@@ -25,11 +25,18 @@
 #include "OGSimulationUnreal/SimulatableNetSyncComponent.h"
 #include "OGSimulationUnreal/SyncedSimulationStateBuffer.h"
 #include "OGSimulationUnreal/UEConnectionHandle.h"
+#include "OGSimulation/PhysicsEngineTraits.h"
 #include "OGSimulation/QueryGeometry.h"
 #include "OGSimulation/RelayedInputRingCodec.h"
 #include "OGSimulation/ResimGateProbe.h"
+#include "OGSimulation/SimulatableList.h"
 #include "OGSimulation/SimulationInputResolution.h"
+#include "OGSimulation/SimulationIntegrationExecutor.h"
+#include "OGSimulation/SimulationManager.h"
 #include "OGSimulation/SimulationNetSync.h"
+#include "OGSimulation/SimulationObjectStorage.h"
+#include "OGSimulation/SimulationReconciliation.h"
+#include "OGSimulation/SystemsExecutor.h"
 #include "OGSimulation/Network/ConnectionTierTable.h"
 #include "OGSimulation/Network/CorrectionRotation.h"
 #include "OGSimulation/Network/LocalInputCache.h"
@@ -123,21 +130,31 @@ public:
 	void endPlay();
 
 private:
-	friend typename TraitsT::template Backend<UESimulationSession>;
+	friend typename TraitsT::template PhysicsBackend<UESimulationSession>;
 	friend typename TraitsT::template TickDriverGame<UESimulationSession>;
 	friend LatencyBudgetDiagnostics;
 
 	using Composition     = typename TraitsT::Composition;
 	using EngineTraits    = typename TraitsT::EngineTraits;
 	using StaticData      = typename TraitsT::StaticData;
-	using Storage         = typename Composition::Storage;
-	using Reconciliation  = typename Composition::Reconciliation;
-	using InputResolution = typename Composition::InputResolution;
-	using NetSync         = typename Composition::NetSync;
-	using SystemsExec     = typename Composition::SystemsExec;
-	using IntegrationExec = typename Composition::IntegrationExec;
-	using ManagerType     = typename Composition::Manager;
-	using Backend         = typename TraitsT::template Backend<UESimulationSession>;
+	using Simulatables    = typename Composition::Simulatables;
+	using Storage         = apply_t<SimulationObjectStorage, Simulatables>;
+	using Reconciliation  = apply_t<SimulationReconciliation, Simulatables>;
+	using InputResolution = apply_t<SimulationInputResolution, Simulatables>;
+	using NetSync         = apply_t<SimulationNetSync, Simulatables>;
+
+	template <typename... SystemTs>
+	using SystemsExecFor = SimulationSystemsExecutor<Simulatables, StaticData, SystemTs...>;
+
+	template <typename... SimulatableTs>
+	using IntegrationExecFor = SimulationIntegrationExecutor<StaticData, typename EngineTraits::BodyAdapter,
+	                                                         typename EngineTraits::QueryAdapter, SimulatableTs...>;
+
+	using SystemsExec     = apply_t<SystemsExecFor, typename Composition::Systems>;
+	using IntegrationExec = apply_t<IntegrationExecFor, Simulatables>;
+	using ManagerType     = SimulationManager<IntegrationExec, NetSync, InputResolution, Reconciliation, SystemsExec,
+	                                          Storage, StaticData>;
+	using PhysicsBackend  = typename TraitsT::template PhysicsBackend<UESimulationSession>;
 	using Simulatable     = typename TraitsT::Simulatable;
 	using PlayerInput     = typename TraitsT::PlayerInput;
 	using NetConfig       = typename TraitsT::NetConfig;
@@ -353,7 +370,7 @@ private:
 
 	LatencyBudgetDiagnostics m_latencyBudgetDiagnostics{ std::as_const(*this) };
 
-	typename TraitsT::BackendWorlds m_backendWorlds;
+	typename TraitsT::PhysicsBackendWorlds m_physicsBackendWorlds;
 
 	std::optional<typename EngineTraits::BodyAdapter>   m_physAdapter;
 	std::optional<typename EngineTraits::ReaderAdapter> m_physReaderAdapter;
@@ -373,7 +390,7 @@ private:
 	std::optional<IntegrationExec> m_integrationLayer;
 
 	std::optional<ManagerType> m_manager;
-	Backend m_backend{ *this, m_backendWorlds };
+	PhysicsBackend m_physicsBackend{ *this, m_physicsBackendWorlds };
 
 	std::optional<ReplicatedTierConsumer> m_replicatedTierConsumer;
 
@@ -425,6 +442,42 @@ private:
 			"m_reconciliation < m_inputResolution < m_netSync. Was the owner's construction-order row, the CONSTRUCTION "
 			"ORDER prose fence of its header before that (task 11), with the owner's cvar member folded into "
 			"Game::makeStaticData; moved here by og-ue-simulationcomponentandmanagersplit task 24a.");
+		static_assert(std::is_same_v<Storage, typename Composition::Storage>,
+			"UESimulationSession requires og-simulation's own core systems (user ruling 2026-10-24), so "
+			"TraitsT::Composition::Storage must name the same type as the session's Storage, "
+			"apply_t<SimulationObjectStorage, Simulatables>.");
+		static_assert(std::is_same_v<Reconciliation, typename Composition::Reconciliation>,
+			"UESimulationSession requires og-simulation's own core systems (user ruling 2026-10-24), so "
+			"TraitsT::Composition::Reconciliation must name the same type as the session's Reconciliation, "
+			"apply_t<SimulationReconciliation, Simulatables>.");
+		static_assert(std::is_same_v<InputResolution, typename Composition::InputResolution>,
+			"UESimulationSession requires og-simulation's own core systems (user ruling 2026-10-24), so "
+			"TraitsT::Composition::InputResolution must name the same type as the session's InputResolution, "
+			"apply_t<SimulationInputResolution, Simulatables>.");
+		static_assert(std::is_same_v<NetSync, typename Composition::NetSync>,
+			"UESimulationSession requires og-simulation's own core systems (user ruling 2026-10-24), so "
+			"TraitsT::Composition::NetSync must name the same type as the session's NetSync, "
+			"apply_t<SimulationNetSync, Simulatables>.");
+		static_assert(std::is_same_v<ManagerType, typename Composition::Manager>,
+			"UESimulationSession requires og-simulation's own core systems (user ruling 2026-10-24), so "
+			"TraitsT::Composition::Manager must name the same type as the session's ManagerType, og-simulation's "
+			"SimulationManager over the session's IntegrationExec, NetSync, InputResolution, Reconciliation, SystemsExec, "
+			"Storage and StaticData.");
+		static_assert(std::is_same_v<IntegrationExec, typename Composition::IntegrationExec>,
+			"UESimulationSession requires og-simulation's own integration executor (user ruling 2026-10-24), so "
+			"TraitsT::Composition::IntegrationExec must name the same type as the session's IntegrationExec, "
+			"SimulationIntegrationExecutor<StaticData, EngineTraits::BodyAdapter, EngineTraits::QueryAdapter, Simulatables...>: "
+			"a game chooses its static data and its engine through the traits, not the executor.");
+		static_assert(std::is_same_v<SystemsExec, typename Composition::SystemsExec>,
+			"UESimulationSession requires og-simulation's own systems executor (user ruling 2026-10-24), so "
+			"TraitsT::Composition::SystemsExec must name the same type as the session's SystemsExec, "
+			"SimulationSystemsExecutor<Simulatables, StaticData, Systems...> over TraitsT::Composition::Systems in that "
+			"list's order: a game chooses its systems and their order through the list, and the firing order is the "
+			"template order.");
+		static_assert(PhysicsEngineTraits<EngineTraits>,
+			"TraitsT::EngineTraits must model og-simulation's PhysicsEngineTraits (PhysicsEngineTraits.h): the session and "
+			"its integration executor read the engine's adapter types, name and visualization types through it. The engine "
+			"is the game's choice, made in its traits (user ruling 2026-10-24).");
 		static_assert(std::is_same_v<ManagerType, typename TraitsT::template TickDriverGame<UESimulationSession>::Manager>,
 			"UESimulationSession::ManagerType must BE the manager type the tick-driver game binding names "
 			"(TraitsT::TickDriverGame<UESimulationSession>::Manager). ManagerType is private, so a backend host declared "
@@ -433,7 +486,7 @@ private:
 			"SimulationManager instantiation than m_manager. Was the owner's ManagerType row (added by "
 			"og-simulationscheduler-withjolt task 81), which compared it with the game's composition struct; moved here "
 			"by og-ue-simulationcomponentandmanagersplit task 24a.");
-		static_assert(__builtin_offsetof(UESimulationSession, m_backendWorlds)
+		static_assert(__builtin_offsetof(UESimulationSession, m_physicsBackendWorlds)
 		                  < __builtin_offsetof(UESimulationSession, m_physAdapter)
 		           && __builtin_offsetof(UESimulationSession, m_physAdapter)
 		                  < __builtin_offsetof(UESimulationSession, m_physReaderAdapter)
@@ -443,17 +496,17 @@ private:
 		                  < __builtin_offsetof(UESimulationSession, m_integrationLayer),
 			"UESimulationSession members destruct in REVERSE declaration order. The backend's worlds must outlive every "
 			"adapter bound to them (the Jolt step world; the reader holds the body adapter's bind table, the integration "
-			"layer holds the adapters), so m_backendWorlds sits above the adapters in every configuration (it is empty "
-			"on a self-scheduled engine). Keep m_backendWorlds < m_physAdapter < {m_physReaderAdapter, m_queryAdapter} < "
+			"layer holds the adapters), so m_physicsBackendWorlds sits above the adapters in every configuration (it is empty "
+			"on a self-scheduled engine). Keep m_physicsBackendWorlds < m_physAdapter < {m_physReaderAdapter, m_queryAdapter} < "
 			"m_integrationLayer. Was the owner's destruction-order row, design D's compile-time row 'runtime < world < "
 			"adapters' before that (og-simulationscheduler-withjolt task 18); its runtime < world half is "
 			"og-simulation-jolt's JoltTickWorlds' own row (runtime < contactCounter < stepWorld) since og-tickdriver "
 			"task 10. Moved here by og-ue-simulationcomponentandmanagersplit task 24a.");
 		static_assert(__builtin_offsetof(UESimulationSession, m_manager)
-		                  < __builtin_offsetof(UESimulationSession, m_backend),
+		                  < __builtin_offsetof(UESimulationSession, m_physicsBackend),
 			"UESimulationSession members destruct in REVERSE declaration order. The backend holds the Jolt step driver, "
 			"which unregisters its resync callback from the manager's client clock in its destructor, so the backend must "
-			"go before the manager. Keep m_manager < m_backend. Was the owner's row, design D's compile-time row 'manager "
+			"go before the manager. Keep m_manager < m_physicsBackend. Was the owner's row, design D's compile-time row 'manager "
 			"< hooks < driver' before that (og-simulationscheduler-withjolt task 18); its hooks < driver half is "
 			"og-simulation's SimulationTickDriver's own row, and the tick driver last is TickDriverBackendUImpl's, since "
 			"og-tickdriver task 8. Moved here by og-ue-simulationcomponentandmanagersplit task 24a.");
@@ -520,20 +573,20 @@ void UESimulationSession<TraitsT>::onPostSimulationGameThread()
 template <typename TraitsT>
 auto UESimulationSession<TraitsT>::editVizQuery() -> typename EngineTraits::VizQuery&
 {
-	return m_backend.editVizQuery();
+	return m_physicsBackend.editVizQuery();
 }
 
 template <typename TraitsT>
 auto UESimulationSession<TraitsT>::getVizReader() const -> const typename EngineTraits::VizReader&
 {
-	return m_backend.getVizReader();
+	return m_physicsBackend.getVizReader();
 }
 
 template <typename TraitsT>
 std::optional<QueryVolumeId> UESimulationSession<TraitsT>::registerVizVolume(const QueryVolumeDescriptor& descriptor,
 	AActor& owner)
 {
-	return m_backend.registerVizVolume(descriptor, owner);
+	return m_physicsBackend.registerVizVolume(descriptor, owner);
 }
 
 OGSIM_OPTIMIZE_ON
@@ -1221,7 +1274,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 
 	auto sessionKnobs = readSessionKnobs(worldIsAuthority);
 
-	m_backend.buildWorld(*uWorld, dt, worldIsAuthority);
+	m_physicsBackend.buildWorld(*uWorld, dt, worldIsAuthority);
 
 	if (worldIsAuthority)
 	{
@@ -1306,7 +1359,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 			EngineTraits::kName, static_cast<int32>(fingerprint.size()), fingerprint.data());
 	}
 
-	m_backend.startStepping(*uWorld, dt, worldIsAuthority);
+	m_physicsBackend.startStepping(*uWorld, dt, worldIsAuthority);
 	UE_LOG(LogOGMgmt, Log, TEXT("SimulationManager: adapters, integration layer, and manager initialized"));
 }
 
@@ -1314,7 +1367,7 @@ template <typename TraitsT>
 void UESimulationSession<TraitsT>::endPlay()
 {
 	// ⛔G-20  docs/UESimulationSession-guards.md
-	m_backend.onEndPlayBegin();
+	m_physicsBackend.onEndPlayBegin();
 
 	// ⛔G-21  docs/UESimulationSession-guards.md
 	m_delayedInputComponentsById.clear();
@@ -1341,7 +1394,7 @@ void UESimulationSession<TraitsT>::endPlay()
 	{
 		m_latencyBudgetDiagnostics.end(*World);
 
-		m_backend.onEndPlayWorld(*World);
+		m_physicsBackend.onEndPlayWorld(*World);
 	}
 }
 
@@ -1355,17 +1408,17 @@ void UESimulationSession<TraitsT>::onPostPhysicsStep()
 	}
 #endif
 
-	m_backend.beforePresent_GameThread();
+	m_physicsBackend.beforePresent_GameThread();
 
 	onPostSimulationGameThread();
 
 	publishServerClock_GameThread();
 
-	m_backend.updateVisualization_GameThread();
+	m_physicsBackend.updateVisualization_GameThread();
 
 	Game::afterVisualization(*this);
 
-	m_latencyBudgetDiagnostics.tick_GameThread(m_backend.editDiagnostics());
+	m_latencyBudgetDiagnostics.tick_GameThread(m_physicsBackend.editDiagnostics());
 }
 
 OGSIM_OPTIMIZE_ON
@@ -1412,7 +1465,7 @@ TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
         checkf(character != nullptr,
                TEXT("UESimulationSession::tryRegister: the component must be attached to a TraitsT::Character — the ")
                TEXT("first-call body pass reads that class's own root capsule"));
-        if (!m_backend.createBodies_GameThread(owner, *character, *record.simulatable, id))
+        if (!m_physicsBackend.createBodies_GameThread(owner, *character, *record.simulatable, id))
             return TryRegisterStatus::Pending;
 
 #if DO_CHECK
@@ -1469,7 +1522,7 @@ TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
     // ⛔G-25  docs/UESimulationSession-guards.md
     m_manager->notifyCharacterRegistered(id);
 
-    m_backend.onRegistered_GameThread(owner, id);
+    m_physicsBackend.onRegistered_GameThread(owner, id);
 
     m_pendingRegistrations.erase(it);
     return TryRegisterStatus::Ready;
@@ -1503,7 +1556,7 @@ void UESimulationSession<TraitsT>::unregisterFromNewFramework(
 
     m_latencyBudgetDiagnostics.forgetCharacter(id);
 
-    m_backend.onUnregistered_GameThread(owner, id);
+    m_physicsBackend.onUnregistered_GameThread(owner, id);
 
     UE_LOG(LogOGMgmt, Log, TEXT("NewFramework: unregistered simulatable id=%u"), id);
 }

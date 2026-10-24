@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: m_backendWorlds -- RENAMED by og-ue-simulationcomponentandmanagersplit task 35 to m_physicsBackendWorlds; kept in the task-24a seen-failing record of §2 and in §14's record of the rename -->
 <!-- lint-external-ref: UNetConnection::Tick -- Unreal Engine method, outside every scan root (§9.9) -->
 <!-- lint-external-ref: UNetConnection::IsNetReady -- Unreal Engine method, outside every scan root (§9.9) -->
 <!-- lint-external-ref: UDataStreamChannel::Tick -- Unreal Engine method, outside every scan root (§9.9) -->
@@ -41,6 +42,11 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
   on both roles, the field-diff gate, the step-length check and the backend line.
 * **§12** is the registration sequences (task 28): `tryRegister` and `unregisterFromNewFramework`, the pending record, the
   game's four registration hooks and their inline checks, and the name-clash row over all ten hooks.
+* **§13** is the core systems' spellings (task 34): the five aliases spelled with og-simulation's own templates, the
+  user's ruling behind them, and the rows that check them against the game's composition.
+* **§14** is the executors and the engine contract (task 35): `IntegrationExec` and `SystemsExec` spelled with
+  og-simulation's executors, the composition's systems list, the `PhysicsEngineTraits` assertion, and the rename of the
+  backend's type and members to `PhysicsBackend`, `m_physicsBackend` and `m_physicsBackendWorlds`.
 
 ---
 
@@ -62,8 +68,10 @@ and the per-frame work before the steps with its two probes, PROBE A and PROBE 6
 the teardown, `endPlay`, and the post-physics pass, `onPostPhysicsStep`, with the test hitch cvar's accessor in its
 `.cpp` (§10). **Since task 27b** it holds the start-up, `beginPlay`, with the game's six start-up hooks (§11). **Since
 task 28** it holds the registration sequences, `tryRegister` and `unregisterFromNewFramework`, with the pending record and
-`TryRegisterStatus`, and calls the game's four registration hooks (§12). The owner keeps the wrappers that turn its game's
-character id into the storage key, and reaches no private member any more (§4).
+`TryRegisterStatus`, and calls the game's four registration hooks (§12). The owner keeps the wrapper that turns its game's
+character id into the storage key for `unregisterFromNewFramework` (since task 36 its only one: the `tryRegister` and
+`noteDelayedInputComponent` wrappers had no caller since task 29 and are removed), and reaches no private member any
+more (§4).
 
 **The brawler** is the one user: `AOGBrawlerSimulationManager` holds `UESimulationSession<BrawlerSessionTraitsUImpl>` as its
 member `m_session` (`OGBrawlerSimulationManager-rationale.md` §2, in OGBrawlerUnreal's docs).
@@ -82,9 +90,9 @@ C++ constructs members in declaration order and destroys them in reverse, whatev
 is today's relative order from the owner, where these members lived until task 24a, with the two references first:
 
 ```
-m_owner&, m_game& → m_latencyBudgetDiagnostics → m_backendWorlds → m_physAdapter, m_physReaderAdapter, m_queryAdapter
+m_owner&, m_game& → m_latencyBudgetDiagnostics → m_physicsBackendWorlds → m_physAdapter, m_physReaderAdapter, m_queryAdapter
     → m_storage → m_staticData → m_reconciliation → m_inputResolution → m_netSync
-    → m_systemsExec → m_integrationLayer → m_manager → m_backend
+    → m_systemsExec → m_integrationLayer → m_manager → m_physicsBackend
     → m_replicatedTierConsumer, m_lastPublishedEffectiveInputDelayTicks
     → m_receptionCoordinator, m_frameHealthProbe, m_relayWriteProbe, m_connectionBudgetProbe, m_delayedInputComponentsById
     → m_onTimingInfoReceivedCallback, m_timingRelay
@@ -94,7 +102,7 @@ m_owner&, m_game& → m_latencyBudgetDiagnostics → m_backendWorlds → m_physA
 * **`m_owner` and `m_game` come first.** They are references, which have no destruction order, and the backend is
   constructed with the session, so both must be bound before it. No backend reads them during its construction today
   (the tick-driver host stores the session in its game binding, the self-scheduled host stores it), but a reference
-  declared after `m_backend` would still be unbound while the backend is built, and one that read it would read an
+  declared after `m_physicsBackend` would still be unbound while the backend is built, and one that read it would read an
   unbound reference.
 * **The latency member comes next, so it is destroyed last.** It was already declared before the worlds, the manager
   and the backend in the owner. Its initializer is `{ std::as_const(*this) }`: it holds a const reference to the session
@@ -105,7 +113,7 @@ m_owner&, m_game& → m_latencyBudgetDiagnostics → m_backendWorlds → m_physA
   `m_storage` is built and before the peers, where the owner's cvar member and its static data were constructed before
   task 24a.
 
-**The transport state comes last** (task 25), after `m_backend`, as manager design §4.5 placed it. It is emplaced in
+**The transport state comes last** (task 25), after `m_physicsBackend`, as manager design §4.5 placed it. It is emplaced in
 the owner's start-up and reset in `endPlay` (the owner's `EndPlay` until task 27a, §10), so where it sits in construction is unobservable; in destruction
 it now goes before the backend and the manager. The registry is a static member and has no place in the order. The
 input reception's state (task 26a) sits inside it in the owner's relative order: the coordinator, PROBE 5 and the map,
@@ -122,22 +130,26 @@ neither one's destruction touches the registry, so the change is not observable.
 borrows from it.
 
 **What is asserted.** `compositionContractsHold()` holds six `static_assert`s over `__builtin_offsetof` (four before
-task 25, five before task 26a), the `ManagerType` and `getTimeConfigPtr` rows, and since task 26a the two reception sink
-concepts (§9.7), and the
+task 25, five before task 26a), the `ManagerType` and `getTimeConfigPtr` rows, since task 26a the two reception sink
+concepts (§9.7), since task 34 the five core-system rows (§13), and since task 35 the two executor rows and the
+engine contract (§14), and the
 constructor asserts it, so every row is checked wherever the constructor is instantiated (a member function of a class
 template is compiled only when it is used, and the constructor is the one member every owner uses):
 
 | row | why |
 |---|---|
 | `m_storage` < `m_staticData` < `m_reconciliation` < `m_inputResolution` < `m_netSync` | construction: each peer binds the members above it in its initializer, and the static data's hook runs between the storage and the peers |
+| `Storage`, `Reconciliation`, `InputResolution`, `NetSync` and `ManagerType` are the composition's own `Storage`, `Reconciliation`, `InputResolution`, `NetSync` and `Manager` | the session requires og-simulation's own core systems and spells them itself (user ruling 2026-10-24, §13); a composition that names another type fails here |
+| `IntegrationExec` and `SystemsExec` are the composition's own `IntegrationExec` and `SystemsExec`; `EngineTraits` models og-simulation's `PhysicsEngineTraits` | the session requires og-simulation's own executors and spells them itself, and the engine is the game's choice through its traits (user ruling 2026-10-24, §14); a composition whose executors differ, or a traits engine that is no engine, fails here |
 | `ManagerType` is the tick-driver game binding's `Manager` | `ManagerType` is private; the tick-driver host names the manager through the game binding (`TraitsT::TickDriverGame<UESimulationSession>::Manager`), so the two must be one `SimulationManager` instantiation |
-| `m_backendWorlds` < `m_physAdapter` < {`m_physReaderAdapter`, `m_queryAdapter`} < `m_integrationLayer` | destruction: the backend's worlds outlive every adapter bound to them, and the integration layer goes before the adapters it holds |
-| `m_manager` < `m_backend` | destruction: the backend holds the step driver, which unregisters its resync callback from the manager's client clock when it goes, so the backend goes first |
+| `m_physicsBackendWorlds` < `m_physAdapter` < {`m_physReaderAdapter`, `m_queryAdapter`} < `m_integrationLayer` | destruction: the backend's worlds outlive every adapter bound to them, and the integration layer goes before the adapters it holds |
+| `m_manager` < `m_physicsBackend` | destruction: the backend holds the step driver, which unregisters its resync callback from the manager's client clock when it goes, so the backend goes first |
 | `m_manager` < `m_replicatedTierConsumer` | destruction: the tier consumer borrows the manager's `TimeConfig`, so it goes first (task 25; in the owner it was declared above the manager's owner, and only the owner's `EndPlay` reset protected it; that reset is `endPlay`'s since task 27a, `⛔G-21`) |
 | `m_manager` < `m_receptionCoordinator` | destruction: the reception coordinator borrows the manager's `TimeConfig`, so it goes first (task 26a; in the owner it too was declared above the manager's owner, protected only by the owner's `EndPlay` reset, `endPlay`'s since task 27a) |
 
-Every message names the row it replaced. The rows inside the backend and its worlds are their own assertions
-(`TickDriverBackendUImpl-rationale.md` §1), and the tick-driver host asserts `m_backendWorlds` < `m_backend` itself.
+Every message names the row it replaced, except the five core-system rows (task 34) and task 35's three rows, which
+replaced no check: their messages state the ruling instead (§13, §14). The rows inside the backend and its worlds are their own assertions
+(`TickDriverBackendUImpl-rationale.md` §1), and the tick-driver host asserts `m_physicsBackendWorlds` < `m_physicsBackend` itself.
 
 **The reorder hazard, stated exactly.** There is no `-Wreorder`-as-error anywhere in this tree, so a member outside the
 asserted chain is unprotected, and a reordered member inside it would still compile were it not for the assertions. It
@@ -147,7 +159,8 @@ It becomes load-bearing the day a peer constructor's body calls a method on one 
 `OGBrawlerSimulationManager-rationale.md` §2 ("The reorder hazard, stated exactly"), where task 11 of the brawler's comment
 extraction first asserted it; that task poisoned three reorders and each fired its assertion.*
 
-**Seen failing (task 24a).** Swapping the declarations of `m_manager` and `m_backendWorlds` fails the build with the
+**Seen failing (task 24a).** Swapping the declarations of `m_manager` and `m_backendWorlds` (`m_physicsBackendWorlds`
+since task 35) fails the build with the
 adapter row's message (the task's notes quote it). **Task 25:** declaring `m_replicatedTierConsumer` above `m_manager`
 fails the build with the tier consumer's row. **Task 26a:** declaring `m_receptionCoordinator` above `m_manager` fails
 it with the reception coordinator's row.
@@ -159,8 +172,8 @@ emplaced in the role branches.
 
 ## §3 The backend's two members
 
-`typename TraitsT::BackendWorlds m_backendWorlds` and `typename TraitsT::template Backend<UESimulationSession> m_backend{
-*this, m_backendWorlds }`. The traits pick the configuration's host:
+`typename TraitsT::PhysicsBackendWorlds m_physicsBackendWorlds` and `typename TraitsT::template PhysicsBackend<UESimulationSession> m_physicsBackend{
+*this, m_physicsBackendWorlds }`. The traits pick the configuration's host:
 
 * **A driver-scheduled engine (Jolt)**: the worlds are `TickDriverBackendWorldsUImpl` over the engine's world host, and
   the backend is `TickDriverBackendUImpl` over the game's tick-driver binding, `TraitsT::TickDriverGame<UESimulationSession>`
@@ -169,7 +182,7 @@ emplaced in the role branches.
   `ChaosTickBackendUImpl-rationale.md`, in OGBrawlerUnreal's docs).
 
 **Destruction order.** The backend is declared last, directly after `m_manager`, and the worlds above the adapters, so
-`m_backend` is destroyed first (on Jolt the tick backend with its driver and presenter, then the render-target table,
+`m_physicsBackend` is destroyed first (on Jolt the tick backend with its driver and presenter, then the render-target table,
 the game binding and the frame host, while the manager still lives), then the manager, the integration layer and the
 adapters, and last the worlds (on Jolt the world host and its engine). The two rows of §2 assert it, the same in both
 configurations. *Moved from `OGBrawlerSimulationManager-rationale.md` §2 ("The backend's two members and the destruction
@@ -183,7 +196,7 @@ game asserts it beside its traits, on the type this class holds (`BrawlerSession
 
 ## §4 Access: the friends, the accessors and the interim path
 
-**The friends (ruled, Q-G).** The class befriends `typename TraitsT::template Backend<UESimulationSession>`,
+**The friends (ruled, Q-G).** The class befriends `typename TraitsT::template PhysicsBackend<UESimulationSession>`,
 `typename TraitsT::template TickDriverGame<UESimulationSession>` and its latency member, `UELatencyBudgetDiagnostics<TraitsT>`.
 These were the owner's three friend lines (the configuration's backend, the tick-driver binding template and the latency
 template); the owner kept its own three for the interim path below until task 27b deleted them (by then they
@@ -210,7 +223,7 @@ registrations and every helper call of the start-up are the session's own statem
 measured that the owner's two registration functions still reached private members: `tryRegister` called the backend's
 two registration entry points, the body adapter's resolvability test, the four-peer registration and the manager's
 registration notice, and `unregisterFromNewFramework` the manager's notice, the four-peer unregistration,
-`forgetReceptionOwner` and the backend's unregistration (with the line deleted, `C2248` on `m_backend`, `m_physAdapter`,
+`forgetReceptionOwner` and the backend's unregistration (with the line deleted, `C2248` on `m_physicsBackend`, `m_physAdapter`,
 `m_storage`, the three peers, `m_manager` and `forgetReceptionOwner`, and nowhere else). The lead ruled the line kept until
 those two moved. Task 28 moved them (§12) and deleted `friend SessionOwner;`; every configuration builds without it, so the
 owner reaches only the public surface. Since then the class befriends exactly the three Q-G friends above.
@@ -226,7 +239,7 @@ owner's friendship), and two const reads for the game's post-visualization hook,
 `getDelayedInputComponentsById` (§10); and since task 27b `beginPlay`, which the owner calls after its `Super` (§11); and
 since task 28 `tryRegister` and `unregisterFromNewFramework`, which the owner's wrappers call (§12; since task 29 the
 component's registration skeleton, `UESimulatableOwnerBinding`, calls `tryRegister` and `noteDelayedInputComponent`
-directly). The owner keeps its own
+directly, and since task 36 the owner has no wrapper for either). The owner keeps its own
 `getLatencyBudgetDiagnostics()` / `editLatencyBudgetDiagnostics()`, which forward here, so its latency lookups (`instanceFor`)
 are unchanged. *R0, task 28:* the mutable one keeps one caller, the latency member's own `instanceFor`
 (`UELatencyBudgetDiagnostics.h`), which reaches it through `TraitsT::SessionOwner::instanceFor`; the const one has no caller
@@ -1210,7 +1223,7 @@ site (the task's notes show what it checked). A game's owner calls `endPlay` fro
 backend calls `onPostPhysicsStep`.
 
 **`endPlay`, in order** (game thread, once per world teardown):
-1. `m_backend.onEndPlayBegin()` (`⛔G-20`). A driver-scheduled backend unregisters the frame host's two tick functions,
+1. `m_physicsBackend.onEndPlayBegin()` (`⛔G-20`). A driver-scheduled backend unregisters the frame host's two tick functions,
    so no new frame starts, and waits for every outstanding step task (`TickDriverBackendUImpl-guards.md` G-01); a
    self-scheduled backend's may be empty. Nothing moves above it.
 2. The delayed-input map's clear, the reception coordinator's reset (`⛔G-21`) and the tier consumer's reset, while the
@@ -1225,11 +1238,11 @@ Nothing resets the manager, the composition or the backend: they live until the 
 
 **`onPostPhysicsStep`, in order** (game thread, once per frame, after the frame's physics, with or without steps):
 1. The test hitch (not in Shipping; below).
-2. `m_backend.beforePresent_GameThread()`: a driver-scheduled backend's presenter (the shadow restore and the render
+2. `m_physicsBackend.beforePresent_GameThread()`: a driver-scheduled backend's presenter (the shadow restore and the render
    apply, `TickDriverBackendUImpl-rationale.md`); empty on a self-scheduled backend.
 3. The manager's post-simulation pass, `onPostSimulationGameThread()` (§8).
 4. The authority's server-clock publish, `publishServerClock_GameThread()` (§9.6).
-5. `m_backend.updateVisualization_GameThread()`.
+5. `m_physicsBackend.updateVisualization_GameThread()`.
 6. `Game::afterVisualization(*this)`, the game's hook, at the position of the game statement it replaced.
 7. The latency member's `tick_GameThread`, with the backend's diagnostics view (`UELatencyBudgetDiagnostics-rationale.md`).
 
@@ -1452,8 +1465,8 @@ the key. Both run on the game thread, from the owner's component: `tryRegister` 
 attempt until it returns `Ready`, and `unregisterFromNewFramework` from its `EndPlay`. **Since task 29** that loop is the
 generic skeleton of the component's binding (`UESimulatableOwnerBinding-rationale.md` §9), which calls this
 `tryRegister` (and `noteDelayedInputComponent`) itself, with the storage key its game's hook resolved; the brawler's
-`tryRegister` and `noteDelayedInputComponent` wrappers have no caller since, and its `unregisterFromNewFramework`
-wrapper is still the component's `EndPlay` call. Task 28's `transcribe.py` compares
+`tryRegister` and `noteDelayedInputComponent` wrappers had no caller since, and **task 36** removed them; its
+`unregisterFromNewFramework` wrapper is still the component's `EndPlay` call. Task 28's `transcribe.py` compares
 both sequences, statement by statement, with the owner's functions as they stood before task 25, every hook and helper
 inlined (the task's notes show what it checked).
 
@@ -1576,10 +1589,129 @@ What the authority-only score system relies on, and why the notify must precede 
 
 The cast's check names `UESimulationSession::tryRegister` and `TraitsT::Character` instead of the owner's component and
 the game's character class (design Q7, ruled); its condition and second line are unchanged. The DO_CHECK walk's two
-checks were already game-neutral and are unchanged. The `SimCharacterId::None` check is the owner's, in its wrapper
+checks were already game-neutral and are unchanged. The `SimCharacterId::None` check was the owner's, in its wrapper
 (since task 29 off the component's path: the binding's skeleton calls this function directly, and the game's
-`resolveRegistrationKey` hook answers `retry()` for a null id before the call).
+`resolveRegistrationKey` hook answers `retry()` for a null id before the call); task 36 removed it with the callerless
+wrapper.
 
 *Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §10 and the generic part of its §13.4 (task 28), made
 game-neutral, with the R0 lines above. The brawler's hooks, its statements and the source's own quoted comments are
 `BrawlerSessionGameUImpl-rationale.md` §7, in OGBrawlerUnreal's docs.*
+
+---
+
+## §13 The core systems' spellings (task 34)
+
+**What changed.** Until task 34 the session took its five core-system aliases from its game's composition:
+`using Storage = typename Composition::Storage;`, and the same for `Reconciliation`, `InputResolution` and `NetSync`, and
+`using ManagerType = typename Composition::Manager;`, where `Composition` is `typename TraitsT::Composition`. Go To
+Definition stopped at the alias, and the way to og-simulation ran through the game's composition struct, found by hand.
+Since task 34 the session spells them with og-simulation's own templates, over the composition's simulatable list:
+
+| alias | spelling | og-simulation header |
+|---|---|---|
+| `Simulatables` (new) | `typename Composition::Simulatables` (a `SimulatableList`; `apply_t` unpacks it) | `SimulatableList.h` |
+| `Storage` | `apply_t<SimulationObjectStorage, Simulatables>` | `SimulationObjectStorage.h` |
+| `Reconciliation` | `apply_t<SimulationReconciliation, Simulatables>` | `SimulationReconciliation.h` |
+| `InputResolution` | `apply_t<SimulationInputResolution, Simulatables>` | `SimulationInputResolution.h` |
+| `NetSync` | `apply_t<SimulationNetSync, Simulatables>` | `SimulationNetSync.h` |
+| `ManagerType` | `SimulationManager<IntegrationExec, NetSync, InputResolution, Reconciliation, SystemsExec, Storage, StaticData>` | `SimulationManager.h` |
+
+F12 on a template name in the alias block now opens its primary template in og-simulation (task 34's notes list the
+header and line of each). `SimulationObjectStorage` is also forward-declared in og-simulation's `StorageView.h`, so a
+"Go To Declaration" may offer that line too.
+
+**The ruling (user, 2026-10-24).** The session requires og-simulation's own core systems. A game supplies the simulatable
+list, its systems (`SystemsExec`), its engine adapters (`IntegrationExec`), its static data, the backend, the hooks and
+the net config; it does not substitute the storage, the reconciliation, the input resolution, the net sync or the core
+manager. So `Simulatables`, `SystemsExec` and `IntegrationExec` stayed `typename Composition::…` (the two executors
+until task 35, §14), and `StaticData` stays `typename TraitsT::StaticData`: they are the game's, and this MPL header names
+no game type.
+
+**The checks.** `compositionContractsHold()` (§2) holds one row per derived alias: the session's `Storage`,
+`Reconciliation`, `InputResolution`, `NetSync` and `ManagerType` must each be the same type as the composition's
+`Storage`, `Reconciliation`, `InputResolution`, `NetSync` and `Manager`. A composition that names another type there
+fails the build with the row's message, which states the ruling. The rows sit beside the row that `ManagerType` is the
+tick-driver binding's `Manager`, inside the function, where the class is complete; the constructor asserts the function.
+They name only og-simulation templates and `TraitsT`-dependent types. The game's own side of the chain is its traits'
+core-system map (the brawler's: `BrawlerSessionTraitsUImpl-rationale.md` §4, in OGBrawlerUnreal's docs). *Seen failing
+(task 34):* `NetSync` spelled `apply_t<SimulationInputResolution, Simulatables>` fails the brawler's build with the
+`NetSync` row's message, the manager row's and the tick-driver row's (the manager is over the wrong peer), and the
+errors of the members that type uses (`C2661`, `C2672`).
+
+**What did not change.** Every alias keeps its name and its place in the block; `Simulatables` is new, declared just
+before `Storage`. No member declaration changed, and the types are the same ones, so no code changes: task 34's
+per-function disassembly differs only in the `__LINE__` of seven `checkf` calls in `beginPlay` and `tryRegister`
+(the header grew by 27 lines above them), the line a failed check reports.
+
+**The includes.** The session includes the four og-simulation headers the new spellings name that it did not include
+itself (`SimulatableList.h`, `SimulationObjectStorage.h`, `SimulationReconciliation.h`, `SimulationManager.h`), in its
+block of og-simulation includes beside the two it did (`SimulationInputResolution.h`, `SimulationNetSync.h`). *R0:* the
+plugin's two `.cpp` files that include this header, `UESimulationSession.cpp` and `SimulatableNetSyncComponent.cpp`,
+already reached the first three through those two; `SimulationManager.h` is new to them. The game's files already reached
+all four through its composition header.
+
+---
+
+## §14 The executors, the engine contract and `PhysicsBackend` (task 35)
+
+**What changed.** Until task 35 the session took its two executors from its game's composition:
+`using SystemsExec = typename Composition::SystemsExec;` and `using IntegrationExec = typename Composition::IntegrationExec;`.
+Since task 35 it spells both with og-simulation's own executors, the way §13 spells the core systems:
+
+| alias | spelling | og-simulation header |
+|---|---|---|
+| `IntegrationExec` | `apply_t<IntegrationExecFor, Simulatables>`, where the private member alias template `IntegrationExecFor<SimulatableTs...>` is `SimulationIntegrationExecutor<StaticData, typename EngineTraits::BodyAdapter, typename EngineTraits::QueryAdapter, SimulatableTs...>` | `SimulationIntegrationExecutor.h` |
+| `SystemsExec` | `apply_t<SystemsExecFor, typename Composition::Systems>`, where the private member alias template `SystemsExecFor<SystemTs...>` is `SimulationSystemsExecutor<Simulatables, StaticData, SystemTs...>` (since task 36; task 35 spelled it through a partially specialized member struct) | `SystemsExecutor.h` |
+
+`IntegrationExecFor` and `SystemsExecFor` are the composition's own pattern (the brawler's
+`BrawlerCompositionUImpl::IntegrationExecFor` and `BrawlerCompositionUImpl::SystemsExecFor`), with `StaticData` and
+`EngineTraits` taken from the traits. `SystemsExec` takes the systems from `Composition::Systems`, a list the game
+declares in its firing order, so this MPL header names no game type. F12 on `SimulationIntegrationExecutor` or
+`SimulationSystemsExecutor` opens og-simulation's template.
+
+**The list type is og-simulation's `SystemList` (task 36).** og-simulation's `SimulatableList` is the simulatable pack:
+the systems executor's primary template is left undefined so that the simulatables go through a `SimulatableList`, and
+`IsSimulatableList` gates each system's `RequiredSimulatables`. A list of systems spelled as a `SimulatableList` would
+model that concept and read as a list of simulatables. So the systems have their own marker, `SystemList`, declared in
+og-simulation's `SimulatableList.h` beside `SimulatableList` with its own `apply` specialization, which is what lets
+`apply_t` unpack it here; that header asserts `SystemList` does not model `IsSimulatableList`. A game declares its
+`Systems` as a `SystemList` (the brawler's, `BrawlerCompositionUImpl-rationale.md` §4, in OGBrawlerUnreal's docs). Task 35
+had each game declare its own minimal list and expanded any variadic class template through a partial specialization
+(lead ruling, 2026-10-24); task 36 replaced both (lead ruling, 2026-10-24).
+
+**The engine contract.** `compositionContractsHold()` asserts `PhysicsEngineTraits<EngineTraits>` (og-simulation's
+`PhysicsEngineTraits.h`), so the requirement on `TraitsT::EngineTraits` is stated where the session reads the engine's
+adapter types, its name (the `[SimHost.Backend]` line, §11.6) and its visualization types, and F12 on the concept opens
+it. The engine stays the game's choice, made in its traits; the brawler also asserts the concept on its selected
+`EngineTraits` (`PhysicsBackendUImpl.h`).
+
+**The ruling (user, 2026-10-24), extending §13's.** A game also uses og-simulation's own integration executor and systems
+executor. It chooses the systems and their order, its static data, its engine (through the traits) and its physics
+backend.
+
+**The checks.** Two rows beside §13's: the session's `IntegrationExec` and `SystemsExec` must each be the same type as the
+composition's `IntegrationExec` and `SystemsExec`; then the `PhysicsEngineTraits` row. Firing order is template order, so
+the `SystemsExec` row fails when the composition's `SystemsExec` is not the executor over its own `Systems` list in that
+list's order (task 35's arm S2, a reordered executor, and its review's X1, a dropped system). A reorder of the list
+itself changes both sides and passes the row: the order is the game's choice, and the brawler's `firesBefore` assert
+is what rejects detection after routing (`BrawlerCompositionUImpl-rationale.md` §3, in OGBrawlerUnreal's docs).
+
+**`PhysicsBackend` (task 35).** The backend's type and members are renamed so that the name says it is the physics backend:
+the traits' `PhysicsBackend<SessionT>` and `PhysicsBackendWorlds` (were `Backend` and `BackendWorlds`), this class's alias
+`PhysicsBackend` and its friend line, and the members `m_physicsBackend` and `m_physicsBackendWorlds` (were `m_backend` and
+`m_backendWorlds`). It is the physics backend host: it owns and steps the physics worlds and updates the visuals (on Jolt
+through the tick driver, on Chaos the game's own host), reached through the traits (§3). The rename is identifiers only:
+the `[SimHost.Backend]` log tag and every other log text, cvar and config key are unchanged, and so are the game's selector
+names (the brawler's `physicsBackendUImpl::Backend`, `BackendFor` and `BackendWorlds`), og-simulation's
+`SimulationTickBackend` (whose `m_backend` is its render source's own reference) and the game hook `backendFingerprint`.
+The tick-driver host reads the two members by name in its order row (`TickDriverBackendUImpl-rationale.md` §1), so they
+renamed together.
+
+**What did not change.** The types are the same ones, so no code changes; the header grew by 31 lines above every
+`checkf`, which moves only the `__LINE__` a failed check reports (task 35's notes give the per-function disassembly).
+
+**The includes.** `PhysicsEngineTraits.h`, `SimulationIntegrationExecutor.h` and `SystemsExecutor.h`, in the block of
+og-simulation includes. *R0:* `SimulationIntegrationExecutor.h` already reached the plugin's two `.cpp` files that include
+this header through `SimulationManager.h` (task 34); the other two are new to them, with `SystemRoleAffinity.h`, which
+`SystemsExecutor.h` includes (an enum, no data).

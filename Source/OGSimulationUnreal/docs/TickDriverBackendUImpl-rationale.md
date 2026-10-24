@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: m_backendWorlds -- RENAMED by og-ue-simulationcomponentandmanagersplit task 35 to m_physicsBackendWorlds (the session's member); kept in §14's record of the rename -->
 # `TickDriverBackendUImpl` — rationale
 
 Companion to `Plugins/OGSimulation/Source/OGSimulationUnreal/TickDriverBackendUImpl.h`, a header template since og-tickdriver task 15e,
@@ -69,13 +70,13 @@ and the UImpl lost its last `OG_PHYSICS_BACKEND_CHAOS`.
 
 * **Plain C++, not reflected; a class template since og-tickdriver task 15b** (§10). It holds a reference to its
   owner, the game binding's `Session` (`UESimulationSession` since og-ue-simulationcomponentandmanagersplit task 24a, §14; the brawler's
-  `AOGBrawlerSimulationManager` before; §12), and one to the owner's `m_backendWorlds`. The owner declares the configuration's
-  backend a friend (`friend typename TraitsT::template Backend<UESimulationSession>;` in the session since
+  `AOGBrawlerSimulationManager` before; §12), and one to the owner's `m_physicsBackendWorlds`. The owner declares the configuration's
+  backend a friend (`friend typename TraitsT::template PhysicsBackend<UESimulationSession>;` in the session since
   og-ue-simulationcomponentandmanagersplit task 24a, which in the Jolt configuration names this class's one instantiation; the brawler actor's
   `friend physicsBackendUImpl::Backend;` before, deleted by task 27b), so its bodies read the owner's members as the code
   did when it lived in the owner. Since
   og-tickdriver task 15e they read only the three adapters (`m_physAdapter`, `m_physReaderAdapter`, `m_queryAdapter`),
-  `runsPrediction` and the `m_backendWorlds` < `m_backend` row; the game binding reads the rest (the gravity in
+  `runsPrediction` and the `m_physicsBackendWorlds` < `m_physicsBackend` row; the game binding reads the rest (the gravity in
   `m_staticData`, `m_storage`, `m_manager` and the net mode; `BrawlerTickDriverGameUImpl-rationale.md`). The bodies
   read `m_staticData` until task 15e, and `m_storage` and `m_manager` until task 15d.
 * **Not copyable.** The copy constructor and assignment are deleted; it is a member of its owner and nothing else.
@@ -112,17 +113,17 @@ part destroyed after the owner's adapters and another destroyed before the owner
   the Jolt engine traits' `WorldHost` template over the Jolt binding's `Simulatable`, the same type. The world host holds the runtime lease, the
   contact counter, the step and shadow worlds, the shadow world's adapters, the slot template, the slot table
   (og-simulation's `TickSlotTable`), the world lock, the thread context, the shadow hand-over and its window and the
-  contact records (`JoltTickWorldHost-rationale.md` §4). The owner declares the struct as `m_backendWorlds`, where
+  contact records (`JoltTickWorldHost-rationale.md` §4). The owner declares the struct as `m_physicsBackendWorlds`, where
   the Jolt member block was, above `m_physAdapter`, because the adapters are bound to the step world and the lease
   must outlive both worlds.
 * `TickDriverBackendUImpl` (this class) holds everything else, in this order: the frame host, the game binding, the
   render-target table and the tick backend, og-simulation's `SimulationTickBackend` (§11), which holds the render
   source, the presenter (since og-tickdriver task 9 it holds the render snapshots, the corrections, the render
-  targets and the render windows) and the tick driver, in that order. The owner declares this class as `m_backend`,
+  targets and the render windows) and the tick driver, in that order. The owner declares this class as `m_physicsBackend`,
   directly after `m_manager`, because the driver unregisters from the manager's client clock when it is destroyed.
 
 **Why the world host has its own engine.** `JoltTickWorldHost` takes its engine by reference in its constructor, and
-`m_backendWorlds` is constructed before `m_backend`, where the frame host's engine lives, so the world host cannot
+`m_physicsBackendWorlds` is constructed before `m_physicsBackend`, where the frame host's engine lives, so the world host cannot
 borrow that one. It gets a second `SimulationEngineUImpl`, declared before it in the same struct. The world host
 uses only the engine's clock, frame number, log sink and diagnostics switch, which read the same global state in
 every instance; the one per-instance member, the weak owner the frame host sets for the end-of-frame deferral, is
@@ -131,7 +132,7 @@ reads the step task's priority itself at a dispatch (`UETickDriverHost-rationale
 dispatches.
 
 og-tickdriver task 15b looked again at whether the world host could borrow the frame host's engine, and kept the
-second one. The template changes no member order: `m_backendWorlds` is still constructed before `m_backend` and
+second one. The template changes no member order: `m_physicsBackendWorlds` is still constructed before `m_physicsBackend` and
 destroyed after it, so the frame host's engine does not exist yet when the world host's constructor takes its
 reference, and is gone while the world host still holds it. And the frame host, OGSimulationUnreal's
 `UETickDriverHost`, owns its engine as a member (`m_engine`), built by its own constructor (which took the two
@@ -146,9 +147,9 @@ owner's declarations and assertions are the same in both configurations.
 | runtime lease < contact counter < step world | og-simulation-jolt's `JoltTickWorlds`, first `static_assert` (this struct's own until og-tickdriver task 10) |
 | runtime lease < shadow world < shadow body adapter < {shadow reader, shadow query} | `JoltTickWorlds`, second `static_assert` (likewise) |
 | `engine` < `host` | this class's `compositionContractsHold`, first `static_assert` (since og-tickdriver task 15b; from task 10 until then the worlds struct's own file-scope `static_assert`, which a struct template cannot carry) |
-| `m_backendWorlds` < `m_physAdapter` < {`m_physReaderAdapter`, `m_queryAdapter`} < `m_integrationLayer` | the owner's `compositionContractsHold` (`UESimulationSession`'s since og-ue-simulationcomponentandmanagersplit task 24a) |
-| `m_manager` < `m_backend` | the owner's `compositionContractsHold` (`UESimulationSession`'s since og-ue-simulationcomponentandmanagersplit task 24a) |
-| `m_backendWorlds` < `m_backend` (the driver holds the world host) | this class's `startDriverStepping`, a `static_assert` (since og-tickdriver task 10) |
+| `m_physicsBackendWorlds` < `m_physAdapter` < {`m_physReaderAdapter`, `m_queryAdapter`} < `m_integrationLayer` | the owner's `compositionContractsHold` (`UESimulationSession`'s since og-ue-simulationcomponentandmanagersplit task 24a) |
+| `m_manager` < `m_physicsBackend` | the owner's `compositionContractsHold` (`UESimulationSession`'s since og-ue-simulationcomponentandmanagersplit task 24a) |
+| `m_physicsBackendWorlds` < `m_physicsBackend` (the driver holds the world host) | this class's `startDriverStepping`, a `static_assert` (since og-tickdriver task 10) |
 | {`m_frameHost`, `m_tickDriverGame`} < `m_tickBackend` | this class's `compositionContractsHold`, second `static_assert` (since og-tickdriver task 15d; from task 8 to 15d the rows "frame host, game binding and presenter < driver" and, from task 9, "frame host and render source < presenter" over this class's own members; the hooks < step driver row is og-simulation's `SimulationTickDriver`'s own) |
 | render source < presenter < driver | og-simulation's `SimulationTickBackend`, a `static_assert` in its constructor (since og-tickdriver task 15d; `SimulationTickBackend-rationale.md` §4) |
 
@@ -277,7 +278,7 @@ The first part of the Jolt host builds the physics world and binds characters in
 stepping; task 54 steps it (§4). Since og-tickdriver task 10 the world, the stepping mode, the slots, the bind, the
 release and the visualization doors are og-simulation-jolt's `JoltTickWorldHost` (`JoltTickWorldHost-rationale.md`
 §5 to §8 in og-simulation-jolt's docs: every step, check and log format there is the transcription of this class's
-old code), and this class reaches it as `host` in `m_backendWorlds` and supplies the brawler and Unreal parts. Each item below
+old code), and this class reaches it as `host` in `m_physicsBackendWorlds` and supplies the brawler and Unreal parts. Each item below
 says which is which.
 
 * **The world build** (`buildWorld`, before the role branches, the same on every peer). This class:
@@ -394,7 +395,7 @@ Since og-tickdriver task 8 the frame pipeline and the step hooks are og-simulati
 (OGSimulationUnreal's `UETickDriverHost`, a game-module class until og-tickdriver task 11) is their Unreal engine port
 and the two tick functions, and the brawler's game hooks are
 `BrawlerTickDriverGameUImpl`; each has its own document. Since og-tickdriver task 10 the driver's world host is
-og-simulation-jolt's `JoltTickWorldHost`, held in `m_backendWorlds` (§1, §3). This class's part:
+og-simulation-jolt's `JoltTickWorldHost`, held in `m_physicsBackendWorlds` (§1, §3). This class's part:
 
 * **Members**, of this class, last and in this order: `m_frameHost` (the engine and the tick functions;
   default-constructed, it reads its own console variables, `UETickDriverHost-rationale.md` §4),
@@ -406,7 +407,7 @@ og-simulation-jolt's `JoltTickWorldHost`, held in `m_backendWorlds` (§1, §3). 
   `SimulationStepDriver` (over the manager, the world host's step world and the hooks), and holds the four by pointer.
   This class's `compositionContractsHold` asserts that the frame host and the game binding are declared before the
   tick backend; the tick backend asserts render source < presenter < driver; a `static_assert` in
-  `startDriverStepping` asserts that the owner declares `m_backendWorlds` before `m_backend`, so the world host
+  `startDriverStepping` asserts that the owner declares `m_physicsBackendWorlds` before `m_physicsBackend`, so the world host
   outlives the driver; the owner asserts manager < backend, so the driver goes first and while the manager lives: its
   step driver unregisters its resync callback from the manager's client clock when destroyed.
 * **The world host's step doors** (`JoltTickWorldHost-rationale.md` §9). `stepWorld()` is the step world.
@@ -529,7 +530,7 @@ and condition below is the presenter's transcription of this class's old code. T
   for the brawler ("Why it is not cosmetic" below).
 * **The two game-thread doors.** `beforePresent_GameThread` calls the tick backend's `present` with the controls and
   the table, and `present` calls the presenter's `present_GameThread` with the tick driver as the clock, the controls,
-  the table and the world host (`host` in `m_backendWorlds`); `updateVisualization_GameThread` calls the tick
+  the table and the world host (`host` in `m_physicsBackendWorlds`); `updateVisualization_GameThread` calls the tick
   backend's `updateVisualization`, which calls the presenter's `updateVisualization_GameThread` with the game
   binding's storage, the owner's.
 
@@ -977,7 +978,7 @@ the same type this class's own presenter alias named before.
 | this class | the tick backend | what runs, in this order |
 |---|---|---|
 | `buildWorld`, after the import, the split and the configuration | `build` | the world host's `build` with the same arguments |
-| `startDriverStepping`, after the `m_backendWorlds` row and the persistent-level `checkf` | `start` | `bindIntegratedTickSource` with the manager; the presenter; the driver; returns the driver to `m_frameHost.begin` |
+| `startDriverStepping`, after the `m_physicsBackendWorlds` row and the persistent-level `checkf` | `start` | `bindIntegratedTickSource` with the manager; the presenter; the driver; returns the driver to `m_frameHost.begin` |
 | `onEndPlayBegin`, after `unregisterTickFunctions` | `stop` | the driver's `stop()`, when it was built |
 | `createBodies_GameThread`, inside `callWithSlotRequest`, after the capsule check | `acquireAndBind` | the world host's `acquire`, then, with a slot, its `bind` with the driver's `noteWorldLockWait` |
 | `onRegistered_GameThread`, before the character cast and `registerTarget` | `onRegistered` | the world host's `slotOf`, an `OG_CHECK` that there is a slot, the driver's `pushBodySlotOccupancy(slot, true)`, the presenter's `onRegistered` |
@@ -993,7 +994,7 @@ became the game binding's and the engine traits'): the static import and its rep
 binding (R7: the contact-count switch and the mapped categories stay here and pass through `build` unchanged); the
 `AActor` key and name, `GetNetMode` and the character cast and replicated slot in `callWithSlotRequest`; the capsule
 check; the render-target table and its `registerTarget`/`unregisterTarget`; the frame host; the controls' fill; the
-null-owner condition before `releaseSlot`; and the `m_backendWorlds` row.
+null-owner condition before `releaseSlot`; and the `m_physicsBackendWorlds` row.
 
 **The unregister order is kept exactly** (lead ruling R4): the presenter forget, the table's `unregisterTarget`, then
 the release under the null-owner condition. So the tick backend has two calls for it rather than one.
@@ -1057,13 +1058,13 @@ built over Chaos.
 | `m_owner.m_staticData.m_movementStaticData.gravity` in `buildWorld` | the game binding's `gravity(session)`, the same read |
 | the static data's type in `createBodies_GameThread` | `GameBindingT::StaticData`; the call, `owner.getStaticData()`, is unchanged |
 | the cast in `onRegistered_GameThread` and the parameter types `UOGBrawlerSimulatableComponent&`, `AOGBrawlerUECharacter&` | `Character` and `Component`, the game binding's; `GetCapsuleComponent` (Unreal's `ACharacter`) stays |
-| the owner's type `AOGBrawlerSimulationManager`, and the class the `m_backendWorlds` row reads | `Session` |
+| the owner's type `AOGBrawlerSimulationManager`, and the class the `m_physicsBackendWorlds` row reads | `Session` |
 | the game binding's alias over `AOGBrawlerSimulationManager` | `GameBindingT` itself, held as `m_tickDriverGame`; the tick backend's alias is `TickBackend` |
 | og-simulation-jolt's `joltTickWorldHost::splitStatics` and its result type | the engine traits' `splitStatics` and `Statics`, a forward of the same function (lead ruling L2) |
 | the traits' `contactCountsEnabled` | the engine binding's (lead ruling L4: the cvar stays in the game module, under the game's backend switch) |
 
 **What did not change.** The member list, its order and the two order rows of `compositionContractsHold`; the
-`m_backendWorlds` row in `startDriverStepping`, now over `Session`; the reads of the owner's three adapter optionals and
+`m_physicsBackendWorlds` row in `startDriverStepping`, now over `Session`; the reads of the owner's three adapter optionals and
 `runsPrediction`; every call into the tick backend, the frame host and the render-target table, in the same order. Two
 `static_assert` messages named the brawler's session and now name `GameBindingT::Session`; the rest of their text is
 unchanged. The `HasAuthority` poison has a game-neutral name (§1), and the game binding carries the original poison.
@@ -1104,7 +1105,7 @@ OGSimulationUnreal or OGSimulationJoltUnreal object includes it.
 
 Since task 24a the brawler's game binding is instantiated over OGSimulationUnreal's `UESimulationSession<BrawlerSessionTraitsUImpl>`
 (`UESimulationSession-rationale.md`), so this class's `Session`, its owner `m_owner`, is the session: it holds the three
-adapters, `m_backendWorlds` and this class, and befriends this class through its traits. Two statements changed:
+adapters, `m_physicsBackendWorlds` and this class, and befriends this class through its traits. Two statements changed:
 
 * **`m_frameHost.begin(m_owner.owner(), …)`.** The frame host's tick functions take a `UObject&` owner; the session is not
   a `UObject`, so the host passes the session's owner, the actor, which is the object it passed before.
@@ -1114,6 +1115,8 @@ adapters, `m_backendWorlds` and this class, and befriends this class through its
   manager.
 
 The three adapter reads, `GameBindingT::gravity(m_owner)`, `GameBindingT::callWithSlotRequest(m_owner, …)` and the
-`m_backendWorlds` < `m_backend` row keep their spelling: the members are the session's and the game binding takes the
-session. Two assertion messages name the session now. The rows of §1's table that were the owner's are the session's
+worlds-before-backend row kept their spelling in task 24a: the members are the session's and the game binding takes the
+session. Because the row names the session's members, it renamed with them in og-ue-simulationcomponentandmanagersplit
+task 35 (`m_backendWorlds` < `m_backend` became `m_physicsBackendWorlds` < `m_physicsBackend`; its message too), with the
+session's (`UESimulationSession-rationale.md` §14). Two assertion messages name the session now. The rows of §1's table that were the owner's are the session's
 `compositionContractsHold` rows.

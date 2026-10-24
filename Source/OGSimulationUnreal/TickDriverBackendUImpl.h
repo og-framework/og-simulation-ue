@@ -116,9 +116,9 @@ private:
 			"callback from the manager's client clock when it goes, so the tick backend must go first. Keep m_frameHost "
 			"and m_tickDriverGame < m_tickBackend; that its driver goes before its presenter and the presenter before the "
 			"render source is og-simulation's SimulationTickBackend's own row; that all of them go while the manager is "
-			"alive is the session's own row (UESimulationSession's m_manager < m_backend, GameBindingT::Session since "
+			"alive is the session's own row (UESimulationSession's m_manager < m_physicsBackend, GameBindingT::Session since "
 			"og-ue-simulationcomponentandmanagersplit task 24a); and that the world host "
-			"(m_backendWorlds) outlives the driver is asserted in startDriverStepping. Was the rows 'm_frameHost, "
+			"(m_physicsBackendWorlds) outlives the driver is asserted in startDriverStepping. Was the rows 'm_frameHost, "
 			"m_tickDriverGame and m_presenter < m_tickDriver' and 'm_frameHost and m_renderSource < m_presenter' until "
 			"og-tickdriver task 15d moved the presenter, the driver and the render source into the tick backend.");
 		return true;
@@ -264,11 +264,11 @@ template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT
 	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
 void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::startDriverStepping(UWorld& world, float dt, bool worldIsAuthority)
 {
-	static_assert(__builtin_offsetof(Session, m_backendWorlds)
-	                  < __builtin_offsetof(Session, m_backend),
+	static_assert(__builtin_offsetof(Session, m_physicsBackendWorlds)
+	                  < __builtin_offsetof(Session, m_physicsBackend),
 		"The session's members (GameBindingT::Session, a UESimulationSession) destruct in REVERSE declaration order. The tick driver built here "
-		"(in m_backend) holds the world host (in m_backendWorlds) by pointer and locks it and steps its world until it "
-		"stops, so the world host must outlive the driver. Keep m_backendWorlds < m_backend. Was implied by the owner's "
+		"(in m_physicsBackend) holds the world host (in m_physicsBackendWorlds) by pointer and locks it and steps its world until it "
+		"stops, so the world host must outlive the driver. Keep m_physicsBackendWorlds < m_physicsBackend. Was implied by the owner's "
 		"two rows until og-tickdriver task 10, when the driver's world host moved out of this class.");
 
 	checkf(world.PersistentLevel != nullptr, TEXT("startDriverStepping: the world has no persistent level."));

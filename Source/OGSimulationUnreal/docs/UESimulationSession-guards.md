@@ -19,7 +19,9 @@ below the manager), and the constructor asserts `compositionContractsHold()` (ra
 PROBE A's window length against the resim-gate probe's (a `static_assert` in `onFrameStepsDue_GameThread`, rationale §9.9).
 So are the game's hooks: each sequence that calls them checks them first (`beginPlay`, rationale §11.1; `tryRegister` and
 `unregisterFromNewFramework`, rationale §12.5), and since task 28 `compositionContractsHold()` asserts that no session member
-shares a hook's name (rationale §12.5).
+shares a hook's name (rationale §12.5). Since task 34 it also asserts that each of the five core-system aliases names the
+composition's own type (rationale §13). Since task 35 it also asserts that the two executors, `IntegrationExec` and
+`SystemsExec`, name the composition's own types, and that `EngineTraits` models `PhysicsEngineTraits` (rationale §14).
 
 ---
 
@@ -613,11 +615,11 @@ own declaration states the same rule (og-simulation's `RelayWritePathProbe.h`, `
 
 ---
 
-## G-20 — `m_backend.onEndPlayBegin()` stays the first statement of `endPlay`: nothing moves above it
+## G-20 — `m_physicsBackend.onEndPlayBegin()` stays the first statement of `endPlay`: nothing moves above it
 
-**Tag site:** `UESimulationSession.h`, directly above `m_backend.onEndPlayBegin();`, the first statement of `endPlay`.
+**Tag site:** `UESimulationSession.h`, directly above `m_physicsBackend.onEndPlayBegin();`, the first statement of `endPlay`.
 
-**The prohibition.** ⛔ Do not move any `endPlay` statement above `m_backend.onEndPlayBegin()`, do not add one above
+**The prohibition.** ⛔ Do not move any `endPlay` statement above `m_physicsBackend.onEndPlayBegin()`, do not add one above
 it, and do not drop the call. Everything else in `endPlay` (G-21's resets, the static instance table and the listener
 unregistration, the latency member's `end` with its post-tick-flush unbind, the backend's `onEndPlayWorld`) runs after
 it. The rule is the same for every backend:
@@ -652,7 +654,7 @@ marks: the owner's `EndPlay` statements before `Super` became `endPlay`.*
 ## G-21 — `endPlay` resets the coordinator and the tier cache while `m_manager` still exists
 
 **Tag site:** `UESimulationSession.h`, directly above `m_delayedInputComponentsById.clear();` in `endPlay`, the first
-statement after `m_backend.onEndPlayBegin();` (`⛔G-20`); the coordinator's and the tier cache's resets follow it.
+statement after `m_physicsBackend.onEndPlayBegin();` (`⛔G-20`); the coordinator's and the tier cache's resets follow it.
 
 **The prohibition, as it stood in the source:**
 
@@ -752,7 +754,8 @@ brawler's: `BrawlerSessionGameUImpl-guards.md` G-01, in OGBrawlerUnreal's docs; 
 the authority's input collection substitutes it for a character with no input (the provider-miss and underrun arms); and
 `SimulationNetSync::registerAuthorityOwner` logs `[Warning][NeutralInput] registerAuthorityOwner id=%u ran BEFORE
 setNeutralInput` when it has not run, so a late call is reported, not silent. Registration runs per character, from the
-owner's registration path, after `beginPlay` (since task 28 the session's own `tryRegister`, called by the owner's wrapper).
+owner's registration path, after `beginPlay` (since task 28 the session's own `tryRegister`, called since task 29 by the
+owner's registration skeleton, `UESimulatableOwnerBinding`).
 
 *Moved from `OGBrawlerSimulationManager-guards.md` G-59 (the brawler's task 12 conversion) by og-ue-simulationcomponentandmanagersplit task 27b, with the call it
 marks: the authority branch's neutral input is the session's own statement in `beginPlay`, its value the game's hook.*
