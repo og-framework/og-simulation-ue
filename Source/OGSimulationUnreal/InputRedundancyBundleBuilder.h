@@ -55,7 +55,7 @@
 // This is the UE-side bridge that lets the UE-free SimulationNetSync layer drive
 // a UE wire type: SimulationNetSync::sendLocalInputToAuthorityAll hands the owner
 // its core PendingInputQueue + scalar params, and the owner
-// (USimmableUpdateComponent::sendLocalInputToAuthority) calls this helper to build
+// (UOGBrawlerSimulatableComponent::sendLocalInputToAuthority) calls this helper to build
 // the bundle before firing the unreliable RPC.
 //
 // Unit-tested in isolation by the Task 12 regression suite.

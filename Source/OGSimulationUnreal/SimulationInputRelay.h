@@ -29,7 +29,7 @@ OGSIMULATIONUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(LogOGInputRelay, Warning, All
 //   Relayed input ring      ONE char    everyone BUT owner  THIS actor
 //
 // -------------------------------------------------------------------------
-// WHY THE RING LEFT USimmableUpdateComponent — the T37 defect, in one paragraph
+// WHY THE RING LEFT UOGBrawlerSimulatableComponent — the T37 defect, in one paragraph
 // -------------------------------------------------------------------------
 // The ring and the correction state were two UPROPERTYs on the same actor's
 // component, which means Iris wrote them inside ONE atomic batch: the whole
@@ -202,7 +202,7 @@ public:
     const FRelayedInputRing& getRelayedInputRing() const  { return m_relayedInputRing; }
 
     // ⭐ [T34] SERVER write handle — THE FLUSH STAGE.
-    // `ASimulationManagerUImpl::relayRemoteInput` reaches this through the
+    // `AOGBrawlerSimulationManager::relayRemoteInput` reaches this through the
     // component's forwarder and calls `stageArrival` on it, once per accepted
     // capture tick, on the game thread from the RPC receipt path. Every arrival of
     // a frame lands here; `PreReplication` publishes the whole burst.
@@ -297,7 +297,7 @@ private:
     static constexpr uint32 kFlushReportRounds = 120;
 
     // THE PAYLOAD. Same struct, same codec, same wire format, same T29 Iris
-    // serializer registration as when it lived on USimmableUpdateComponent — only
+    // serializer registration as when it lived on UOGBrawlerSimulatableComponent — only
     // the carrier changed. Registered COND_SkipOwner; see point 3 of the header
     // block for why that is both safe and load-bearing.
     UPROPERTY(ReplicatedUsing = OnRep_RelayedInputRing)

@@ -217,7 +217,7 @@ public:
 	// retired in og-syncedInput-rework task 9).
 	// The version-byte prepend + pre/post-Stage-1 compat fence landed in Task 11
 	// (see OGBrawlerNetworkModelResearch risks_and_plan §5.2); the refusal path is
-	// USimmableUpdateComponent::OnRep_CorrectionState.
+	// UOGBrawlerSimulatableComponent::OnRep_CorrectionState.
 	//
 	// [og-netcode-v2-input-relay T4] BUMPED 1 -> 2, and the constant now lives in
 	// the engine-agnostic codec beside the layout it fences (the same aliasing the

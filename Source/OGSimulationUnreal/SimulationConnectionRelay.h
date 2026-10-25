@@ -23,7 +23,7 @@ OGSIMULATIONUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(LogOGConnRelay, Log, All);
 //   Authority tick      session   everyone        ASimulationTimingRelay
 //   Connection tier     ONE wire  that wire only  THIS actor
 //
-// The tier used to ride `USimmableUpdateComponent::m_replicatedConnectionTier`
+// The tier used to ride `UOGBrawlerSimulatableComponent::m_replicatedConnectionTier`
 // (COND_OwnerOnly on a per-CHARACTER vehicle). That worked, but it anchored a
 // WIRE property to a character: it needed a per-ownerId publish dedup in the
 // core to stop split-screen siblings starving each other, and the channel did

@@ -184,7 +184,7 @@ namespace ogIrisNetSerializerProof
 	// The console variable `og.net.ForceCorrectionWireVersionOffset` perturbs only
 	// the byte the SAVE path writes, which is exactly the byte a mismatched build
 	// would differ in, and leaves the local expectation alone. A receiving client
-	// then takes the real USimmableUpdateComponent::OnRep_CorrectionState refusal
+	// then takes the real UOGBrawlerSimulatableComponent::OnRep_CorrectionState refusal
 	// path.
 	//
 	// ⚠ IT MUST BE SET AT RUNTIME, IN THE PROCESS THAT SAVES, AND NEVER FROM AN .ini

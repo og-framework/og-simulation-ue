@@ -7,7 +7,7 @@ public class OGSimulationUnreal : ModuleRules
 	public OGSimulationUnreal(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-		MinSourceFilesForUnityBuildOverride = 32;
+		bUseUnity = false;
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Chaos", "Core", "PhysicsCore", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "OGSimulation" });
 		SetupIrisSupport(Target);

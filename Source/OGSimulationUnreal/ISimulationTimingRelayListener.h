@@ -39,7 +39,7 @@ public:
     // + republishes but does NOT stall — see the note above.
     virtual void onRelayDelayFloorReplayed(uint8_t floorTicks) = 0;
 
-    // Static per-world-role registry — mirrors ASimulationManagerUImpl::s_instances.
+    // Static per-world-role registry — mirrors AOGBrawlerSimulationManager::s_instances.
     // Slot 0 = authority, slot 1 = non-authority (client).
     static ISimulationTimingRelayListener* instanceFor(bool isAuthority)
     {

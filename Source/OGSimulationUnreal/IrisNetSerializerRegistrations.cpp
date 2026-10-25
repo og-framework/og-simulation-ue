@@ -38,7 +38,7 @@
 //      exactly one site — the load path of NetSerialize — and initialises to the
 //      LOCAL kWireFormatVersion so an unreplicated buffer never false-positives.
 //      With NetSerialize never called, that assignment never ran, so
-//      USimmableUpdateComponent::OnRep_CorrectionState was comparing the local
+//      UOGBrawlerSimulatableComponent::OnRep_CorrectionState was comparing the local
 //      constant AGAINST ITSELF and could never be unequal. T4 bumped
 //      kWireFormatVersion 1 -> 2 specifically to arm this fence; it was protecting
 //      nothing. Two builds with incompatible state layouts would have silently
