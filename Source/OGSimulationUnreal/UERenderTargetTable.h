@@ -3,6 +3,7 @@
 // docs/UERenderTargetTable-rationale.md · docs/UERenderTargetTable-guards.md
 
 #include "OGSimulationUnreal.h"
+#include "OGSimulation/SimulationFrame.h"
 
 #include <cstdint>
 #include <optional>
@@ -19,7 +20,7 @@ class USceneComponent;
 class OGSIMULATIONUNREAL_API UERenderTargetTable
 {
 public:
-	static constexpr double kCentimetresPerLength = 1.0;
+	static constexpr double kCentimetresPerLength = simFrame::kUeCentimetresPerUnit;
 
 	UERenderTargetTable() = default;
 

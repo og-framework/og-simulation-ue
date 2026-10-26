@@ -3,6 +3,7 @@
 #include "ChaosPhysicsFactory.h"
 #include "OGSimulationUnreal/ChaosPhysicsBodyAdapter.h"
 #include "OGSimulationUnreal/ChaosSpatialQueryAdapter.h"
+#include "OGSimulationUnreal/UEFrameConversion.h"
 
 #include "Runtime/Engine/Classes/Components/CapsuleComponent.h"
 #include "Runtime/Engine/Classes/Components/SphereComponent.h"
@@ -176,12 +177,14 @@ ChaosPhysicsFactory::PhysicalObjectResult ChaosPhysicsFactory::createPhysicalObj
 		{
 			if (const UCapsuleComponent* capsule = Cast<UCapsuleComponent>(component))
 			{
-				checkf(FMath::IsNearlyEqual(capsule->GetUnscaledCapsuleRadius(), capsuleGeo->radius),
+				const float descriptorRadius = static_cast<float>(ueFrame::lengthToUe(capsuleGeo->radius));
+				const float descriptorHalfHeight = static_cast<float>(ueFrame::lengthToUe(capsuleGeo->halfHeight));
+				checkf(FMath::IsNearlyEqual(capsule->GetUnscaledCapsuleRadius(), descriptorRadius),
 					   TEXT("ChaosPhysicsFactory — adopted root '%s' radius %f != descriptor '%hs' radius %f"),
-					   *component->GetName(), capsule->GetUnscaledCapsuleRadius(), name, capsuleGeo->radius);
-				checkf(FMath::IsNearlyEqual(capsule->GetUnscaledCapsuleHalfHeight(), capsuleGeo->halfHeight),
+					   *component->GetName(), capsule->GetUnscaledCapsuleRadius(), name, descriptorRadius);
+				checkf(FMath::IsNearlyEqual(capsule->GetUnscaledCapsuleHalfHeight(), descriptorHalfHeight),
 					   TEXT("ChaosPhysicsFactory — adopted root '%s' half-height %f != descriptor '%hs' half-height %f"),
-					   *component->GetName(), capsule->GetUnscaledCapsuleHalfHeight(), name, capsuleGeo->halfHeight);
+					   *component->GetName(), capsule->GetUnscaledCapsuleHalfHeight(), name, descriptorHalfHeight);
 			}
 		}
 
@@ -223,13 +226,14 @@ ChaosPhysicsFactory::PhysicalObjectResult ChaosPhysicsFactory::createPhysicalObj
 		if constexpr (std::is_same_v<Geometry, SphereGeometry>)
 		{
 			auto* comp = NewObject<USphereComponent>(m_owner, FName(name));
-			comp->SetSphereRadius(geo.radius);
+			comp->SetSphereRadius(static_cast<float>(ueFrame::lengthToUe(geo.radius)));
 			return comp;
 		}
 		else if constexpr (std::is_same_v<Geometry, CapsuleGeometry>)
 		{
 			auto* comp = NewObject<UCapsuleComponent>(m_owner, FName(name));
-			comp->InitCapsuleSize(geo.radius, geo.halfHeight);
+			comp->InitCapsuleSize(static_cast<float>(ueFrame::lengthToUe(geo.radius)),
+				static_cast<float>(ueFrame::lengthToUe(geo.halfHeight)));
 			return comp;
 		}
 		else

@@ -6,13 +6,13 @@
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
 #include "GameFramework/Actor.h"
-#include "UGLMTypeConversion.h"
+#include "UEFrameConversion.h"
 
 namespace
 {
 	glm::dvec3 lengthOf(const FVector& centimetres)
 	{
-		return glm::dvec3(centimetres.X, centimetres.Y, centimetres.Z) / UERenderTargetTable::kCentimetresPerLength;
+		return ueFrame::vectorToSimD(centimetres);
 	}
 }
 
@@ -69,8 +69,8 @@ std::optional<glm::dvec3> UERenderTargetTable::applyRootPose(uint32_t id, const 
 	if (actor == nullptr)
 		return std::nullopt;
 
-	const FVector location = uglm::toFVector(position) * kCentimetresPerLength;
-	const FQuat actorRotation = rotation.has_value() ? uglm::toFQuat(*rotation) : actor->GetActorQuat();
+	const FVector location = ueFrame::vectorToUe(position);
+	const FQuat actorRotation = rotation.has_value() ? ueFrame::rotationToUe(*rotation) : actor->GetActorQuat();
 	// ⛔G-01  docs/UERenderTargetTable-guards.md
 	actor->SetActorLocationAndRotation(location, actorRotation, /*bSweep*/ false, /*OutSweepHitResult*/ nullptr,
 		ETeleportType::TeleportPhysics);

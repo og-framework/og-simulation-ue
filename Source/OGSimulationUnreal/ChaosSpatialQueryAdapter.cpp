@@ -12,6 +12,7 @@
 #include "Runtime/Experimental/Chaos/Public/PBDRigidsSolver.h"
 #include "Physics/Experimental/PhysInterface_Chaos.h"
 #include "OGSimulation/CompilerControl.h"
+#include "OGSimulationUnreal/UEFrameConversion.h"
 
 #include <atomic>
 #include <cstddef>
@@ -394,11 +395,12 @@ QueryVolumeId ChaosSpatialQueryAdapter::registerVolume(
 {
 	FCollisionShape uShape = std::visit([](const auto& geo) -> FCollisionShape {
 		if constexpr (std::is_same_v<std::decay_t<decltype(geo)>, SphereGeometry>)
-			return FCollisionShape::MakeSphere(geo.radius);
+			return FCollisionShape::MakeSphere(static_cast<float>(ueFrame::lengthToUe(geo.radius)));
 		else if constexpr (std::is_same_v<std::decay_t<decltype(geo)>, BoxGeometry>)
-			return FCollisionShape::MakeBox(FVector(geo.halfExtents.x, geo.halfExtents.y, geo.halfExtents.z));
+			return FCollisionShape::MakeBox(ueFrame::halfExtentsToUe(geo.halfExtents));
 		else // CapsuleGeometry
-			return FCollisionShape::MakeCapsule(geo.radius, geo.halfHeight);
+			return FCollisionShape::MakeCapsule(static_cast<float>(ueFrame::lengthToUe(geo.radius)),
+				static_cast<float>(ueFrame::lengthToUe(geo.halfHeight)));
 	}, descriptor.geometry);
 
 	FCollisionObjectQueryParams objectQueryParams = toObjectQueryParams(descriptor.searchCategories);
@@ -473,9 +475,8 @@ SpatialQueryReport ChaosSpatialQueryAdapter::overlap(const std::vector<QueryVolu
 	for (const auto& volumeId : volumeIds)
 	{
 		const auto& vol = m_volumes[volumeId.value];
-		FTransform worldTransform;
 		glm::mat4 worldMat = vol.parentTransform * vol.offsetTransform;
-		uglm::toFtransform(worldMat, worldTransform);
+		const FTransform worldTransform = ueFrame::transformToUe(worldMat);
 
 		FPhysicsInterface::GeomSweepMulti(
 			m_world,
@@ -497,7 +498,7 @@ SpatialQueryReport ChaosSpatialQueryAdapter::overlap(const std::vector<QueryVolu
 	for (auto& hit : results)
 	{
 		SpatialQueryHit sqHit;
-		sqHit.objectPosition = uglm::toGLMVec3(hit.HitObjectHandle.GetLocation());
+		sqHit.objectPosition = ueFrame::vectorToSim(hit.HitObjectHandle.GetLocation());
 		resolveHitIdentity(hit, sqHit.objectCategories, sqHit.bodyId, sqHit.rootBodyId);
 		report.hits.push_back(sqHit);
 	}
@@ -512,12 +513,11 @@ SweepHit ChaosSpatialQueryAdapter::sweep(QueryVolumeId volumeId, const glm::mat4
 	// several sub-sweeps per tick (wall-slide iterations) with no adapter state churn.
 	const auto& vol = m_volumes[volumeId.value];
 
-	FTransform worldTransform;
 	glm::mat4 worldMat = transform * vol.offsetTransform;
-	uglm::toFtransform(worldMat, worldTransform);
+	const FTransform worldTransform = ueFrame::transformToUe(worldMat);
 
 	const FVector start = worldTransform.GetTranslation();
-	const FVector end = start + uglm::toFVector(delta);
+	const FVector end = start + ueFrame::vectorToUe(delta);
 
 	// Local copy: the stored queryParams are shared with overlap() and must keep its
 	// semantics. A sweep additionally wants to see a volume that is ALREADY overlapping
@@ -592,10 +592,10 @@ SweepHit ChaosSpatialQueryAdapter::sweep(QueryVolumeId volumeId, const glm::mat4
 	SweepHit sweepHit;
 	sweepHit.blocked = true;
 	sweepHit.fraction = static_cast<float>(hit.Time);
-	sweepHit.normal = uglm::toGLMVec3(hit.ImpactNormal);
-	sweepHit.impactPoint = uglm::toGLMVec3(hit.ImpactPoint);
+	sweepHit.normal = ueFrame::directionToSim(hit.ImpactNormal);
+	sweepHit.impactPoint = ueFrame::vectorToSim(hit.ImpactPoint);
 	sweepHit.startPenetrating = hit.bStartPenetrating;
-	sweepHit.penetrationDepth = static_cast<float>(hit.PenetrationDepth);
+	sweepHit.penetrationDepth = ueFrame::lengthToSim(hit.PenetrationDepth);
 	resolveHitIdentity(hit, sweepHit.objectCategories, sweepHit.bodyId, sweepHit.rootBodyId);
 	return sweepHit;
 }

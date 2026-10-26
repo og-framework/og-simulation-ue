@@ -39,7 +39,7 @@ renderPresentControls, in TickDriverBackendUImpl.cpp (a historical name: the hos
 ## 3. The park snap is the caller's
 
 The park snap is a distance: a body whose two bracketing poses lie farther apart than it is snapped instead of blended
-(the interpolation's `snapDistanceCm`). It belongs to the game, whose bodies jump that far: the brawler's pooled
+(the interpolation's `snapDistance`). It belongs to the game, whose bodies jump that far: the brawler's pooled
 projectiles, parked and unparked far below the arena (its binding's `BrawlerJoltBindingUImpl::kParkSnap`,
 `BrawlerJoltBindingUImpl-rationale.md` §4). So it is a parameter, not a field this function leaves at its default
 (infinity, never snap): a caller cannot forget it, because the call does not compile without it. `lengthReportScale` is the constant 1.0 (design of og-tickdriver, K9): the `…Cm=` fields of the

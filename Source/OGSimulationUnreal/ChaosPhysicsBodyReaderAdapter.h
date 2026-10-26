@@ -6,7 +6,7 @@
 #include "OGSimulation/BodyId.h"
 #include "OGSimulation/PhysicsBodyState.h"
 #include "OGSimulation/PhysicsBodyReaderAdapter.h"
-#include "OGSimulationUnreal/UGLMTypeConversion.h"
+#include "OGSimulationUnreal/UEFrameConversion.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "PBDRigidsSolver.h"
 
@@ -29,7 +29,7 @@ public:
 		{
 			const auto& gtApi = proxy->GetGameThreadAPI();
 			FTransform uWorldTransform(gtApi.GetR(), gtApi.GetX());
-			return uglm::toGLMMat4(uWorldTransform);
+			return ueFrame::transformToSim(uWorldTransform);
 		}
 		return glm::mat4(1.f);
 	}
@@ -43,7 +43,7 @@ public:
 			{
 				const Chaos::FMatrix33 inertiaTensor =
 					Chaos::FParticleUtilitiesXR::GetWorldInertia(&gtApi);
-				return glm::vec3(inertiaTensor.M[0][0], inertiaTensor.M[1][1], inertiaTensor.M[2][2]);
+				return ueFrame::inertiaToSim(FVector(inertiaTensor.M[0][0], inertiaTensor.M[1][1], inertiaTensor.M[2][2]));
 			}
 		}
 		return glm::vec3(0.f);
@@ -57,10 +57,10 @@ public:
 		{
 			const auto& gtApi = proxy->GetGameThreadAPI();
 			PhysicsBodyState s;
-			s.position        = uglm::toGLMVec3(gtApi.GetX());
-			s.rotation        = uglm::toGLMQuat(FQuat(gtApi.GetR()));
-			s.linearVelocity  = uglm::toGLMVec3(gtApi.GetV());
-			s.angularVelocity = uglm::toGLMVec3(gtApi.GetW());
+			s.position        = ueFrame::vectorToSim(gtApi.GetX());
+			s.rotation        = ueFrame::rotationToSim(FQuat(gtApi.GetR()));
+			s.linearVelocity  = ueFrame::vectorToSim(gtApi.GetV());
+			s.angularVelocity = ueFrame::axialToSim(gtApi.GetW());
 			return s;
 		}
 		return PhysicsBodyState{};

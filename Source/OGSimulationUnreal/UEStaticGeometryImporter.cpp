@@ -23,7 +23,7 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "PhysicsEngine/TaperedCapsuleElem.h"
 #include "PhysicsSettingsCore.h"
-#include "UGLMTypeConversion.h"
+#include "UEFrameConversion.h"
 
 DEFINE_LOG_CATEGORY(LogOGStaticImport);
 
@@ -81,7 +81,7 @@ namespace
 
 	static_assert(std::is_same_v<decltype(StaticBox::halfExtents), glm::vec3>
 		&& std::is_same_v<decltype(StaticSphere::radius), float>
-		&& std::is_same_v<decltype(StaticCapsuleZ::totalHalfHeight), float>
+		&& std::is_same_v<decltype(StaticCapsule::totalHalfHeight), float>
 		&& std::is_same_v<decltype(StaticConvexHull::points), std::vector<glm::vec3>>
 		&& std::is_same_v<decltype(StaticTriangleMesh::indices), std::vector<uint32_t>>
 		&& std::is_same_v<decltype(StaticShapeDescriptor::friction), float>
@@ -95,7 +95,7 @@ namespace
 		void operator()(const StaticBox& box) const { hash.vec3(box.halfExtents); }
 		void operator()(const StaticSphere& sphere) const { hash.f32(sphere.radius); }
 
-		void operator()(const StaticCapsuleZ& capsule) const
+		void operator()(const StaticCapsule& capsule) const
 		{
 			hash.f32(capsule.radius);
 			hash.f32(capsule.totalHalfHeight);
@@ -168,7 +168,7 @@ namespace
 	{
 		if constexpr (std::is_same_v<Shape, StaticBox>) { return TEXT("box"); }
 		else if constexpr (std::is_same_v<Shape, StaticSphere>) { return TEXT("sphere"); }
-		else if constexpr (std::is_same_v<Shape, StaticCapsuleZ>) { return TEXT("capsule"); }
+		else if constexpr (std::is_same_v<Shape, StaticCapsule>) { return TEXT("capsule"); }
 		else if constexpr (std::is_same_v<Shape, StaticConvexHull>) { return TEXT("convex"); }
 		else if constexpr (std::is_same_v<Shape, StaticTriangleMesh>) { return TEXT("trimesh"); }
 		else
@@ -221,7 +221,7 @@ namespace
 
 	glm::vec3 scaledPoint(const FVector& point, const FVector& scale)
 	{
-		return glm::vec3(static_cast<float>(point.X * scale.X), static_cast<float>(point.Y * scale.Y), static_cast<float>(point.Z * scale.Z));
+		return ueFrame::vectorToSim(FVector(point.X * scale.X, point.Y * scale.Y, point.Z * scale.Z));
 	}
 
 	struct ComponentContext
@@ -266,7 +266,7 @@ namespace
 
 			StaticShapeDescriptor descriptor;
 			descriptor.shape = std::move(shape);
-			descriptor.localToWorld = uglm::toGLMMat4(shapeToBody * bodyToWorld);
+			descriptor.localToWorld = ueFrame::transformToSim(shapeToBody * bodyToWorld);
 			descriptor.categories = component.categories;
 			// ⛔G-04  docs/UEStaticGeometryImporter-guards.md
 			descriptor.blockingCategories = CollisionEnabledHasPhysics(collision) ? component.blockingCategories : CollisionCategories{};
@@ -275,10 +275,11 @@ namespace
 			descriptor.stableKey = stableKeyFor(component.actorPath, component.componentName, instanceIndex, elementIndex);
 			++report.shapeCountByType[descriptor.shape.index()];
 			UE_LOG(LogOGStaticImport, Verbose,
-				TEXT("[StaticImport] shape key=0x%016llx type=%s %s.%s instance=%u element=%u categories=0x%08x blocking=0x%08x at=(%.1f,%.1f,%.1f) friction=%.3f restitution=%.3f"),
+				TEXT("[StaticImport] shape key=0x%016llx type=%s %s.%s instance=%u element=%u categories=0x%08x blocking=0x%08x at=(%.*f,%.*f,%.*f) friction=%.3f restitution=%.3f"),
 				static_cast<unsigned long long>(descriptor.stableKey), kShapeTypeNames[descriptor.shape.index()], *component.actorPath,
 				*component.componentName, instanceIndex, elementIndex, descriptor.categories.bits, descriptor.blockingCategories.bits,
-				descriptor.localToWorld[3][0], descriptor.localToWorld[3][1], descriptor.localToWorld[3][2], descriptor.friction, descriptor.restitution);
+				simFrame::lengthDecimals(1), descriptor.localToWorld[3][0], simFrame::lengthDecimals(1), descriptor.localToWorld[3][1],
+				simFrame::lengthDecimals(1), descriptor.localToWorld[3][2], descriptor.friction, descriptor.restitution);
 			shapes.push_back(std::move(descriptor));
 			physicsOnly.push_back(isPhysicsOnly ? 1u : 0u);
 		}
@@ -319,16 +320,16 @@ namespace
 					{
 						warnNonUniform(component, scale);
 					}
-					const float radius = static_cast<float>(FMath::Max<double>(scaled.Radius, UE_KINDA_SMALL_NUMBER));
+					const float radius = ueFrame::lengthToSim(FMath::Max<double>(scaled.Radius, UE_KINDA_SMALL_NUMBER));
 					emit(component, StaticSphere{radius}, FTransform(scaled.Center), bodyToWorld, element.GetCollisionEnabled(), instanceIndex, elementIndex++);
 				}
 				for (const FKBoxElem& element : geometry.BoxElems)
 				{
 					const FKBoxElem scaled = element.GetFinalScaled(scale, FTransform::Identity);
-					const glm::vec3 halfExtents(
-						static_cast<float>(FMath::Max<double>(scaled.X * 0.5, UE_KINDA_SMALL_NUMBER)),
-						static_cast<float>(FMath::Max<double>(scaled.Y * 0.5, UE_KINDA_SMALL_NUMBER)),
-						static_cast<float>(FMath::Max<double>(scaled.Z * 0.5, UE_KINDA_SMALL_NUMBER)));
+					const glm::vec3 halfExtents = ueFrame::halfExtentsToSim(FVector(
+						FMath::Max<double>(scaled.X * 0.5, UE_KINDA_SMALL_NUMBER),
+						FMath::Max<double>(scaled.Y * 0.5, UE_KINDA_SMALL_NUMBER),
+						FMath::Max<double>(scaled.Z * 0.5, UE_KINDA_SMALL_NUMBER)));
 					emit(component, StaticBox{halfExtents}, scaled.GetTransform(), bodyToWorld, element.GetCollisionEnabled(), instanceIndex, elementIndex++);
 				}
 				for (const FKSphylElem& element : geometry.SphylElems)
@@ -338,9 +339,9 @@ namespace
 					{
 						warnNonUniform(component, scale);
 					}
-					const float radius = static_cast<float>(FMath::Max<double>(scaled.Radius, UE_KINDA_SMALL_NUMBER));
-					const float cylinderHalfLength = static_cast<float>(FMath::Max<double>(scaled.Length * 0.5, UE_KINDA_SMALL_NUMBER));
-					emit(component, StaticCapsuleZ{radius, cylinderHalfLength + radius}, scaled.GetTransform(), bodyToWorld,
+					const float radius = ueFrame::lengthToSim(FMath::Max<double>(scaled.Radius, UE_KINDA_SMALL_NUMBER));
+					const float cylinderHalfLength = ueFrame::lengthToSim(FMath::Max<double>(scaled.Length * 0.5, UE_KINDA_SMALL_NUMBER));
+					emit(component, StaticCapsule{radius, cylinderHalfLength + radius}, scaled.GetTransform(), bodyToWorld,
 						element.GetCollisionEnabled(), instanceIndex, elementIndex++);
 				}
 				for (const FKTaperedCapsuleElem& element : geometry.TaperedCapsuleElems)
@@ -352,9 +353,9 @@ namespace
 					}
 					const double radius0 = FMath::Max<double>(scaled.Radius0, UE_KINDA_SMALL_NUMBER);
 					const double radius1 = FMath::Max<double>(scaled.Radius1, UE_KINDA_SMALL_NUMBER);
-					const float meanRadius = static_cast<float>(0.5 * (radius0 + radius1));
-					const float cylinderHalfLength = static_cast<float>(FMath::Max<double>(scaled.Length * 0.5, UE_KINDA_SMALL_NUMBER));
-					emit(component, StaticCapsuleZ{meanRadius, cylinderHalfLength + meanRadius}, scaled.GetTransform(), bodyToWorld,
+					const float meanRadius = ueFrame::lengthToSim(0.5 * (radius0 + radius1));
+					const float cylinderHalfLength = ueFrame::lengthToSim(FMath::Max<double>(scaled.Length * 0.5, UE_KINDA_SMALL_NUMBER));
+					emit(component, StaticCapsule{meanRadius, cylinderHalfLength + meanRadius}, scaled.GetTransform(), bodyToWorld,
 						element.GetCollisionEnabled(), instanceIndex, elementIndex++);
 				}
 
@@ -381,7 +382,7 @@ namespace
 
 			elementIndex = static_cast<uint32_t>(geometry.SphereElems.Num() + geometry.BoxElems.Num() + geometry.SphylElems.Num()
 				+ geometry.TaperedCapsuleElems.Num() + geometry.ConvexElems.Num());
-			const bool mirrored = scale.X * scale.Y * scale.Z < 0.0;
+			const bool reverseWinding = ueFrame::reversesWinding(scale.X * scale.Y * scale.Z < 0.0);
 			for (const Chaos::FTriangleMeshImplicitObjectPtr& triangleMesh : bodySetup.TriMeshGeometries)
 			{
 				const uint32_t thisIndex = elementIndex++;
@@ -396,14 +397,14 @@ namespace
 				{
 					mesh.vertices.push_back(scaledPoint(FVector(particles.GetX(static_cast<int32>(vertex))), scale));
 				}
-				const auto appendTriangles = [&mesh, mirrored](const auto& triangles)
+				const auto appendTriangles = [&mesh, reverseWinding](const auto& triangles)
 				{
 					mesh.indices.reserve(static_cast<std::size_t>(triangles.Num()) * 3);
 					for (const auto& triangle : triangles)
 					{
 						mesh.indices.push_back(static_cast<uint32_t>(triangle[0]));
-						mesh.indices.push_back(static_cast<uint32_t>(mirrored ? triangle[2] : triangle[1]));
-						mesh.indices.push_back(static_cast<uint32_t>(mirrored ? triangle[1] : triangle[2]));
+						mesh.indices.push_back(static_cast<uint32_t>(reverseWinding ? triangle[2] : triangle[1]));
+						mesh.indices.push_back(static_cast<uint32_t>(reverseWinding ? triangle[1] : triangle[2]));
 					}
 				};
 				const Chaos::FTrimeshIndexBuffer& elements = triangleMesh->Elements();

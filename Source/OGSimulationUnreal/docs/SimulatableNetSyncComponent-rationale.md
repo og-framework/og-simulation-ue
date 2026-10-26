@@ -124,11 +124,14 @@ not disconnect the client**: disconnecting is the engine's connection path's bus
 archive folder of the one game that uses this component today. They moved verbatim with the code
 (og-ue-simulationcomponentandmanagersplit ruling Q6); a game hook for the wording is a follow-on.
 
-**The state channel's version is `kWireFormatVersion` in `CorrectionStateBufferCodec.h`, 6 today.** Its history: 1 → 2
-for the applied-capture-tick reference; 2 → 3 when the ring-out sub-simulation joined the brawler's state composite;
+**The state channel's version is `kWireFormatVersion` in `CorrectionStateBufferCodec.h`.** It is derived from the frame
+knobs by `wireFormatVersionFor(kAxisFrame, kUnitsPerMetre)`: the legacy frame (centimetres, Z-up) gives
+`kLegacyFrameWireFormatVersion`, 6, and each other knob combination a distinct higher value. Its history is the
+legacy-frame value's: 1 → 2 for the applied-capture-tick reference;
+2 → 3 when the ring-out sub-simulation joined the brawler's state composite;
 3 → 4 and 4 → 5 when fields left the middle of the composite (og-netcode-v2-field-defects tasks 9 and 17); 5 → 6 when a
 field left the composite's first slice. ⚠ **Correction (R0, task 20a).** The game component's rationale said **5**; the
-constant is 6. The reasoning for each bump is written at the constant. The input bundle's version is
+legacy-frame value is 6. The reasoning for each bump is written at the constant. The input bundle's version is
 `FInputRedundancyBundle::kWireFormatVersion`, from the bundle codec.
 
 ---

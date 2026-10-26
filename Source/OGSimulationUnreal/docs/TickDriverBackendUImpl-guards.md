@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # `TickDriverBackendUImpl.h` — guards
 
-The prohibition on the Jolt host: the end-of-play wait. The render apply's teleport left with the render apply in
+The prohibitions on the Jolt host: the end-of-play wait (G-01) and the gravity's signed zeros (G-06). The render apply's teleport left with the render apply in
 og-tickdriver task 9 (§R, G-04). The bind under the world mutex, the shadow world's construction and mirroring, and
 the slot decision left with the world, the slots, the bind and the shadow world in og-tickdriver task 10 (§R, G-02,
 G-03, G-05). Every entry here moved from
@@ -65,6 +65,29 @@ of the frame. A teardown above the wait resets the coordinator or the tier cache
 step reads, while the step runs: a use-after-reset on a worker thread. The wait itself never deadlocks:
 it checks that this thread does not hold the world mutex (`SimulationTickDriver-guards.md` G-05, the successor of the
 retired frame-host G-05).
+
+---
+
+## G-06 — the world gravity is built with `simFrame::withHeight`, never as `kUp * g`
+
+*Added by og-sim-metres-yup task 7 (2026-10-25), when the literal `glm::vec3(0.f, 0.f, g)` was routed through the
+frame.*
+
+**Site:** `config.gravity = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(m_owner));` in `buildWorld`.
+
+**The prohibition.** ⛔ Do not write the gravity as `simFrame::kUp * GameBindingT::gravity(m_owner)`, as `-kUp * …`,
+or through any other product of an axis and the scalar.
+
+**The consequence.** The game's gravity is negative (the brawler's movement gravity, which the session checks against the world's `GetGravityZ()`, Unreal's default −980 cm/s²). An axis times
+a negative scalar turns the axis's two `+0` components into `-0` (`0.f * -980.f == -0.f`), so the world host's gravity
+would no longer be today's `(+0, +0, g)` bit for bit, and the step world and the shadow world would integrate with
+`-0` in two components (a body at rest with a `-0` velocity component keeps it where `+0` gravity would make it
+`+0`). `withHeight` writes the scalar into the up component of a `+0` vector and leaves the others `+0`; the
+og-simulation picks are pinned to keep the sign of zero (`SimulationFrame-guards.md` G-01). og-simulation-jolt's
+default gravity is built the same way (`JoltWorld.h`'s `gravity`, checked there by a `static_assert`, which a
+run-time value cannot have).
+
+**What breaks if the tag moves.** The tag marks the one gravity write. A second gravity write elsewhere is not covered.
 
 ---
 

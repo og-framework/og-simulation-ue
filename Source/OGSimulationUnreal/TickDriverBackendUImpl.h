@@ -8,6 +8,7 @@
 #include "OGSimulation/TickDriverConcepts.h"
 #include "OGSimulation/SimulationTickBackend.h"
 #include "OGSimulation/PhysicsEngineTraits.h"
+#include "OGSimulation/SimulationFrame.h"
 #include "OGSimulationUnreal/UEPresentControls.h"
 #include "OGSimulationUnreal/UERenderTargetTable.h"
 #include "OGSimulationUnreal/UEStaticGeometryImporter.h"
@@ -145,7 +146,8 @@ void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::buildW
 	typename WorldHost::Config config;
 	config.isAuthority      = worldIsAuthority;
 	config.runInline        = UETickDriverHost::runInline();
-	config.gravity          = glm::vec3(0.f, 0.f, GameBindingT::gravity(m_owner));
+	// ⛔G-06  docs/TickDriverBackendUImpl-guards.md
+	config.gravity          = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(m_owner));
 	config.contactCounts    = EngineBindingT::contactCountsEnabled();
 	config.mappedCategories = EngineBindingT::mappedCategories();
 	config.log              = &EngineTraitsT::logEngineMessage;

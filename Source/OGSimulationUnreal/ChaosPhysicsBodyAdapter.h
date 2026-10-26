@@ -7,7 +7,7 @@
 #include "OGSimulation/PhysicsBodyState.h"
 #include "OGSimulation/PhysicsBodyAdapter.h"
 #include "OGSimulation/PhysicsBodyReaderAdapter.h"
-#include "OGSimulationUnreal/UGLMTypeConversion.h"
+#include "OGSimulationUnreal/UEFrameConversion.h"
 #include "Runtime/Experimental/Chaos/Public/PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "Chaos/ParticleHandle.h"
@@ -66,7 +66,7 @@ public:
 		{
 			auto* ptApi = proxy->GetPhysicsThreadAPI();
 			FTransform uWorldTransform(ptApi->GetR(), ptApi->GetX());
-			return uglm::toGLMMat4(uWorldTransform);
+			return ueFrame::transformToSim(uWorldTransform);
 		}
 		ensureAlwaysMsgf(false, TEXT("ChaosPhysicsBodyAdapter::getBodyTransform — unresolved BodyId %u"), bodyId.value);
 		return glm::mat4(1.f);
@@ -81,8 +81,7 @@ public:
 			return;
 		}
 
-		FTransform uWorldTransform;
-		uglm::toFtransform(transform, uWorldTransform);
+		const FTransform uWorldTransform = ueFrame::transformToUe(transform);
 		auto* ptApi = proxy->GetPhysicsThreadAPI();
 		ptApi->SetX(uWorldTransform.GetTranslation());
 		ptApi->SetR(uWorldTransform.GetRotation());
@@ -90,8 +89,8 @@ public:
 
 	// PhysicsBodyPoseWriter: position and quaternion, no matrix in between. Used by
 	// SimulationIntegrationExecutor::pushCorrectedBodyStatesAll, which the Chaos host calls from
-	// FirstPreResimStep_Internal (ChaosTickBackendUImpl.cpp). Same conversions and setters as the
-	// hand-written rollback write it replaced (uglm::toFVector -> SetX, uglm::toFQuat -> SetR).
+	// FirstPreResimStep_Internal (ChaosTickBackendUImpl.cpp). Same setters as the hand-written rollback
+	// write it replaced: ueFrame::vectorToUe -> SetX, ueFrame::rotationToUe -> SetR.
 	// The physics-thread SetX/SetR also set P/Q, and wake a sleeping body.
 	void setBodyPose(BodyId bodyId, const glm::vec3& position, const glm::quat& rotation)
 	{
@@ -103,8 +102,8 @@ public:
 		}
 
 		auto* ptApi = proxy->GetPhysicsThreadAPI();
-		ptApi->SetX(uglm::toFVector(position));
-		ptApi->SetR(uglm::toFQuat(rotation));
+		ptApi->SetX(ueFrame::vectorToUe(position));
+		ptApi->SetR(ueFrame::rotationToUe(rotation));
 	}
 
 	void addBodyTorque(BodyId bodyId, const glm::vec3& torque)
@@ -117,7 +116,7 @@ public:
 		}
 
 		constexpr bool bInvalidate = false;
-		proxy->GetPhysicsThreadAPI()->AddTorque(uglm::toFVector(torque), bInvalidate);
+		proxy->GetPhysicsThreadAPI()->AddTorque(ueFrame::torqueToUe(torque), bInvalidate);
 	}
 
 	void setBodyAngularVelocity(BodyId bodyId, const glm::vec3& vel)
@@ -129,7 +128,7 @@ public:
 			return;
 		}
 
-		proxy->GetPhysicsThreadAPI()->SetW(uglm::toFVector(vel));
+		proxy->GetPhysicsThreadAPI()->SetW(ueFrame::axialToUe(vel));
 	}
 
 	void setBodyLinearVelocity(BodyId bodyId, const glm::vec3& vel)
@@ -141,7 +140,7 @@ public:
 			return;
 		}
 
-		proxy->GetPhysicsThreadAPI()->SetV(uglm::toFVector(vel));
+		proxy->GetPhysicsThreadAPI()->SetV(ueFrame::vectorToUe(vel));
 	}
 
 	// Accumulate an acceleration for THIS step; engine applies force = a * mass.
@@ -163,7 +162,7 @@ public:
 
 		constexpr bool bInvalidate = false;
 		auto* ptApi = proxy->GetPhysicsThreadAPI();
-		ptApi->AddForce(uglm::toFVector(acceleration) * ptApi->M(), bInvalidate);
+		ptApi->AddForce(ueFrame::vectorToUe(acceleration) * ptApi->M(), bInvalidate);
 	}
 
 	// Instantaneous dv before this step's solve; engine applies impulse = dv * mass.
@@ -180,7 +179,7 @@ public:
 		}
 
 		auto* ptApi = proxy->GetPhysicsThreadAPI();
-		ptApi->SetV(ptApi->GetV() + uglm::toFVector(velocityChange));
+		ptApi->SetV(ptApi->GetV() + ueFrame::vectorToUe(velocityChange));
 	}
 
 	glm::vec3 getBodyInertiaTensor(BodyId bodyId) const
@@ -188,7 +187,7 @@ public:
 		if (auto* proxy = resolveProxy(bodyId))
 		{
 			const Chaos::FMatrix33 inertiaTensor = Chaos::FParticleUtilitiesXR::GetWorldInertia(proxy->GetPhysicsThreadAPI());
-			return glm::vec3(inertiaTensor.M[0][0], inertiaTensor.M[1][1], inertiaTensor.M[2][2]);
+			return ueFrame::inertiaToSim(FVector(inertiaTensor.M[0][0], inertiaTensor.M[1][1], inertiaTensor.M[2][2]));
 		}
 		return glm::vec3(0.f);
 	}
@@ -245,10 +244,10 @@ public:
 			auto* ptApi = proxy->GetPhysicsThreadAPI();
 			const Chaos::FConstGenericParticleHandle particle(proxy->GetHandle_LowLevel());
 			PhysicsBodyState s;
-			s.position = uglm::toGLMVec3(particle->GetP());
-			s.rotation = uglm::toGLMQuat(FQuat(particle->GetQ()));
-			s.linearVelocity = uglm::toGLMVec3(ptApi->GetV());
-			s.angularVelocity = uglm::toGLMVec3(ptApi->GetW());
+			s.position = ueFrame::vectorToSim(particle->GetP());
+			s.rotation = ueFrame::rotationToSim(FQuat(particle->GetQ()));
+			s.linearVelocity = ueFrame::vectorToSim(ptApi->GetV());
+			s.angularVelocity = ueFrame::axialToSim(ptApi->GetW());
 			return s;
 		}
 		return PhysicsBodyState{};
@@ -271,10 +270,10 @@ public:
 			auto* ptApi = proxy->GetPhysicsThreadAPI();
 			const Chaos::FConstGenericParticleHandle particle(proxy->GetHandle_LowLevel());
 			PhysicsBodyState s;
-			s.position = uglm::toGLMVec3(particle->GetX());
-			s.rotation = uglm::toGLMQuat(FQuat(particle->GetR()));
-			s.linearVelocity = uglm::toGLMVec3(ptApi->GetV());
-			s.angularVelocity = uglm::toGLMVec3(ptApi->GetW());
+			s.position = ueFrame::vectorToSim(particle->GetX());
+			s.rotation = ueFrame::rotationToSim(FQuat(particle->GetR()));
+			s.linearVelocity = ueFrame::vectorToSim(ptApi->GetV());
+			s.angularVelocity = ueFrame::axialToSim(ptApi->GetW());
 			return s;
 		}
 		return PhysicsBodyState{};

@@ -289,7 +289,9 @@ says which is which.
   2. splits the import into the queryable and the PhysicsOnly shapes by the importer's per-shape `physicsOnly`
      flags, with the world host's `splitStatics` (reached through the engine traits' `splitStatics` since
      og-tickdriver task 15e, §12);
-  3. fills the world host's configuration: the role, `og.Sim.RunInline` (read once), the movement gravity,
+  3. fills the world host's configuration: the role, `og.Sim.RunInline` (read once), the movement gravity (a
+     scalar from the game binding, placed along `simFrame`'s up by `simFrame::withHeight`, which keeps the other two
+     components `+0`; G-06),
      `og.Jolt.ContactCounts` (read once, through the engine binding's `contactCountsEnabled`,
      `BrawlerJoltBindingUImpl::contactCountsEnabled` since og-tickdriver task 15e; §9), the six mapped
      categories (`BrawlerJoltBindingUImpl::mappedCategories`, the Chaos adapter's mapped set) and the Jolt log sink
@@ -725,8 +727,9 @@ results manager). This configuration now does the same (design D §8).
 * **Lines** (`LogOGSimHost`, non-shipping unless stated):
   * the `[SimHost.RenderApply]` window line also prints `mode` (interp or newest), `delaySteps`,
     `interpolated` (frames blended between two snapshots), `atNewest` (render time past the newest),
-    `beyondOldest` (render time before the oldest reachable), `snaps`, `maxNextBack`, and `dispCm`, the
-    capsules' per-frame displacement as p50/p99/max;
+    `beyondOldest` (render time before the oldest reachable), `snaps`, `maxNextBack`, and `disp…`, the
+    capsules' per-frame displacement as p50/p99/max (its name ends in `simFrame::kLengthFieldSuffix`, so it
+    prints as dispCm in centimetres and dispM in metres);
   * `[SimHost.RenderSync]`, on a worker client every 600 frames: the shadow bodies overwritten, each
     read back through the reader the visualizations use, with exact matches, out of tolerance (1e-3 cm
     or 1e-4 rad: the pose goes from centimetres to Jolt's metres and back through floats), the largest
@@ -814,19 +817,20 @@ the ring and the lines are the presenter's; this class supplies the cvars.
   body, and a second walk for the speeds. Each frame drains the ring and updates and applies at most one error per body, in
   fixed arrays: nothing allocates.
 * **Lines** (`LogOGSimHost`, non-shipping):
-  * `[SimHost.RenderCorrection]`, on a client every 600 frames after the `[SimHost.RenderApply]` line:
-    `resims` (granted resimulations the capture saw), `captured` (pushed into J7), `withoutError`
+  * `[SimHost.RenderCorrection]`, on a client every 600 frames after the `[SimHost.RenderApply]` line
+    (each length field's name ends in `simFrame::kLengthFieldSuffix`, Cm in centimetres and M in metres, and is
+    written `maxError…` here): `resims` (granted resimulations the capture saw), `captured` (pushed into J7), `withoutError`
     (resimulations below the thresholds), `tickMismatches`, `ringDrops`, then the game thread's
-    `corrections` accumulated, `smoothedBodies` and `snappedBodies`, `maxErrorCm`, `maxAppliedCm`,
+    `corrections` accumulated, `smoothedBodies` and `snappedBodies`, `maxError…`, `maxApplied…`,
     `decays` (windows that closed), `decayMeanS` and `decayMaxS` (their length from the accumulation,
     in steps times the step), `activeFrames`, `late`, `pendingDrops`, the settings (`seconds`,
-    `durationSteps`, `maxCm`, `desyncS`), then the snapped bodies: `policySnaps` (corrected bodies
-    whose error was dropped because they snap, summed over the window), `maxPolicySnapCm` and
+    `durationSteps`, `max…`, `desyncS`), then the snapped bodies: `policySnaps` (corrected bodies
+    whose error was dropped because they snap, summed over the window), `maxPolicySnap…` and
     `maxPolicySnapDeg` (the largest dropped position and rotation error) and `rootFramedFrames`
     (frames on which at least one snapped body was moved by its capsule's smoothing offset), and
     `straddleSnaps` (snapped bodies given the carrier step's rotation on a straddle, summed over the
-    window). A snapped body is not in `smoothedBodies`, `snappedBodies`, `maxErrorCm` or
-    `maxAppliedCm`;
+    window). A snapped body is not in `smoothedBodies`, `snappedBodies`, `maxError…` or
+    `maxApplied…`;
   * a LATE Warning, at most once per window, when a correction reached the game thread after its
     carrier step had been drawn;
   * with `og.Render.TraceFrames` 1, one `[SimHost.RenderCorrection]` event line per frame that

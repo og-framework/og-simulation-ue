@@ -16,9 +16,9 @@ The importer is host code: it reads Unreal types and lives in the MPL-2.0 OGSimu
 module. It names no game category and no physics backend. Its output type is og-simulation core
 (`StaticGeometry.h`), which it uses read-only.
 
-**Callers today:** only the console command `og.sim.ImportStaticGeometry` in the same `.cpp` (§9).
-Wiring the importer into the Jolt host, with the game's category table, is a later task; nothing in
-the game path calls it yet.
+**Callers today:** the console command `og.sim.ImportStaticGeometry` in the same `.cpp` (§9), and the
+Jolt tick-driver host's world build (`TickDriverBackendUImpl::buildWorld`, `TickDriverBackendUImpl-rationale.md`), which
+imports the level with the game binding's category table and logs the report on every peer.
 
 ## 2. The category table is an input
 
@@ -93,20 +93,30 @@ holds the geometry Chaos collides with, not a re-derivation of it.
 * **Box** → `StaticBox`: half of each scaled edge length; the element's centre and rotation become
   the shape's local transform.
 * **Sphere** → `StaticSphere`: the scaled radius at the scaled centre.
-* **Capsule** → `StaticCapsuleZ`: the engine's capsule element stores the **cylinder** length, and
+* **Capsule** → `StaticCapsule`: the engine's capsule element stores the **cylinder** length, and
   `totalHalfHeight` runs from the centre to a hemisphere tip (`StaticGeometry-rationale.md` §2.1),
   so totalHalfHeight = scaled length / 2 + scaled radius. The element's rotation puts its axis on
-  local Z, which is the axis of `StaticCapsuleZ`.
+  Unreal's local Z; the transform conversion (§7) maps Unreal's local Z onto og's local up, which is
+  the axis of `StaticCapsule`, so the capsule needs no rotation of its own.
 * **Convex** → `StaticConvexHull`: the vertices of the element's cooked Chaos convex, each scaled
   per axis by the component scale (a zero component replaced by a small positive value, as Chaos
   does). These are the vertices of the hull Chaos collides with. An element without a cooked convex
   gets no Chaos shape either; it is counted as `convexWithoutChaosMesh`.
 * **Triangle mesh** → `StaticTriangleMesh`: the vertices and triangles of the body setup's cooked
   Chaos triangle meshes, scaled per axis. With an odd number of negative scale components the
-  winding of every triangle is reversed, so a mirrored mesh keeps its outward faces.
+  winding of every triangle is reversed, so a mirrored mesh keeps its outward faces. The axis map
+  to og is itself a reflection when og's frame is right-handed (`BasicUeFrame::kReflects`), which turns
+  every face inside out once more, so the rule is `ueFrame::reversesWinding(mirrored)`, which is
+  `mirrored != kReflects`: in Unreal's own frame it is the mirror rule alone.
 * Every radius, half-extent and half-length is clamped to at least the engine's small number
-  (1e-4 cm), as Chaos clamps them.
-* **Tapered capsule** → `StaticCapsuleZ`: Chaos builds a tapered capsule as a straight capsule
+  (1e-4 cm), as Chaos clamps them, in Unreal centimetres, before the conversion to og lengths.
+* **Units and axes.** Every value leaves through `UEFrameConversion.h` (its rationale §3): radii and
+  half-lengths by `ueFrame::lengthToSim`, box half extents by `ueFrame::halfExtentsToSim`, hull and
+  mesh points by `ueFrame::vectorToSim` (after the per-axis scale, which is applied in Unreal's
+  frame), and the shape's transform by `ueFrame::transformToSim` (§7). At the shipped knobs each is
+  the float conversion the importer made before, bit for bit, so the checksum is unchanged; it
+  changes when the units or the axes are flipped.
+* **Tapered capsule** → `StaticCapsule`: Chaos builds a tapered capsule as a straight capsule
   whose radius is the mean of the two scaled end radii, and the importer does the same.
 
 ## 6. Non-uniform scale on spheres and capsules
@@ -127,7 +137,9 @@ scale exactly.
 
 **Transforms.** The body's frame is the component's world transform without its scale; the scale
 has already gone into the shape (§5, §6). Each shape's `localToWorld` is its element-local
-transform (centre and rotation) followed by that body frame, so it carries no scale.
+transform (centre and rotation) followed by that body frame, so it carries no scale, and it is
+converted by `ueFrame::transformToSim`, which `checkf`s exactly that (`UEFrameConversion-rationale.md`
+§4).
 
 **`stableKey`** (`UEStaticGeometryImporter.cpp` :: `stableKeyFor`) is a 64-bit FNV-1a hash of:
 1. the actor's path name with any PIE prefix removed (G-01), as UTF-8, then a zero byte;
@@ -177,7 +189,9 @@ Category `LogOGStaticImport`, default verbosity Log. Each import logs:
 The per-type names come from a compile-time table over the `StaticShape` alternatives, so a new
 alternative fails to compile until it has a name; the checksum's visitor fails the same way until
 it hashes the new shape. Verbose adds one line per emitted shape (key, type, actor and component,
-category sets, position, material) and one per skipped component.
+category sets, position, material) and one per skipped component. The shape line's `at=(…)` is the
+og translation (it reports simulation state), printed with `%.*f` and `simFrame::lengthDecimals(1)`:
+one decimal of a centimetre today, the same number of digits of a centimetre after a units flip.
 
 `og.sim.ImportStaticGeometry [runs] [category:channel ...]` imports the current world `runs` times
 (default 2, at most 16), logs each report, then logs
@@ -209,8 +223,10 @@ or fatal line in any log.
   the import to run after that streaming, or again.
 * The PIE path (G-01) is reasoned from the engine's PIE naming, not yet run: the evidence runs are
   `-game` and `-server` processes, which carry no PIE prefix.
-* There is no low-level test: no low-level test target links this module, and every input is an
-  engine object. Coverage is the runtime check of §10 and the compile-time checks of §9.
+* There is no low-level test of the importer: no low-level test target links this module, and every
+  input is an engine object. Coverage is the runtime check of §10 and the compile-time checks of §9.
+  The winding rule it applies (`ueFrame::reversesWinding`) is tested on its own by
+  `Source/OGSimulationTests/UEFrameConversionTest.cpp` (`UEFrameConversion-rationale.md` §6).
 
 ## 12. Guards
 

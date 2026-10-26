@@ -68,8 +68,9 @@ the table took the plain UE_LOG and lost its constructor parameter.
 
 ## 4. The doors
 
-* **`applyRootPose(id, position, rotation)`** converts the position to centimetres, takes the given rotation or,
-  when there is none, keeps the actor's own quaternion, and moves the actor with no sweep and the engine's teleport
+* **`applyRootPose(id, position, rotation)`** converts the position to Unreal's centimetres and axes
+  (`ueFrame::vectorToUe`) and the given rotation to an Unreal quaternion (`ueFrame::rotationToUe`), or, when there is
+  none, keeps the actor's own quaternion, and moves the actor with no sweep and the engine's teleport
   (`⛔G-01`). It returns the actor's location after the move, read back from the engine, in og-simulation lengths:
   where the engine actually put it, which the presenter records as the applied position. The engine does not move a
   component whose new location equals the old one within its no-move threshold, so this is not always the pose
@@ -83,14 +84,22 @@ the table took the plain UE_LOG and lost its constructor parameter.
 The engine stores positions in double. A float would round the anchor to about 6e-5 cm at 1,000 cm, above the held
 check's 1e-6 cm tolerance, so the MOVED count and the applied check's `exact` count would change.
 
-## 5. Units
+## 5. Units and axes
 
-`kCentimetresPerLength` is the number of engine centimetres in one og-simulation length: 1.0 today, because the
-simulation runs in centimetres. Every position crossing the table is converted with it, positions in by
-multiplication and positions out by division, so a metre simulation changes this one constant.
-`lengthFromCentimetres` converts a centimetre value the other way, for centimetre console variables
-(`og.Render.ErrorCorrectionMaxCm`, which this module's `UEPresentControls.cpp` converts since og-tickdriver task 15c).
-With the factor 1.0 every conversion returns its input exactly.
+Every pose crossing the table goes through `UEFrameConversion.h` (its rationale §3 has the rules): the position in
+by `ueFrame::vectorToUe` and the rotation by `ueFrame::rotationToUe`; the two reads out by `ueFrame::vectorToSimD`,
+which keeps the engine's double. So the table follows og-simulation's units and axes (`simFrame`) with no edit of its
+own.
+
+`kCentimetresPerLength` is the number of engine centimetres in one og-simulation length,
+`simFrame::kUeCentimetresPerUnit`: 1.0 today, because the simulation runs in centimetres. `lengthFromCentimetres`
+divides a centimetre value by it, for centimetre console variables (`og.Render.ErrorCorrectionMaxCm`, which this
+module's `UEPresentControls.cpp` converts since og-tickdriver task 15c).
+
+At the shipped knobs (centimetres, Unreal's axes) every conversion returns its input exactly: the in-conversion is
+the float-to-double copy the table made before (the deleted `uglm` vector copy times 1.0, and its quaternion copy),
+and the reads are the
+double copy of the location (divided by 1.0 before).
 
 ## 6. Provenance
 
@@ -107,4 +116,5 @@ What changed, and why each change keeps the behaviour:
 - the physics switch and the log read the actor's root instead of the brawler's capsule: the registration's
   non-shipping `checkf` asserts they are the same component;
 - the host's category was passed in rather than named until og-tickdriver task 11, which moved it into this module (§3);
-- the length conversions are identities (§5).
+- the length conversions are identities (§5); og-sim-metres-yup task 7 routed them through `UEFrameConversion.h`,
+  still identities at the shipped knobs.
