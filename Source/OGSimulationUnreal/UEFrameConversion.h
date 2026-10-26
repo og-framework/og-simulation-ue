@@ -213,26 +213,12 @@ private:
 
 	static double toUnits(double centimetres, double centimetresPerUnit)
 	{
-		if constexpr (kUeCentimetresPerUnit == 1.0)
-		{
-			return centimetres;
-		}
-		else
-		{
-			return centimetres / centimetresPerUnit;
-		}
+		return centimetres / centimetresPerUnit;
 	}
 
 	static double toCentimetres(double units, double centimetresPerUnit)
 	{
-		if constexpr (kUeCentimetresPerUnit == 1.0)
-		{
-			return units;
-		}
-		else
-		{
-			return units * centimetresPerUnit;
-		}
+		return units * centimetresPerUnit;
 	}
 
 	static glm::vec3 narrowed(const glm::dvec3& v)

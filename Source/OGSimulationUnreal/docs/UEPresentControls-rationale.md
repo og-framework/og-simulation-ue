@@ -24,7 +24,6 @@ deleted): it names the one function, and is exported (`OGSIMULATIONUNREAL_API`) 
 | `desyncSeconds` | `og.Render.ErrorCorrectionDesyncSeconds` (0.6) | none |
 | `traceFrames` | `og.Render.TraceFrames` (0), not in Shipping | true when the value is not 0; in Shipping the variable does not exist and the field keeps its default, false |
 | `parkSnap` | the caller's argument | none |
-| `lengthReportScale` | the constant 1.0 | none |
 
 What each control does is the presenter's (`TickDriverPresenter-rationale.md` in og-simulation's docs); the brawler's
 reading of them is `TickDriverBackendUImpl-rationale.md` §5 and §7.
@@ -42,14 +41,17 @@ The park snap is a distance: a body whose two bracketing poses lie farther apart
 (the interpolation's `snapDistance`). It belongs to the game, whose bodies jump that far: the brawler's pooled
 projectiles, parked and unparked far below the arena (its binding's `BrawlerJoltBindingUImpl::kParkSnap`,
 `BrawlerJoltBindingUImpl-rationale.md` §4). So it is a parameter, not a field this function leaves at its default
-(infinity, never snap): a caller cannot forget it, because the call does not compile without it. `lengthReportScale` is the constant 1.0 (design of og-tickdriver, K9): the `…Cm=` fields of the
-presenter's lines print og-simulation lengths times this scale, which is their value in centimetres while the
-simulation runs in centimetres.
+(infinity, never snap): a caller cannot forget it, because the call does not compile without it. Until
+og-sim-metres-yup task 24 this function also set a report-scale control to the constant 1.0 (design of og-tickdriver,
+K9: the presenter's length fields printed og-simulation lengths times it, their value in centimetres while the
+simulation ran in centimetres). The simulation reports in metres since that initiative, so the control was always 1
+and was deleted with its assignment here.
 
 ## 4. Units
 
 `og.Render.ErrorCorrectionMaxCm` is a centimetre value. It goes through `UERenderTargetTable::lengthFromCentimetres`,
-which divides by `UERenderTargetTable::kCentimetresPerLength` (1.0 today), so the presenter receives the same number.
+which divides by `UERenderTargetTable::kCentimetresPerLength` (100: an og-simulation length is a metre), so the
+presenter receives the value in metres (the default 250 becomes 2.5).
 The other five variables are counts, seconds or switches, and need no conversion.
 
 ## 5. The help texts

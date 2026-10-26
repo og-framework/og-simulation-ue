@@ -113,9 +113,9 @@ holds the geometry Chaos collides with, not a re-derivation of it.
 * **Units and axes.** Every value leaves through `UEFrameConversion.h` (its rationale §3): radii and
   half-lengths by `ueFrame::lengthToSim`, box half extents by `ueFrame::halfExtentsToSim`, hull and
   mesh points by `ueFrame::vectorToSim` (after the per-axis scale, which is applied in Unreal's
-  frame), and the shape's transform by `ueFrame::transformToSim` (§7). At the shipped knobs each is
-  the float conversion the importer made before, bit for bit, so the checksum is unchanged; it
-  changes when the units or the axes are flipped.
+  frame), and the shape's transform by `ueFrame::transformToSim` (§7). In centimetres and Unreal's
+  axes each was the float conversion the importer made before, bit for bit, and the checksum did not
+  change; the flips to metres and to the Y-up frame (og-sim-metres-yup tasks 17 and 19) changed both.
 * **Tapered capsule** → `StaticCapsule`: Chaos builds a tapered capsule as a straight capsule
   whose radius is the mean of the two scaled end radii, and the importer does the same.
 
@@ -190,8 +190,8 @@ The per-type names come from a compile-time table over the `StaticShape` alterna
 alternative fails to compile until it has a name; the checksum's visitor fails the same way until
 it hashes the new shape. Verbose adds one line per emitted shape (key, type, actor and component,
 category sets, position, material) and one per skipped component. The shape line's `at=(…)` is the
-og translation (it reports simulation state), printed with `%.*f` and `simFrame::lengthDecimals(1)`:
-one decimal of a centimetre today, the same number of digits of a centimetre after a units flip.
+og translation (it reports simulation state), printed with `%.3f` in metres: a millimetre, the one decimal
+of a centimetre the line printed before og-sim-metres-yup's unit flip.
 
 `og.sim.ImportStaticGeometry [runs] [category:channel ...]` imports the current world `runs` times
 (default 2, at most 16), logs each report, then logs

@@ -27,9 +27,10 @@ for each module, the API macros of that module and of its dependencies only), so
 ## 2. The three namespaces
 
 * **`BasicUeFrame<Frame>`** converts between Unreal and the og frame `Frame`. `ueFrame` is
-  `BasicUeFrame<simFrame>`, the shipped frame. The template exists so a test can instantiate the right-handed Y-up
-  metre frame (`BasicSimFrame<AxisFrame::YUpRightHanded, 1.f>`) before the knobs are flipped, and check every rule
-  through the reflection while the shipped frame is still Unreal's own.
+  `BasicUeFrame<simFrame>`, the shipped frame: metres, right-handed, Y-up. The template stays so the test can check
+  every rule at two instantiations: the shipped map, through its reflection, and Unreal's own frame in centimetres
+  (a test-local frame with Unreal's axes and one centimetre per unit), where every function must be a component
+  copy (§6).
 * **`ueNative`** copies between Unreal and glm types with no frame change: `toGlm`, `toFVector`, `toGlmQuat`,
   `toFQuat`, `toGLMMat4`, `toFTransform`. It is for glm maths that is in Unreal's frame by design (the humanoid mesh,
   the Unreal camera), and it keeps scale, which a frame conversion of a rigid transform does not carry (§4).
@@ -67,9 +68,11 @@ each with its sign) and s the og length per Unreal centimetre (`1 / Frame::kUeCe
   other.
 * **Lengths divide in double, then round, toward og; they multiply exactly in double toward Unreal.** A float times
   100 or 10,000 is exact in double, so og → Unreal → og returns every float bit for bit, and Unreal → og → Unreal returns
-  every Unreal value that came from an og float. At the shipped knobs (s = 1) no division and no multiplication is
-  made at all: each function is a float↔double copy, component for component, which is what the `uglm` conversions
-  it replaced did. ⚠ At s = 0.01 the division is by a compile-time constant, and `/fp:fast` lets the compiler multiply
+  every Unreal value that came from an og float. `toUnits` and `toCentimetres` always divide and multiply: there is
+  no separate branch for s = 1 (og-sim-metres-yup task 23 removed it). In Unreal's own centimetre frame, the test's
+  first instantiation, the factor is 1.0, and a division or a multiplication by 1.0 is exact, so each function is
+  still a float↔double copy, component for component, which is what the `uglm` conversions it replaced did.
+  ⚠ At s = 0.01, the shipped value, the division is by a compile-time constant, and `/fp:fast` lets the compiler multiply
   by its reciprocal instead, so the double quotient may be one double ulp from the correctly rounded one. For an
   Unreal value that holds a float, the float result is still correctly rounded: such a value cannot be exactly 100
   (or 10⁴) times a midpoint between two floats, so the exact quotient lies about 2⁻³¹ of its magnitude or more from
@@ -105,8 +108,9 @@ the query adapter's penetration depth) was an inline cast too, in the same place
 `ueFrameDetail::composeTransform` and `decomposeTransform` are the bodies of the deleted `uglm` conversions
 toGLMMat4 and toFtransform, statement for statement: translate the identity, multiply by the rotation matrix, scale; and the
 translation column, `glm::quat_cast` and the three column lengths. `BasicUeFrame` converts the parts (the
-translation, the rotation and the scale, each by its rule) and the helper composes them; at the shipped knobs the
-parts are the copies the old functions made, so the matrices and transforms are the old ones bit for bit. They are
+translation, the rotation and the scale, each by its rule) and the helper composes them; given the same parts, a
+helper returns the matrix or transform the old function returned, bit for bit, and in Unreal's own frame the parts
+are the copies the old functions made. They are
 non-template, `FORCENOINLINE` and compiled between `OGSIM_OPTIMIZE_OFF` and `OGSIM_OPTIMIZE_ON` because the old
 functions were out-of-line unoptimized code; the guards say what breaks otherwise. The importer's `checksum=` line
 hashes the bits of every static matrix, and a headless session before and after the move printed the same checksum.
@@ -124,8 +128,9 @@ functions through the DLL import table in the Editor build; the call is the only
 ## 6. The test
 
 `Source/OGSimulationTests/UEFrameConversionTest.cpp` (tag `[SimulationFrame][UEFrameConversion]`, so `[@og]` runs
-it through og-simulation-tests' existing `[SimulationFrame]` alias entry) instantiates
-`BasicUeFrame<BasicSimFrame<UeZUpLeftHanded, 100>>` and `BasicUeFrame<BasicSimFrame<YUpRightHanded, 1>>` and checks:
+it through og-simulation-tests' existing `[SimulationFrame]` alias entry) instantiates `BasicUeFrame` at a
+test-local frame with Unreal's own axes in centimetres (`UeCentimetresSimFrame`: forward +X, right +Y, up +Z, one
+centimetre per unit) and at `simFrame` (asserting that the second is `ueFrame`), and checks:
 * at Unreal's own frame, every vector, quaternion and length function is the component copy, bit for bit, `-0` and
   the edge floats included; `transformToSim` equals a reference translate-rotate-scale composition and is bit-equal to
   `ueNative::toGLMMat4`;
@@ -136,7 +141,7 @@ it through og-simulation-tests' existing `[SimulationFrame]` alias entry) instan
 * the winding rule: the og triangle the importer's index rule (`reversesWinding`, `UEStaticGeometryImporter.cpp`)
   builds from an Unreal triangle has the normal M·n·s² (−M·n·s² for a mirrored scale), at both.
 
-`static_assert`s at the top of the test pin `kReflects` for the four knob combinations.
+`static_assert`s at the top of the test pin `kReflects` for the four combinations of axis frame and unit.
 
 The test target does not link the OGSimulationUnreal module (§1), so the test defines `OGSIMULATIONUNREAL_API` empty
 before it includes the header, and includes `UEFrameConversion.cpp` after it: the four helpers are compiled into the
@@ -150,4 +155,5 @@ which classified nothing: every crossing now names its kind. The OGSimulationUnr
 crossings (the render-target table, the static-geometry importer, the tick-driver host's gravity) and the four Chaos
 adapter files were routed in the same task. Task 7b of the same initiative moved the four `ueFrameDetail` definitions
 out of the header into `UEFrameConversion.cpp` (§5). Task 9 deleted the `uglm` conversions (their header and
-`.cpp`), once tasks 7 and 8 had moved every caller to `ueFrame` or `ueNative`.
+`.cpp`), once tasks 7 and 8 had moved every caller to `ueFrame` or `ueNative`. Task 23, after the flips to metres
+and the Y-up frame, removed the s = 1 branches of `toUnits` and `toCentimetres` (§3).

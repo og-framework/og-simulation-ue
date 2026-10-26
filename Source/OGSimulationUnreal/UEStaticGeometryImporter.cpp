@@ -275,11 +275,11 @@ namespace
 			descriptor.stableKey = stableKeyFor(component.actorPath, component.componentName, instanceIndex, elementIndex);
 			++report.shapeCountByType[descriptor.shape.index()];
 			UE_LOG(LogOGStaticImport, Verbose,
-				TEXT("[StaticImport] shape key=0x%016llx type=%s %s.%s instance=%u element=%u categories=0x%08x blocking=0x%08x at=(%.*f,%.*f,%.*f) friction=%.3f restitution=%.3f"),
+				TEXT("[StaticImport] shape key=0x%016llx type=%s %s.%s instance=%u element=%u categories=0x%08x blocking=0x%08x at=(%.3f,%.3f,%.3f) friction=%.3f restitution=%.3f"),
 				static_cast<unsigned long long>(descriptor.stableKey), kShapeTypeNames[descriptor.shape.index()], *component.actorPath,
 				*component.componentName, instanceIndex, elementIndex, descriptor.categories.bits, descriptor.blockingCategories.bits,
-				simFrame::lengthDecimals(1), descriptor.localToWorld[3][0], simFrame::lengthDecimals(1), descriptor.localToWorld[3][1],
-				simFrame::lengthDecimals(1), descriptor.localToWorld[3][2], descriptor.friction, descriptor.restitution);
+				descriptor.localToWorld[3][0], descriptor.localToWorld[3][1],
+				descriptor.localToWorld[3][2], descriptor.friction, descriptor.restitution);
 			shapes.push_back(std::move(descriptor));
 			physicsOnly.push_back(isPhysicsOnly ? 1u : 0u);
 		}

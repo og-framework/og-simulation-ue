@@ -69,6 +69,5 @@ PresentControls UEPresentControls::fromConsoleVariables(float parkSnap)
 	controls.traceFrames       = CVarRenderTraceFrames.GetValueOnGameThread() != 0;
 #endif
 	controls.parkSnap          = parkSnap;
-	controls.lengthReportScale = 1.0;
 	return controls;
 }

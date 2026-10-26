@@ -30,7 +30,7 @@ is G-05.
 
 **The consequence.** Its body is the body of the frame-free `uglm` conversion it replaced, toGLMMat4 (deleted, with
 the rest of `uglm`, by og-sim-metres-yup task 9; it was compiled between the same pair and called out of line), so
-at the shipped knobs the matrix it returns is bit-identical to that conversion's.
+given the same parts the matrix it returns is bit-identical to that conversion's.
 The rotation matrix and the two matrix products do arithmetic. Under `/fp:fast` an optimized, inlined copy may fold
 `x + 0` and `0 * x` against the identity matrix and keep a `-0` that the unoptimized code turns into `+0`. The
 static geometry's matrices (the importer's `checksum=` hashes their bits) and every Chaos body and query transform

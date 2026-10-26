@@ -516,9 +516,9 @@ and condition below is the presenter's transcription of this class's old code. T
   `BrawlerJoltBindingUImpl::kParkSnap` (this class's kRenderParkSnapCm until og-tickdriver task 15a), so the park snap
   stays the game's. Until task 15c the fill and the objects were this file's (renderPresentControls, a function
   template over the binding since task 15b). `og.Render.ErrorCorrectionMaxCm`
-  is converted from centimetres to og-simulation lengths by the table's `lengthFromCentimetres`, and
-  `lengthReportScale` is 1.0, so every field whose name ends in Cm prints the same number as before; both are
-  identities while the simulation runs in centimetres.
+  is converted from centimetres to og-simulation lengths (metres) by the table's `lengthFromCentimetres`. Until
+  og-sim-metres-yup task 24 the controls also carried a report scale of 1.0 for the length fields (og-tickdriver
+  K9); the presenter's length fields print metres since that initiative's flip U, and the scale was deleted.
 * **The render sink**, `m_renderTargets`. `onRegistered_GameThread` calls the tick backend's `onRegistered`, which
   finds the character's slot, pushes its Occupy command and calls the presenter's `onRegistered` with the slot, and
   then the table's `registerTarget` with the character, its capsule (`GetCapsuleComponent()`) as the expected root and
@@ -728,11 +728,12 @@ results manager). This configuration now does the same (design D §8).
   * the `[SimHost.RenderApply]` window line also prints `mode` (interp or newest), `delaySteps`,
     `interpolated` (frames blended between two snapshots), `atNewest` (render time past the newest),
     `beyondOldest` (render time before the oldest reachable), `snaps`, `maxNextBack`, and `disp…`, the
-    capsules' per-frame displacement as p50/p99/max (its name ends in `simFrame::kLengthFieldSuffix`, so it
-    prints as dispCm in centimetres and dispM in metres);
+    capsules' per-frame displacement as p50/p99/max (dispM, in metres; dispCm in captures from before
+    og-sim-metres-yup's flip U);
   * `[SimHost.RenderSync]`, on a worker client every 600 frames: the shadow bodies overwritten, each
-    read back through the reader the visualizations use, with exact matches, out of tolerance (1e-3 cm
-    or 1e-4 rad: the pose goes from centimetres to Jolt's metres and back through floats), the largest
+    read back through the reader the visualizations use, with exact matches, out of tolerance (1e-5 m,
+    that is 1e-3 cm, or 1e-4 rad, sized when the pose still went from centimetres to Jolt's metres and back
+    through floats), the largest
     error and angle; a SHADOW Warning on the first one out of tolerance;
   * `[SimHost.RenderTarget]`, every build, once per character when it registers: whether the capsule
     simulates physics (the render-target table's registration switches it off; `OGBrawlerUECharacter-rationale.md`
@@ -818,8 +819,8 @@ the ring and the lines are the presenter's; this class supplies the cvars.
   fixed arrays: nothing allocates.
 * **Lines** (`LogOGSimHost`, non-shipping):
   * `[SimHost.RenderCorrection]`, on a client every 600 frames after the `[SimHost.RenderApply]` line
-    (each length field's name ends in `simFrame::kLengthFieldSuffix`, Cm in centimetres and M in metres, and is
-    written `maxError…` here): `resims` (granted resimulations the capture saw), `captured` (pushed into J7), `withoutError`
+    (each length field's name ends in M, for metres, and is written `maxError…` here; Cm in captures from before
+    og-sim-metres-yup's flip U): `resims` (granted resimulations the capture saw), `captured` (pushed into J7), `withoutError`
     (resimulations below the thresholds), `tickMismatches`, `ringDrops`, then the game thread's
     `corrections` accumulated, `smoothedBodies` and `snappedBodies`, `maxError…`, `maxApplied…`,
     `decays` (windows that closed), `decayMeanS` and `decayMaxS` (their length from the accumulation,

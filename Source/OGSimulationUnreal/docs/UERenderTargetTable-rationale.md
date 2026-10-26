@@ -81,8 +81,9 @@ the table took the plain UE_LOG and lost its constructor parameter.
 * **`name(id)`** is the actor's name at registration, or an empty string. No moved line prints it.
 
 **Both reads return `std::optional<glm::dvec3>`:** the actor's double-precision location, never rounded to float.
-The engine stores positions in double. A float would round the anchor to about 6e-5 cm at 1,000 cm, above the held
-check's 1e-6 cm tolerance, so the MOVED count and the applied check's `exact` count would change.
+The engine stores positions in double. A float would round the anchor to steps of 9.5e-7 m at 10 m (2⁻²⁰ m; it
+was about 6e-5 cm at 1,000 cm while the simulation ran in centimetres), far above the held check's 1e-8 m (1e-6 cm)
+tolerance, so the MOVED count and the applied check's `exact` count would change.
 
 ## 5. Units and axes
 
@@ -92,14 +93,16 @@ which keeps the engine's double. So the table follows og-simulation's units and 
 own.
 
 `kCentimetresPerLength` is the number of engine centimetres in one og-simulation length,
-`simFrame::kUeCentimetresPerUnit`: 1.0 today, because the simulation runs in centimetres. `lengthFromCentimetres`
+`simFrame::kUeCentimetresPerUnit`: 100.0, because the simulation runs in metres. `lengthFromCentimetres`
 divides a centimetre value by it, for centimetre console variables (`og.Render.ErrorCorrectionMaxCm`, which this
 module's `UEPresentControls.cpp` converts since og-tickdriver task 15c).
 
-At the shipped knobs (centimetres, Unreal's axes) every conversion returns its input exactly: the in-conversion is
-the float-to-double copy the table made before (the deleted `uglm` vector copy times 1.0, and its quaternion copy),
-and the reads are the
-double copy of the location (divided by 1.0 before).
+In metres and the Y-up frame the in-conversion maps an og position p to Unreal's `100·(−p.z, p.x, p.y)`, exact in
+double, and the reads map Unreal's `(x, y, z)` to og's `0.01·(y, z, −x)`, divided in double (`UEFrameConversion-rationale.md`
+§3). Until og-sim-metres-yup's flips U and X (tasks 17 and 19), in centimetres and Unreal's axes, every conversion
+returned its input exactly: the in-conversion was the float-to-double copy the table made before (the deleted `uglm`
+vector copy times 1.0, and its quaternion copy), and the reads were the double copy of the location (divided by 1.0
+before).
 
 ## 6. Provenance
 
@@ -116,5 +119,5 @@ What changed, and why each change keeps the behaviour:
 - the physics switch and the log read the actor's root instead of the brawler's capsule: the registration's
   non-shipping `checkf` asserts they are the same component;
 - the host's category was passed in rather than named until og-tickdriver task 11, which moved it into this module (§3);
-- the length conversions are identities (§5); og-sim-metres-yup task 7 routed them through `UEFrameConversion.h`,
-  still identities at the shipped knobs.
+- the length conversions were identities (§5); og-sim-metres-yup task 7 routed them through `UEFrameConversion.h`,
+  and its flips U and X made them the metre, Y-up map.

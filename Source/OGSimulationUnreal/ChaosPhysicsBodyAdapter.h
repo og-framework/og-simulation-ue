@@ -144,7 +144,8 @@ public:
 	}
 
 	// Accumulate an acceleration for THIS step; engine applies force = a * mass.
-	// Mass-agnostic seam: the sim expresses intent as an acceleration (cm/s^2) and
+	// Mass-agnostic seam: the sim expresses intent as an acceleration (og m/s^2,
+	// converted to UE cm/s^2 by vectorToUe) and
 	// each adapter converts using its own body mass, so a contested step is resolved
 	// by Chaos with mass symmetry instead of one side overwriting V.
 	// Shape mirrors addBodyTorque above: resolve the proxy, then one call on the
