@@ -124,13 +124,14 @@ not disconnect the client**: disconnecting is the engine's connection path's bus
 archive folder of the one game that uses this component today. They moved verbatim with the code
 (og-ue-simulationcomponentandmanagersplit ruling Q6); a game hook for the wording is a follow-on.
 
-**The state channel's version is `kWireFormatVersion` in `CorrectionStateBufferCodec.h`**, 8. Its history:
+**The state channel's version is `kWireFormatVersion` in `CorrectionStateBufferCodec.h`**, 9. Its history:
 1 → 2 for the applied-capture-tick reference;
 2 → 3 when the ring-out sub-simulation joined the brawler's state composite;
 3 → 4 and 4 → 5 when fields left the middle of the composite (og-netcode-v2-field-defects tasks 9 and 17); 5 → 6 when a
 field left the composite's first slice; 6 → 7 and 7 → 8 when og-sim-metres-yup moved the simulation to metres and then
 to a right-handed Y-up frame (the same layout, other units and axes; derived from two frame knobs while the move ran,
-frozen at 8 when the knobs were deleted). ⚠ **Correction (R0, task 20a).** The game component's rationale said **5**;
+frozen at 8 when the knobs were deleted); 8 → 9 when og-sim-metres-yup task 26 made the planar chart the native
+one (the same layout; the brawler movement's `committedStepDir` is mirrored). ⚠ **Correction (R0, task 20a).** The game component's rationale said **5**;
 the version was then 6. The reasoning for each bump is written at the constant. The input bundle's version is
 `FInputRedundancyBundle::kWireFormatVersion`, from the bundle codec.
 
