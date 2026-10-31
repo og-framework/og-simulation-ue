@@ -151,6 +151,7 @@ FKey InputMappingUETranslator::toUnrealKey(dInput::KeyId keyId)
 	case dInput::KeyId::Gamepad_RightTriggerAxis:   return EKeys::Gamepad_RightTriggerAxis;
 	case dInput::KeyId::Gamepad_LeftShoulder:       return EKeys::Gamepad_LeftShoulder;
 	case dInput::KeyId::Gamepad_RightShoulder:      return EKeys::Gamepad_RightShoulder;
+	case dInput::KeyId::Gamepad_Special_Left:       return EKeys::Gamepad_Special_Left;
 
 	default: return EKeys::Invalid;
 	}
