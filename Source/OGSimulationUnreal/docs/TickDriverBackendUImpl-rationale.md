@@ -537,9 +537,10 @@ and condition below is the presenter's transcription of this class's old code. T
   binding's storage, the owner's.
 
 * **Why it is not cosmetic.** The capsule is the mouse-aim plane point: the input component's
-  `updateGameThreadCache` projects the mouse onto the horizontal plane through the capsule's world
-  translation (`OGBrawlerInputCollectionComponent.cpp`, the plane point read before the line-plane
-  intersection), and the camera boom hangs off the capsule. Without the apply the aim input fed into
+  `updateGameThreadCache` projects the mouse onto the plane through the capsule's world translation
+  (`OGBrawlerInputCollectionComponent.cpp`, the plane point read before the line-plane intersection; the
+  plane's normal is the character's ground up since og-ground-aligned-attacks task 12, world up on flat
+  ground), and the camera boom hangs off the capsule. Without the apply the aim input fed into
   the simulation is measured from wherever the capsule spawned (design F7).
 * **The snapshot type.** `RenderSnapshot` is `RenderSnapshotT<kMaxSimulatableSlots * 6>`, declared with
   the other brawler aliases: one body per declaration of the brawler's physics composite in every
