@@ -338,6 +338,10 @@ private:
 		int32   configuredCorrectionRotationK;
 		bool    hasIniResimTriggerPolicy;
 		FString configuredResimTriggerPolicy;
+		bool    hasIniRedundancyFrames;
+		int32   configuredRedundancyFrames;
+		bool    hasIniRelayResendEntries;
+		int32   configuredRelayResendEntries;
 	};
 
 	static SessionKnobs readSessionKnobs(bool worldIsAuthority);
@@ -345,6 +349,8 @@ private:
 	void applySessionKnobs(const SessionKnobs& knobs);
 
 	void applyResimTriggerPolicy(SessionKnobs& knobs);
+
+	void applyLatencyKnobs(const SessionKnobs& knobs);
 
 	void onFrameStepsDue_GameThread(int32 firstUpcomingSimTick, int32 numSteps);
 
@@ -362,6 +368,15 @@ private:
 		// ⛔G-22  docs/UESimulationSession-guards.md
 		correctionFieldDiff::setEnabledPredicate(
 			[]() -> bool { return UE_LOG_ACTIVE(LogOGDivergenceProbe, Verbose); });
+		static_assert(ogLogRouteFor(TEXT("[DivergenceProbe.Margin]")) != nullptr
+			&& ogLogRouteFor(TEXT("[DivergenceProbe.Margin]"))->route == OGLogRoute::DivergenceProbe
+			&& ogLogRouteFor(TEXT("[DivergenceProbe.Margin]"))->plainLevel == ELogVerbosity::Log,
+			"bindCorrectionFieldDiffGate: the margin predicate below asks LogOGDivergenceProbe at Log, so the "
+			"[DivergenceProbe.Margin] line must route to OGLogRoute::DivergenceProbe at plain level Log. Re-route "
+			"or re-level the [DivergenceProbe prefix and move the predicate with it (og-input-latency task 2h)");
+		// ⛔G-28  docs/UESimulationSession-guards.md
+		correctionVerdictMargin::setEnabledPredicate(
+			[]() -> bool { return UE_LOG_ACTIVE(LogOGDivergenceProbe, Log); });
 	}
 
 private:
@@ -876,8 +891,33 @@ auto UESimulationSession<TraitsT>::readSessionKnobs(bool worldIsAuthority) -> Se
 		}
 	}
 
+	bool  hasIniRedundancyFrames = false;
+	int32 configuredRedundancyFrames = 0;
+	bool  hasIniRelayResendEntries = false;
+	int32 configuredRelayResendEntries = 0;
+	// ⛔G-27  docs/UESimulationSession-guards.md
+	if (GConfig != nullptr)
+	{
+		int32 iniFrames = 0;
+		if (GConfig->GetInt(TEXT("OGNetcode"), TEXT("RedundancyFrames"), iniFrames, GGameIni) ||
+			GConfig->GetInt(TEXT("OGNetcode"), TEXT("RedundancyFrames"), iniFrames, GEngineIni))
+		{
+			hasIniRedundancyFrames = true;
+			configuredRedundancyFrames = iniFrames;
+		}
+		int32 iniEntries = 0;
+		if (GConfig->GetInt(TEXT("OGNetcode"), TEXT("RelayResendEntries"), iniEntries, GGameIni) ||
+			GConfig->GetInt(TEXT("OGNetcode"), TEXT("RelayResendEntries"), iniEntries, GEngineIni))
+		{
+			hasIniRelayResendEntries = true;
+			configuredRelayResendEntries = iniEntries;
+		}
+	}
+
 	return SessionKnobs{ configuredRelayDelayFloorTicks, configuredCorrectionRotationK,
-		hasIniResimTriggerPolicy, configuredResimTriggerPolicy };
+		hasIniResimTriggerPolicy, configuredResimTriggerPolicy,
+		hasIniRedundancyFrames, configuredRedundancyFrames,
+		hasIniRelayResendEntries, configuredRelayResendEntries };
 }
 
 template <typename TraitsT>
@@ -966,6 +1006,41 @@ void UESimulationSession<TraitsT>::applyResimTriggerPolicy(SessionKnobs& knobs)
 		policyIsOnDisagreement ? TEXT("OnDisagreement") : TEXT("FrontierExact"),
 		knobs.hasIniResimTriggerPolicy ? TEXT("ini override") : TEXT("compiled default"),
 		*depthPolicyText);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::applyLatencyKnobs(const SessionKnobs& knobs)
+{
+	if (knobs.hasIniRedundancyFrames)
+	{
+		const int32 clampedFrames = latencyKnobs::clampRedundancyFrames(knobs.configuredRedundancyFrames);
+		if (clampedFrames != knobs.configuredRedundancyFrames)
+		{
+			UE_LOG(LogOGNet, Warning,
+				TEXT("[LatencyKnobs] ini [OGNetcode] RedundancyFrames=%d out of range, clamped to %d"),
+				knobs.configuredRedundancyFrames, clampedFrames);
+		}
+		m_manager->setRedundancyFrames(clampedFrames);
+	}
+
+	if (knobs.hasIniRelayResendEntries)
+	{
+		const int32 clampedEntries = latencyKnobs::clampRelayResendEntries(knobs.configuredRelayResendEntries);
+		if (clampedEntries != knobs.configuredRelayResendEntries)
+		{
+			UE_LOG(LogOGNet, Warning,
+				TEXT("[LatencyKnobs] ini [OGNetcode] RelayResendEntries=%d out of range, clamped to %d"),
+				knobs.configuredRelayResendEntries, clampedEntries);
+		}
+		m_manager->setRelayResendEntries(clampedEntries);
+	}
+
+	const TimeConfig& sessionTimeConfig = m_manager->getTimeConfig();
+	UE_LOG(LogOGNet, Warning,
+		TEXT("[LatencyKnobs] redundancyFrames=%d relayResendEntries=%d (%s)"),
+		sessionTimeConfig.redundancyFrames,
+		sessionTimeConfig.relayResendEntries,
+		(knobs.hasIniRedundancyFrames || knobs.hasIniRelayResendEntries) ? TEXT("ini") : TEXT("compiled"));
 }
 
 template <typename TraitsT>
@@ -1350,6 +1425,8 @@ void UESimulationSession<TraitsT>::beginPlay()
 
 	// ⛔G-24  docs/UESimulationSession-guards.md
 	applyResimTriggerPolicy(sessionKnobs);
+
+	applyLatencyKnobs(sessionKnobs);
 
 	m_game.afterSessionConfigured(worldNetMode);
 

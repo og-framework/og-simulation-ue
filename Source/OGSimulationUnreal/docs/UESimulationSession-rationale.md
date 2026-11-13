@@ -916,16 +916,19 @@ brawler's §8.*
 ### 9.8 The session knobs (task 26b)
 
 Three ini keys are read once, at composition, in the owner's start-up (the owner's `BeginPlay` until task 27b). Task 26b
-moved their statements here as three functions, which the owner calls at the positions of the statements they hold:
+moved their statements here as three functions, which the owner calls at the positions of the statements they hold.
+og-input-latency task 4 added two more keys, read by the same intake, and a fourth function that applies them:
 
 | function | what it holds | where the owner calls it |
 |---|---|---|
-| `readSessionKnobs(worldIsAuthority)` | the three intakes (`⛔G-14`, `⛔G-15`, `⛔G-16`); it reaches no session state and returns the requests in a `SessionKnobs` value | after the latency member's begin, before the backend builds its world: both roles |
+| `readSessionKnobs(worldIsAuthority)` | the intakes (`⛔G-14`, `⛔G-15`, `⛔G-16`, and since og-input-latency task 4 `⛔G-27`); it reaches no session state and returns the requests in a `SessionKnobs` value | after the latency member's begin, before the backend builds its world: both roles |
 | `applySessionKnobs(knobs)` | the floor's clamp, set, ini line and advisory; the rotation width's clamp and set; the rotation width's proof line; the floor's publish onto the timing relay | in the authority branch, after the neutral input, before the tier consumer's start |
 | `applyResimTriggerPolicy(knobs)` | the policy's parse, apply and proof line (`⛔G-17`) | after both role branches |
+| `applyLatencyKnobs(knobs)` (og-input-latency task 4) | the two latency knobs' clamp and set, and their one proof line | after both role branches, directly after `applyResimTriggerPolicy` |
 
 The statements moved unchanged: the intake's locals are returned in a `SessionKnobs` value, and the two apply functions
-read the same four fields from it; the owner's `m_session.` prefix fell away. No log text, field,
+read the same four fields from it (as task 26b left it; `applyLatencyKnobs` reads only the four fields og-input-latency
+task 4 added); the owner's `m_session.` prefix fell away. No log text, field,
 level or category changed. The `[StateRotation] session` and `[ResimGate] session` lines are the start-up's identity lines,
 and task 26b's harness sessions hold them, and the floor's lines, byte-identical.
 
@@ -1036,6 +1039,25 @@ run. `depthPolicy` therefore carries `(inert under FrontierExact)` rather than f
 *R0, task 26b:* verified: the compiled default is `FrontierExact` (`TimeConfig.h`), the brawler's ini sets
 `OnDisagreement`, and og-simulation's reconciliation peer allocates no correction cache on the authority (its
 `SimulationReconciliation.h` says so, and the manager gates its tick calls behind `runsPrediction`).
+
+#### `RedundancyFrames` and `RelayResendEntries`: the latency knobs (og-input-latency task 4)
+
+Two integer keys under `[OGNetcode]`, read by one intake and applied by `applyLatencyKnobs`. They feed
+`TimeConfig::redundancyFrames` (the client's redundancy window, counted in frames) and `TimeConfig::relayResendEntries`
+(already-flushed relay entries the authority re-sends per flush). What each one does, its range and why 0 is today's
+behaviour are og-simulation's `TimeConfig-rationale.md` §12. In this change neither field has a reader.
+
+**Not authority-gated** (`⛔G-27`), for the resim policy's reason rather than the floor's. `RedundancyFrames` acts only on
+a predicting client, so the client must read its own ini. `RelayResendEntries` acts only on the authority, and reading it
+on both roles keeps one `TimeConfig` shape.
+
+**The four steps.** Presence is a `bool` per key, so there is no sentinel collision (unlike the rotation width's `-1`). An
+out-of-range value is reported by a `[LatencyKnobs] ini [OGNetcode] … out of range, clamped to …` line, clamped by the
+shared `latencyKnobs::` function and set through the manager's setter, which clamps again. The proof line,
+`[LatencyKnobs] redundancyFrames=… relayResendEntries=… (ini|compiled)`, is unconditional, at `Warning`, read back from
+`TimeConfig`, and printed once per session on every peer. Its trailing token is `ini` when either key was present and
+`compiled` when neither was. **After both role branches**, like the policy's (`⛔G-24`'s reason): one call proves the
+same thing on both roles.
 
 #### The retired fourth knob
 
@@ -1321,7 +1343,8 @@ site (the task's notes show what it checked).
      connection and input relay listeners, then `replayLatchedClientValues` (`⛔G-07`, §9.4); `simlog::setGlobal`;
      `Game::installGameLoggers(worldIsAuthority)`; `bindCorrectionFieldDiffGate()`; and the `[ResimProbe.Session]` line
      (compiled only `#if !NO_LOGGING`: its arguments call members a `NO_LOGGING` category does not have).
-9. `applyResimTriggerPolicy` (`⛔G-24`), once, after both branches (§9.8).
+9. `applyResimTriggerPolicy` (`⛔G-24`), once, after both branches (§9.8); then `applyLatencyKnobs` (§9.8), once, the same
+   way (og-input-latency task 4).
 10. `m_game.afterSessionConfigured(worldNetMode)`: the game's checks that need the configured session.
 11. The backend line (§11.6).
 12. The backend's `startStepping`: no step runs before it, so everything above is in place when the first step reads it.
@@ -1336,7 +1359,7 @@ site (the task's notes show what it checked).
 | `emplaceSystems(systemsExec, bodyAdapter, queryAdapter)` | static | each role branch, after the integration layer, before the manager | `m_systemsExec`, `*m_physAdapter`, `*m_queryAdapter` |
 | `neutralInput()` | static, returns the input type | each role branch, as `setNeutralInput`'s argument | nothing |
 | `installGameLoggers(isAuthority)` | static | each role branch, after `simlog::setGlobal` | the role |
-| `afterSessionConfigured(netMode)` | member of the game object | after `applyResimTriggerPolicy` | the role's net mode |
+| `afterSessionConfigured(netMode)` | member of the game object | after `applyResimTriggerPolicy` and `applyLatencyKnobs` | the role's net mode |
 | `backendFingerprint()` | static, returns a `std::string_view` | in the backend line | nothing |
 
 * **Each hook is at its statements' position.** The hook's body is the game statements that sat there, and the session
@@ -1413,9 +1436,26 @@ og-brawler-shrink-install task 9 found it).
 
 ⛔ **It must name the same category, at the same verbosity, that `RouteOGMessage` sends the `[DivergenceProbe` prefix
 to.** Re-route that prefix without moving this predicate and the session either pays for a walk whose line is then
-dropped, or drops a walk whose line is printed. This predicate and `RouteOGMessage`'s `[DivergenceProbe` arm are the only
-two sites in code that USE this category: one reads its verbosity, the other logs to it. Guard **G-22** sits on the
-predicate and says so.
+dropped, or drops a walk whose line is printed. This predicate, the margin predicate below and `RouteOGMessage`'s
+`[DivergenceProbe` arm are the only three sites in code that USE this category: two read its verbosity, the other logs
+to it. Guard **G-22** sits on the predicate and says so.
+
+**The second predicate: the verdict margin (og-input-latency task 2h).** The same function installs a second predicate,
+`correctionVerdictMargin::setEnabledPredicate`, with `UE_LOG_ACTIVE(LogOGDivergenceProbe, Log)`. og-simulation asks it
+on every landed correction, agreeing or not, and when it answers true the cache measures how close the verdict came to
+the tolerance; once per closed verdict window, `NetSyncTelemetry` prints a `[DivergenceProbe.Margin]` line per class
+(og-simulation's `docs/SimulationComparison-rationale.md` §8 and `docs/Telemetry-rationale.md` §15). It is a second
+predicate, not G-22's reused, because it answers at `Log`: a session run with `LogOGDivergenceProbe=Log` gets the
+per-window margin lines without the per-correction `Verbose` lines and the field walk. At the shipped `Warning` both
+predicates answer false.
+
+- **Why `Log`.** The Margin line carries no severity token, so `RouteOGMessage` logs it at the `[DivergenceProbe`
+  route's plain level, `Log`. A `static_assert` directly above the call checks that `[DivergenceProbe.Margin]` still
+  routes to `OGLogRoute::DivergenceProbe` at `ELogVerbosity::Log`. The category that route logs to is a `switch` arm,
+  not checkable at compile time, so guard **G-28** sits on this predicate for that half.
+- **The same lambda shape as G-22's,** `-> bool`, for the `NO_LOGGING` reason above.
+- **The function keeps its name.** `bindCorrectionFieldDiffGate` now binds both gates. Renaming it would change
+  `beginPlay`'s two call sites and the docs that cite it, for no behaviour.
 
 ⚠ **Not yet confirmed in PIE.** The binding compiles and the gate is unit-tested against a stand-in predicate; that the
 live `UE_LOG_ACTIVE` answers as expected in a running editor is unverified, so the first `Verbose` run should check that
@@ -1425,6 +1465,11 @@ live `UE_LOG_ACTIVE` answers as expected in a running editor is unverified, so t
 it, so it is false while the predicate is empty; the correction cache's gate is ahead of the walk's call;
 the test file exists and counts walks with `walkCount`. The brawler's ini sets the category to `Verbose`
 (`OGBrawlerSimulationManager-rationale.md` §4, in OGBrawlerUnreal's docs).
+
+*R0, og-input-latency task 2h:* the last sentence above is false today: the brawler's `Config/DefaultEngine.ini` sets
+`LogOGDivergenceProbe=Warning`, at `HEAD` and in the working tree. The margin predicate's claims were checked against
+the code: the `static_assert` compiles in the Editor build, `correctionVerdictMargin::enabled()` is false while no
+predicate is installed, and og-simulation-tests' `Network/VerdictMarginTest.cpp` counts the margin walks.
 
 ### 11.5 The step length
 

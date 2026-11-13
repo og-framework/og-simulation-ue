@@ -8,6 +8,8 @@
   "EnabledByDefault": true,
   "Modules": [
     { "Name": "OGSimulation", "Type": "Runtime", "LoadingPhase": "Default" },
+    { "Name": "OGNet",        "Type": "Runtime", "LoadingPhase": "Default" },
+    { "Name": "OGNetUnreal",  "Type": "Runtime", "LoadingPhase": "Default" },
     { "Name": "glm",          "Type": "Runtime", "LoadingPhase": "Default" },
     { "Name": "OGSimulationJolt", "Type": "Runtime", "LoadingPhase": "Default" },
     { "Name": "OGSimulationUnreal", "Type": "Runtime", "LoadingPhase": "Default" },

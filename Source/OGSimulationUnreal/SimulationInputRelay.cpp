@@ -93,10 +93,12 @@ void ASimulationInputRelay::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
     DOREPLIFETIME_CONDITION(ASimulationInputRelay, m_relayedInputRing, COND_SkipOwner);
 }
 
-// ⭐ [og-netcode-v2-input-relay T34] THE FLUSH — bare C1, R = 0.
+// ⭐ [og-netcode-v2-input-relay T34] THE FLUSH — bare C1, R = `m_relayResendEntries`
+// (default 0; og-input-latency task 8).
 //
 // Everything the relay tap staged since the last poll is published into the
-// replicated ring, and the stage is emptied. The ring at poll N therefore carries
+// replicated ring, together with up to R of the last flushed entries, and the
+// stage is emptied. The ring at poll N therefore carries
 // `arrivals(N)` rather than "the newest arrival of N", which is the whole of what
 // this task buys: ~89.3 % of relayed inputs survived the replace-latest write path,
 // ~98.9 % survive this one.
@@ -113,7 +115,7 @@ void ASimulationInputRelay::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 //   2. SUPPRESS-CLEAR-ON-EMPTY. `flushStagedInto` returns 0 and touches nothing on
 //      an empty stage, so the ring stays byte-identical => not dirty => not
 //      scheduled => zero bytes, AND a round Iris skipped under packet pressure
-//      survives the quiet frames that follow and is retried. Under R = 0 that retry
+//      survives the quiet frames that follow and is retried. At R = 0 that retry
 //      is the only recovery mechanism there is (T43 finding 3).
 //   3. ORDERING. This runs inside `PreSendUpdate`'s pre-update phase, strictly
 //      before `PollAndCopy` — see the header block.
@@ -126,7 +128,7 @@ void ASimulationInputRelay::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 // `[RelayProbe.*]` windows.
 //
 // ⭐ [T34 rework] WHY THAT SUMMARY IS MANDATORY RATHER THAN NICE-TO-HAVE. These
-// four counters are THE ONLY DIRECT OBSERVATION OF THE FLUSH THAT EXISTS. The
+// counters are THE ONLY DIRECT OBSERVATION OF THE FLUSH THAT EXISTS. The
 // server's `observableX1000` is computed from the write path's run lengths without
 // reference to the flush at all, so it reads ~1000 even if `PreReplication` never
 // fires — meaning item 34's acceptance gate can PASS on a dead mechanism. Until
@@ -142,12 +144,13 @@ void ASimulationInputRelay::PreReplication(IRepChangedPropertyTracker& ChangedPr
     Super::PreReplication(ChangedPropertyTracker);
 
     const uint8 published =
-        relayedInputRing::flushStagedInto(m_relayedInputRing, m_relayedInputStagingRing);
+        relayedInputRing::flushStagedInto(m_relayedInputRing, m_relayedInputStagingRing, m_relayResendEntries);
 
     if (published > 0)
     {
         ++m_flushedRoundCount;
         m_flushedEntryCount += published;
+        m_resentEntryCount += relayedInputRing::entryCount(m_relayedInputRing) - published;
         if (m_onRingFlushedCallback)
             m_onRingFlushedCallback(m_relayedInputRing);
     }
@@ -183,14 +186,15 @@ void ASimulationInputRelay::emitFlushReport(const TCHAR* reason) const
 
     UE_LOG(LogOGInputRelay, Warning,
         TEXT("[RelayFlush] %s owner=%s flushedRounds=%u entries=%u entriesPerRoundX100=%u "
-             "suppressed=%u stageOverflowDrops=%u"),
+             "suppressed=%u stageOverflowDrops=%u resent=%u"),
         reason,
         *GetNameSafe(GetOwner()),
         m_flushedRoundCount,
         m_flushedEntryCount,
         entriesPerRoundX100,
         m_suppressedFlushCount,
-        m_stageOverflowDropCount);
+        m_stageOverflowDropCount,
+        m_resentEntryCount);
 }
 
 // THE FINAL REPORT, and it is not redundant with the windowed one. It guarantees

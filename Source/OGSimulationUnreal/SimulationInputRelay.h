@@ -137,8 +137,9 @@ public:
     virtual void BeginPlay() override;
     virtual void OnRep_Owner() override;
 
-    // ⭐ [T34] THE FLUSH HOOK — bare C1 (R = 0). Publishes everything the relay tap
-    // staged since the last poll into the replicated ring, then empties the stage.
+    // ⭐ [T34] THE FLUSH HOOK — bare C1 (R = the re-send count, default 0). Publishes
+    // everything the relay tap staged since the last poll into the replicated ring,
+    // then empties the stage.
     //
     // WHY THIS HOOK, VERIFIED FROM ENGINE SOURCE RATHER THAN ASSUMED (T43
     // finding 4): `UEngineReplicationBridge::BeginReplication` registers every actor
@@ -217,7 +218,7 @@ public:
     FRelayedInputRing& editRelayedInputStagingRing() { return m_relayedInputStagingRing; }
 
     // --- flush telemetry -------------------------------------------------------
-    // ⭐ [T34 rework] READ BY `emitFlushReport`, which puts all four on a
+    // ⭐ [T34 rework] READ BY `emitFlushReport`, which puts all of them on a
     // Warning-level `[RelayFlush]` line once per kFlushReportRounds polls and once
     // at teardown. They are the ONLY direct observation of the flush there is —
     // `observableX1000` reads ~1000 even on a dead `PreReplication` — so they must
@@ -227,6 +228,9 @@ public:
     uint32 getFlushedEntryCount()      const { return m_flushedEntryCount; }
     uint32 getSuppressedFlushCount()   const { return m_suppressedFlushCount; }
     uint32 getStageOverflowDropCount() const { return m_stageOverflowDropCount; }
+    uint32 getResentEntryCount()       const { return m_resentEntryCount; }
+
+    void setRelayResendEntries(uint8 entries) { m_relayResendEntries = relayedInputRing::clampResendEntries(entries); }
 
     // Counted by the relay tap when a staged burst exceeded `kMaxDepth` in ONE
     // frame and the oldest staged entry was superseded to make room. This is the
@@ -285,7 +289,7 @@ private:
     // directly at spawn) and no-op if no listener has registered yet.
     void requestListenerLink();
 
-    // [T34 rework] One `[RelayFlush]` line carrying all four flush counters.
+    // [T34 rework] One `[RelayFlush]` line carrying all the flush counters.
     // `reason` distinguishes the periodic line from the teardown one.
     void emitFlushReport(const TCHAR* reason) const;
 
@@ -322,6 +326,8 @@ private:
     uint32 m_flushedEntryCount      = 0;
     uint32 m_suppressedFlushCount   = 0;
     uint32 m_stageOverflowDropCount = 0;
+    uint32 m_resentEntryCount       = 0;
+    uint8  m_relayResendEntries     = 0;
 
     // Polls since the last `[RelayFlush]` window line. Counts POLLS, not published
     // rounds — a host that is polled but always suppressed is the state most worth

@@ -38,7 +38,7 @@ a non-template base; this is the same shape as the relay host's listener interfa
 | member | called by the sibling | what the binding supplies (§2) |
 |---|---|---|
 | `simulationKey` | the tier send's `check` and `[ConnectionTier]` line, and the owner-skip lines | the game's storage key, through the game's key hook |
-| `onCorrectionStateAccepted` | `OnRep_CorrectionState`, after the wire-format fence, before the core's callback | the typed read of the correction state, `[ReceiveCorrectionState]` and the `ClientReceived` stamp |
+| `onCorrectionStateAccepted` | `OnRep_CorrectionState`, after the wire-format fence, before the core's callback | the typed read of the correction state, `[ReceiveCorrectionState]`, and the `ClientReceived` stamp with the `H6L` heal by correction (§4) |
 | `receiveRemoteMoveBundle` | `ServerReceiveRemoteMove_Implementation`, after its fences | the typed RPC tail: reception, delay, delivery (§3) |
 | `noteRelayedRingArrived` | `onRelayedInputRingArrived`, after the owner-skip check, before the core's callback | the probe's `ClientReceived` stamps for a relayed ring |
 | `makeRingFlushedCallback` | `attachInputRelayHost`, on the authority only | the callback the relay host calls after a flush that published entries (the probe's `Handed` stamps) |
@@ -170,12 +170,12 @@ sits next to. The template's own stamp points, their threads and errors are `UEL
 |---|---|---|
 | `sendLocalInputToAuthority`, after the send | `Handed` for every capture tick in the bundle | client |
 | `receiveRemoteMoveBundle`, which the sibling's RPC calls after its fences | `ServerReceived` for every capture tick in the bundle, and one `WIRE` sample from `readRoundTripMs` per bundle when there is a root connection | authority |
-| `onCorrectionStateAccepted`, which the sibling's `OnRep_CorrectionState` calls; after the `[ReceiveCorrectionState]` line | `ClientReceived` for the correction's tick | client |
+| `onCorrectionStateAccepted`, which the sibling's `OnRep_CorrectionState` calls; after the `[ReceiveCorrectionState]` line | `ClientReceived` for the correction's tick, and `Healed` for the character's pending relayed captures the correction contains, both through `UELatencyBudgetDiagnostics::stampCorrectionReceived` (og-input-latency task 6) | client |
 | `noteRelayedRingArrived`, which the sibling's `onRelayedInputRingArrived` calls after the owner-skip check, before the core callback | `ClientReceived` for every capture tick in the ring other than the `kNoInputCaptureTick` sentinel | client |
 | the callback `makeRingFlushedCallback` returns, which the sibling's `attachInputRelayHost` binds as the relay host's flush callback, authority only | `Handed` for every capture tick a flush published, other than the sentinel | authority |
 
-All five run on the game thread. Every stamp goes through `UELatencyBudgetDiagnostics::stamp`, which `checkf`s the game
-thread, and every block reaches it through `UELatencyBudgetDiagnostics::withInstance`, which runs the block on the
+All five run on the game thread. Every stamp goes through `UELatencyBudgetDiagnostics::stamp` or, for the correction,
+`UELatencyBudgetDiagnostics::stampCorrectionReceived`, each of which `checkf`s the game thread, and every block reaches it through `UELatencyBudgetDiagnostics::withInstance`, which runs the block on the
 role's instance (the session owner's `editLatencyBudgetDiagnostics()`) when there is one. Where
 `OG_LATENCY_BUDGET_DIAGNOSTICS` is 0 (Shipping) `withInstance` is an empty function, so the owner lookup each block
 makes only to stamp is not made (`UELatencyBudgetDiagnostics-rationale.md` §3). The relay host's flush callback is still
@@ -401,6 +401,14 @@ into the sibling's no-host fallback, invisible to every client and with nothing 
 by construction rather than by timing. A client finds its host (`findForOwner`) and attaches it; a host that has not
 replicated yet is found as null, which the sibling's `attachInputRelayHost` ignores, and the session's
 `onInputRelayHostReady` attaches it to the sibling when it arrives (`SimulatableNetSyncComponent-rationale.md` §10).
+
+**The re-send count (og-input-latency task 8).** Between the spawn and the attach, the authority hands the relay host
+the session's `TimeConfig::relayResendEntries`, through `ASimulationInputRelay::setRelayResendEntries`, read from the
+session's `getTimeConfigPtr` (null before the manager is built, in which case the host keeps its default of 0). The host
+passes it to every flush (`RelayedInputRingCodec-rationale.md` §15). It is set here, once, because this is the only
+place the authority creates the host, and the session reads the knob's ini key at start-up, before any character
+registers. A `static_assert` beside the call holds the knob's clamp maximum (`latencyKnobs::kMaxRelayResendEntries`)
+equal to the codec's `relayedInputRing::kMaxResendEntries`. A client never sets it: a client's host never flushes.
 
 This is also why the host is not spawned on demand from the write path, the way the connection relay is: that actor
 has no always-reached creation point earlier than its first write, and `PostLogin` misses seamless travel. This one

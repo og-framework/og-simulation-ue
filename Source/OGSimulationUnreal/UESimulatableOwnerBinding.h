@@ -229,8 +229,7 @@ void UESimulatableOwnerBinding<OwnerT, TraitsT>::onCorrectionStateAccepted()
 	UELatencyBudgetDiagnostics<TraitsT>::withInstance(/*isAuthority=*/false,
 		[this, tick](UELatencyBudgetDiagnostics<TraitsT>& diagnostics)
 		{
-			diagnostics.stamp(latencyBudget::Stream::State, derived().storageKeyOfOwner(),
-				tick, latencyBudget::Point::ClientReceived);
+			diagnostics.stampCorrectionReceived(derived().storageKeyOfOwner(), tick);
 		});
 }
 
@@ -563,8 +562,15 @@ void UESimulatableOwnerBinding<OwnerT, TraitsT>::tryRegisterWithNewFramework()
 		{
 			if (AActor* ownerActor2 = derived().GetOwner())
 			{
-				attachInputRelayHost(
-					ASimulationInputRelay::spawnForCharacter(*world, *ownerActor2));
+				ASimulationInputRelay* host = ASimulationInputRelay::spawnForCharacter(*world, *ownerActor2);
+				static_assert(latencyKnobs::kMaxRelayResendEntries == relayedInputRing::kMaxResendEntries,
+					"TimeConfig::relayResendEntries' clamp and the relay codec's re-send bound must agree, or a session "
+					"value the knob accepts would be cut again at the flush. og-input-latency task 8");
+				const TimeConfig* sessionTimeConfig = regManager->session().getTimeConfigPtr();
+				if (host != nullptr && sessionTimeConfig != nullptr)
+					host->setRelayResendEntries(
+						relayedInputRing::clampResendEntries(sessionTimeConfig->relayResendEntries));
+				attachInputRelayHost(host);
 			}
 		}
 	}

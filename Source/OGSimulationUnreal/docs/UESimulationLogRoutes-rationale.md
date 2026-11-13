@@ -26,7 +26,7 @@ table has is a `static_assert` (§9).
 | `kOGAdapterLogRoutes` | the adapter's 14 rows (§8) |
 | `ogLogRouteOf`, `ogLogVerbosityOf` | the two mappings from og-simulation's engine-free row fields to Unreal's (§8) |
 | `kOGSimulationLogRoutePrefixes` | og-simulation's `char` prefixes widened to `TCHAR` at compile time (§8) |
-| `kOGLogRoutes` | the concatenation, og-simulation's 25 rows first, then the adapter's 14 (§8) |
+| `kOGLogRoutes` | the concatenation, og-simulation's 27 rows first, then the adapter's 14 (§8) |
 | `ogLogRouteFor` | the first row whose prefix begins a line, at compile time (§7) |
 | `OG_LOG_ROUTED` | a direct log site that takes its level from its row (§7) |
 | `RouteOGMessage` | the router: one og-simulation log string to one category at one level (§2) |
@@ -198,7 +198,7 @@ task 80 every row behaved as `Log`.
 | `[InjectCorrectionState]` | `LogOGNet` | – / 57–59 | `Verbose` |
 | `[InjectCorrectionInput]` | `LogOGNet` | no emitter | `Log` |
 | `[DrainOutOfOrder]` | `LogOGNet` | no emitter | `Log` |
-| `[InputGap]`, `[InputDrop]`, `[DelayShift]`, `[InputStats]`, `[InputDomain]` | `LogOGNet` | token (`[Warning]`) | `Log` |
+| `[InputGap]`, `[InputDrop]`, `[DelayShift]`, `[InputStats]`, `[InputArrival.Window]`, `[InputDomain]` | `LogOGNet` | token (`[Warning]`) | `Log` |
 | `[Park]` | `LogOGNet` | 116 / – | `Verbose` |
 | `[Release]` | `LogOGNet` | 116 / – | `Verbose` |
 | `[ReleaseBatch]` | `LogOGNet` | 60 / – | `Verbose` |
@@ -246,8 +246,10 @@ none.
 **`kOGLogRoutes` is the concatenation of two tables.** The rows whose tags only og-simulation emits are engine-free
 data in og-simulation: `kSimulationLogRoutes` in its `SimulationLogRoutes.h`, with plain `char` prefixes, a
 `SimulationLogRoute` and a `HostLogLevel`. The rest are here, in `kOGAdapterLogRoutes`. `ogConcatenateLogRoutes` builds
-`kOGLogRoutes` at compile time: og-simulation's 25 rows first, then the adapter's 14, each block in the order the
-single table had before task 12. `RouteOGMessage`, `OG_LOG_ROUTED` and `ogLogRouteFor` read `kOGLogRoutes`.
+`kOGLogRoutes` at compile time: og-simulation's 27 rows first (25 until og-input-latency task 5b added
+`[InputArrival.Window]`, 26 until og-input-latency P3-1 added `[InputArrival.BackDate]`), then the adapter's 14, each
+block in the order the single table had before task 12. `RouteOGMessage`, `OG_LOG_ROUTED` and `ogLogRouteFor` read
+`kOGLogRoutes`.
 
 **Which rows are og-simulation's** was decided by the emitters (og-tickdriver task 12): a row went to og-simulation when
 og-simulation alone emits its tag; its emitting files are listed in og-simulation's `SimulationLogRoutes-rationale.md`

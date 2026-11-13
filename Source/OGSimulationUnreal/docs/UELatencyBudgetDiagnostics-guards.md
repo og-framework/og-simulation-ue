@@ -71,6 +71,39 @@ is bound. The skip keeps the read safe if a later change reorders those (rationa
 component the loop reads today is bound. (Added by og-ue-simulationcomponentandmanagersplit task 21, a lead ruling
 of that task.)
 
+## G-04 — a resimulation's use stamps `Healed` only, never `Consumed`
+
+**Site:** `post_Internal(latencyBudget::Event::stampHealedIfPending(id, read.appliedCaptureTick, stepStartSeconds));`
+in `postRelayedReads_Internal`, the branch for an observation of an earlier tick that changed since the last step.
+
+**The prohibition.** ⛔ Do not post a `Consumed` stamp from this branch, and do not replace this statement with a plain
+`Event::stamp` of `Consumed` or of `Healed`. An observation of an earlier tick that changed since the last step was
+written by a resimulation's read; it ends `H6L` and never `H6`.
+
+**The consequence.** `H6` is the prediction-only hop: its end is a prediction step's scheduled read (rationale §6).
+A `Consumed` stamp from a resimulation redefines `H6`, which ruling Q7 = A (og-input-latency, 2026-11-11) rejected,
+because it breaks the comparison of every `H6` number with the archived ones. A plain stamp of `Healed` would
+create slots for captures the probe never saw received (`noStart` on `H6L`) and count every re-served capture as a
+duplicate in `[LatencyBudget.Window]`.
+
+**What breaks if the tag moves.** Nothing mechanical. The probe's own pending semantics are
+`LatencyBudgetProbe-rationale.md` §10; this site's place among the stamp points is rationale §11.
+
+## G-05 — the read shadow is the step thread's; `forgetCharacter` never touches it
+
+**Site:** the blank line after `m_lastHandedCorrectionTick.erase(id);` at the end of `forgetCharacter` (an absence
+tag).
+
+**The prohibition.** ⛔ Do not erase, clear or otherwise touch `m_seenReads_Physics` here, or anywhere else on the
+game thread, however natural it looks beside the erase above it.
+
+**The consequence.** `forgetCharacter` runs on the game thread. `m_seenReads_Physics` is read and written only by
+`postRelayedReads_Internal`, on the step's thread, with no lock and no mailbox. An erase here races a client step
+that is inserting into or iterating the same `std::unordered_map`: a crash on a rehash, not a wrong number. The
+map's size is bounded on the step's thread instead (rationale §11).
+
+**What breaks if the tag moves.** Nothing mechanical; the threads table is rationale §6.
+
 ---
 
 ## §R — Retired ids

@@ -22,6 +22,7 @@
 #include "OGSimulation/PCTimeManagement/ClientPredictionClock.h"
 #include "Engine/World.h"
 
+#include <array>
 #include <memory>
 #include <unordered_map>
 #include <utility>
@@ -74,6 +75,7 @@ public:
 	void forgetCharacter(unsigned int id);
 
 	void stamp(latencyBudget::Stream stream, unsigned int lane, uint32 tick, latencyBudget::Point point);
+	void stampCorrectionReceived(unsigned int lane, uint32 correctionTick);
 	void noteWireSample(double roundTripSeconds);
 	void post_Internal(const latencyBudget::Event& event);
 	void stampAfterStep_Internal(double stepStartSeconds);
@@ -97,9 +99,26 @@ private:
 	using Mailbox      = latencyBudget::SpscMailbox<latencyBudget::Event, 4096>;
 	using ClockMailbox = latencyBudget::SpscMailbox<ClockCounts, 64>;
 
+	struct SeenRead
+	{
+		uint32                      simTick               = 0u;
+		uint32                      appliedCaptureTick    = 0u;
+		bool                        hasAppliedCaptureTick = false;
+		ScheduledRelayedReadOutcome outcome               = ScheduledRelayedReadOutcome::NoProbe;
+		bool operator==(const SeenRead&) const = default;
+	};
+
+	struct SeenReads
+	{
+		std::array<SeenRead, kRelayedReadObservationCapacityTicks> slots{};
+		bool                                                       primed = false;
+	};
+
 	static UELatencyBudgetDiagnostics* instanceFor(bool isAuthority);
 
 	InputProvider wrap(unsigned int id, const typename TraitsT::Component& owner, InputProvider inputProvider);
+	void postRelayedReads_Internal(unsigned int id, const RelayedReadObservationRing& ring, uint32 tick,
+		double stepStartSeconds);
 
 	const UESimulationSession<TraitsT>& m_owner;
 
@@ -120,6 +139,7 @@ private:
 	ClockCounts                                        m_clockAtWindowStart;
 	uint64                                             m_mailboxDropped = 0u;
 	std::unordered_map<unsigned int, uint32>           m_lastHandedCorrectionTick;
+	std::unordered_map<unsigned int, SeenReads>        m_seenReads_Physics;
 	FDelegateHandle                                    m_postTickFlushHandle;
 #else
 	explicit UELatencyBudgetDiagnostics(const UESimulationSession<TraitsT>&) {}
@@ -129,6 +149,7 @@ private:
 	void forgetCharacter(unsigned int) {}
 
 	void stamp(latencyBudget::Stream, unsigned int, uint32, latencyBudget::Point) {}
+	void stampCorrectionReceived(unsigned int, uint32) {}
 	void noteWireSample(double) {}
 	void post_Internal(const latencyBudget::Event&) {}
 	void stampAfterStep_Internal(double) {}
@@ -190,6 +211,8 @@ void UELatencyBudgetDiagnostics<TraitsT>::forgetCharacter(unsigned int id)
 	if (m_probe)
 		m_probe->forgetLane(id);
 	m_lastHandedCorrectionTick.erase(id);
+	// ⛔G-05  docs/UELatencyBudgetDiagnostics-guards.md
+
 }
 
 template <typename TraitsT>
@@ -230,6 +253,26 @@ void UELatencyBudgetDiagnostics<TraitsT>::stamp(
 		TEXT("the physics thread posts through post_Internal's mailbox instead."));
 	if (m_probe)
 		m_probe->stamp(stream, lane, tick, point, FPlatformTime::Seconds());
+}
+
+template <typename TraitsT>
+void UELatencyBudgetDiagnostics<TraitsT>::stampCorrectionReceived(unsigned int lane, uint32 correctionTick)
+{
+	checkf(IsInGameThread(),
+		TEXT("UELatencyBudgetDiagnostics::stampCorrectionReceived is game-thread only: the probe has one owner, and the ")
+		TEXT("relay store it reads the delay stamp from is written on the game thread."));
+	if (!m_probe)
+		return;
+	const double nowSeconds = FPlatformTime::Seconds();
+	m_probe->stamp(latencyBudget::Stream::State, lane, correctionTick, latencyBudget::Point::ClientReceived, nowSeconds);
+
+	const auto* store =
+		m_owner.m_inputResolution.template findRemoteInputCache<typename TraitsT::Simulatable>(lane);
+	if (store == nullptr)
+		return;
+	const auto latest = store->findLatest();
+	if (latest.valid)
+		m_probe->stampHealedByCorrection(lane, correctionTick, latest.dA, nowSeconds);
 }
 
 template <typename TraitsT>
@@ -280,21 +323,8 @@ void UELatencyBudgetDiagnostics<TraitsT>::stampAfterStep_Internal(double stepSta
 		{
 			const RelayedReadObservationRing* const ring =
 				m_owner.m_inputResolution.getDiagnostics().template relayedReadObservations<typename TraitsT::Simulatable>(id);
-			if (ring == nullptr)
-				return;
-			for (std::size_t index = 0; index < ring->size(); ++index)
-			{
-				const RelayedReadObservation* const observation = ring->at(index);
-				if (observation == nullptr || observation->simTick != tick)
-					continue;
-				if (observation->hasAppliedCaptureTick)
-				{
-					post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::Input,
-						id, observation->appliedCaptureTick, latencyBudget::Point::Consumed,
-						stepStartSeconds));
-				}
-				return;
-			}
+			if (ring != nullptr)
+				postRelayedReads_Internal(id, *ring, tick, stepStartSeconds);
 		});
 
 	if (m_clockMailbox)
@@ -307,6 +337,51 @@ void UELatencyBudgetDiagnostics<TraitsT>::stampAfterStep_Internal(double stepSta
 		if (!(counts == m_clockPosted_Physics) && m_clockMailbox->tryPush(counts))
 			m_clockPosted_Physics = counts;
 	}
+}
+
+template <typename TraitsT>
+void UELatencyBudgetDiagnostics<TraitsT>::postRelayedReads_Internal(
+	unsigned int id, const RelayedReadObservationRing& ring, uint32 tick, double stepStartSeconds)
+{
+	auto seenIt = m_seenReads_Physics.find(id);
+	if (seenIt == m_seenReads_Physics.end())
+	{
+		if (m_seenReads_Physics.size() >= latencyBudget::ProbeConfig{}.maxLanes)
+			m_seenReads_Physics.clear();
+		seenIt = m_seenReads_Physics.emplace(id, SeenReads{}).first;
+	}
+	SeenReads& seen = seenIt->second;
+
+	for (std::size_t index = 0; index < ring.size(); ++index)
+	{
+		const RelayedReadObservation* const observation = ring.at(index);
+		if (observation == nullptr)
+			continue;
+		const SeenRead read{ observation->simTick, observation->appliedCaptureTick,
+			observation->hasAppliedCaptureTick, observation->outcome };
+		const bool servedAtSchedule =
+			read.hasAppliedCaptureTick && read.outcome == ScheduledRelayedReadOutcome::Hit;
+		if (read.simTick == tick)
+		{
+			if (read.hasAppliedCaptureTick)
+			{
+				post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::Input,
+					id, read.appliedCaptureTick, latencyBudget::Point::Consumed, stepStartSeconds));
+			}
+			if (servedAtSchedule)
+			{
+				post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::Input,
+					id, read.appliedCaptureTick, latencyBudget::Point::Healed, stepStartSeconds));
+			}
+		}
+		else if (seen.primed && seen.slots[index] != read && servedAtSchedule)
+		{
+			// ⛔G-04  docs/UELatencyBudgetDiagnostics-guards.md
+			post_Internal(latencyBudget::Event::stampHealedIfPending(id, read.appliedCaptureTick, stepStartSeconds));
+		}
+		seen.slots[index] = read;
+	}
+	seen.primed = true;
 }
 
 template <typename TraitsT>
@@ -394,6 +469,16 @@ void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread(BackendDiagnosticsT ba
 	for (std::size_t index = 0; index < report.hopCount; ++index)
 	{
 		const latencyBudget::HopSummary& hop = report.hops[index];
+		if (hop.hop == latencyBudget::Hop::H6L)
+		{
+			UE_LOG(LogOGLatencyBudget, Warning,
+				TEXT("[LatencyBudget] role=%s hop=%s p50=%.3f p95=%.3f p99=%.3f max=%.3f n=%u unit=ms ")
+				TEXT("noStart=%u noEnd=%u outOfOrder=%u overflow=%u healedByUse=%u healedByCorrection=%u"),
+				role, ANSI_TO_TCHAR(latencyBudget::hopName(hop.hop)),
+				hop.p50 * kMillis, hop.p95 * kMillis, hop.p99 * kMillis, hop.max * kMillis, hop.n,
+				hop.noStart, hop.noEnd, hop.outOfOrder, hop.overflow, hop.healedByUse, hop.healedByCorrection);
+			continue;
+		}
 		UE_LOG(LogOGLatencyBudget, Warning,
 			TEXT("[LatencyBudget] role=%s hop=%s p50=%.3f p95=%.3f p99=%.3f max=%.3f n=%u unit=ms ")
 			TEXT("noStart=%u noEnd=%u outOfOrder=%u overflow=%u"),

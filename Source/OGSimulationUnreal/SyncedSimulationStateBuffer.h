@@ -22,7 +22,7 @@
 //
 // Payload for the unreliable + redundancy input channel that replaces the
 // reliable FSimulationStateSyncBuffer RPC (proposal §3.1 step 8). The client
-// re-sends the last `redundancyDepthTicks` ticks of input every frame so a
+// re-sends its last few ticks of input (slot count below) every frame so a
 // dropped UDP datagram self-heals on the next send instead of stalling a
 // reliable resend (the R-T1 streeting-saturation mitigation).
 //
@@ -32,10 +32,15 @@
 //   [slots...]           offset 2  each slot is:
 //       [capture_tick (u32)] [input_serialized_bytes (fixed per InputType)]
 //
-// Runtime slot count = TimeConfig::redundancyDepthTicks. Default tracks the
-// runtime tick rate per proposal §11: 5 at 100 Hz interim (Stage 1 ship),
+// Runtime slot count = SimulationNetSync::redundancySlots: exactly
+// TimeConfig::redundancyDepthTicks at TimeConfig::redundancyFrames = 0 (the
+// default), otherwise redundancyFrames frames' worth of ticks, never below
+// min(redundancyDepthTicks, kMaxSlots). The redundancyDepthTicks default tracks
+// the runtime tick rate per proposal §11: 5 at 100 Hz interim (Stage 1 ship),
 // 3 at 60 Hz target (post-Stage-2 ship). Hard upper bound = kMaxSlots = 8 for
-// wire safety; the runtime depth is min(redundancyDepthTicks, kMaxSlots).
+// wire safety; buildRedundancyBundle clamps the slot count it is handed to
+// kMaxSlots, so the runtime depth is min(redundancySlots, kMaxSlots) — which
+// is min(redundancyDepthTicks, kMaxSlots) at redundancyFrames = 0.
 //
 // INVARIANT (R-T5 / D3.11): inputs written into this bundle are append-only and
 // immutable per capture-tick. The client MUST NOT revise the input value for a

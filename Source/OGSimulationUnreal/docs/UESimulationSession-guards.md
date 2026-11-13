@@ -298,7 +298,7 @@ body this was, became the session's.*
 
 **The prohibition.** ⛔ Until the type-free transport (M4, deferred) lands, a transport function reaches typed state only
 through what that transport's binding would take (manager design §9): the manager's session controls (`runsPrediction`,
-`getTimeConfig`, the two clamped setters and the six clock accessors), the input-delay atomic (through the delay publish
+`getTimeConfig`, the clamped setters and the six clock accessors), the input-delay atomic (through the delay publish
 and its read), the resim-policy sink and the coordinator's tier tracking. Every other member, accessor or `TraitsT` reach
 in a transport function is forbidden unless the table below names it, and a transport function calls into the session only
 through another transport function (or the one accessor the table names).
@@ -328,6 +328,7 @@ state" is the transport's own members (`s_instances`, `m_replicatedTierConsumer`
 | `readSessionKnobs` (task 26b) | nothing of the session: it reads the ini and returns the requests (a static member) |
 | `applySessionKnobs` (task 26b) | `m_manager`: `getTimeConfig`, `setRelayDelayFloorTicks`, `setCorrectionRotationK` (the two clamped setters); transport calls `logRelayDelayFloorAdvisory`, `findTimingRelay` |
 | `applyResimTriggerPolicy` (task 26b) | `m_manager`: `getTimeConfig`, and the resim-policy sink `setResimTriggerPolicy` |
+| `applyLatencyKnobs` (og-input-latency task 4) | `m_manager`: `getTimeConfig`, `setRedundancyFrames`, `setRelayResendEntries` (two more clamped setters) |
 | `onFrameStepsDue_GameThread` (task 26b) | transport state `m_frameHealthProbe`, `m_connectionBudgetProbe`, and its own one-shot latch for the `[PacketBudget]` line (a function-local static); `m_manager`: `has_value`, `runsPrediction`; the coordinator's presence test, `m_receptionCoordinator.has_value` (`⛔G-18`); the owner as an `AActor`: `m_owner.GetWorld` |
 
 **The two exemptions (ruled Q-I, 2026-10-20).** `onInputRelayHostReady` casts the host's owner to `TraitsT::Character` and
@@ -344,6 +345,11 @@ session controls (`getTimeConfig` and the two clamped setters) and the resim-pol
 manager's role (`has_value`, `runsPrediction`) and the coordinator's presence, nothing else of the coordinator. That
 presence test is the one reach into the input-reception state a seam function has, and §9 names it (PROBE 6's
 coordinator-presence test).
+
+**A fourth knob function (og-input-latency task 4).** `applyLatencyKnobs` reaches the manager through `getTimeConfig` and
+two more clamped setters, `setRedundancyFrames` and `setRelayResendEntries`. They are the same kind of session control
+as the first two (an integer clamped into one `TimeConfig` field), so "the clamped setters" above now names four. The
+seam script's list predates them: run it with the row above added, or it does not check this function.
 
 **Exempt by design: the input reception (task 26a).** `hasServerTierWiring`, `getReceptionCoordinator`,
 `getServerReceptionTick`, `noteDelayedInputComponent`, `deliverRemoteInput`, `relayRemoteInput`,
@@ -424,7 +430,7 @@ now by the statement order of the owner's unregistration alone.*
 
 **Tag site:** `UESimulationSession.h`, directly above `if (worldIsAuthority && GConfig != nullptr)`, the floor intake in
 `readSessionKnobs`. `beginPlay` calls `readSessionKnobs` (since task 27b; the owner's `BeginPlay` before), at the
-position of the three intakes it holds.
+position of the intakes it holds (three until og-input-latency task 4 added the latency knobs' two).
 
 **The prohibition, as it stood in the source:**
 
@@ -724,6 +730,12 @@ every other mention is a comment. og-simulation's predicate is empty until a hos
 it marks: the brawler's file-local `bindCorrectionFieldDiffGate` became the session's private static member, unchanged,
 and the start-up that calls it became `beginPlay`.*
 
+*R0, og-input-latency task 2h:* two statements above are no longer true, and one never was. Since task 2h the category
+has a THIRD use in code, the margin predicate below this one (`UE_LOG_ACTIVE(LogOGDivergenceProbe, Log)`, `⛔G-28`), so
+the quoted "ONLY TWO SITES" and 27b's "exactly two sites" now read "three". And the brawler's `Config/DefaultEngine.ini`
+sets the category to `Warning`, not `Verbose`, at `HEAD` and in today's tree (`LogOGDivergenceProbe=Warning`). The
+prohibition itself is unchanged.
+
 ---
 
 ## G-23 — the authority branch sets the neutral input too, before any registration
@@ -842,6 +854,61 @@ called for any component ending play, including one whose registration never rea
 
 *Moved from `OGBrawlerSimulationManager-guards.md` G-73 (the brawler's task 12 conversion) by og-ue-simulationcomponentandmanagersplit task 28, with the test it
 marks: `unregisterFromNewFramework` became the session's own sequence.*
+
+---
+
+## G-27 — the latency-knob intake is not authority-gated
+
+**Tag site:** `UESimulationSession.h`, directly above `if (GConfig != nullptr)`, the latency-knob intake in
+`readSessionKnobs` (the `RedundancyFrames` and `RelayResendEntries` keys), after the resim-trigger-policy intake and
+before the `return`.
+
+**The prohibition.** ⛔ Do not give this intake its neighbours' `worldIsAuthority &&` guard. `RedundancyFrames` is read
+only by a predicting client's send, so an authority-gated read skips it on the one role that uses it.
+`RelayResendEntries` is read only by the authority's flush, and reading it on both roles keeps one `TimeConfig` shape, as
+the resim-trigger-policy intake does (`⛔G-16`).
+
+**The consequence.** With the guard, a client never reads `RedundancyFrames`. The client's `[LatencyKnobs]` proof line
+still prints, reporting `compiled`, so the knob looks applied in the server's log and is silently inert where it acts.
+
+**What breaks if the tag moves.** The floor and rotation-width intakes above are authority-gated for their own reasons
+(`⛔G-14`), so copying their shape is the natural edit; this tag is what marks the difference at the line where it would
+be typed.
+
+*R0, og-input-latency task 4:* written with the code. `applyLatencyKnobs` runs after both role branches in `beginPlay`,
+and on every peer it prints one `[LatencyKnobs]` line with the values read back from the manager's `TimeConfig`. The
+fields have no reader yet (og-input-latency tasks 7 and 8 add them); the prohibition is about the intake's shape, which
+those tasks rely on.
+
+---
+
+## G-28 — the margin predicate must ask the category `RouteOGMessage` sends `[DivergenceProbe` to, at `Log`, live
+
+**Tag site:** `UESimulationSession.h`, directly above the `correctionVerdictMargin::setEnabledPredicate(` call in
+`bindCorrectionFieldDiffGate`, the second predicate install, after G-22's and a `static_assert` on the route.
+
+**The prohibition.** ⛔ The margin predicate is G-22's twin at another level: a lambda that re-reads
+`UE_LOG_ACTIVE(LogOGDivergenceProbe, Log)` on every call, never a bool latched at `beginPlay`, and never a level other
+than the one the `[DivergenceProbe.Margin]` line is printed at. That line carries no severity token, so it goes out at
+the `[DivergenceProbe` route's plain level, `Log`. Do not change the predicate's category or level without the route,
+and do not raise it to `Verbose` to share G-22's answer.
+
+**The consequence.** A predicate asking another category, or a higher level, pays for a walk of every landed verdict
+whose line is dropped, or drops the walk while the line would print: `LogOGDivergenceProbe=Log` then shows no Margin
+lines at all. A latched bool loses the console switch mid-session. At `Verbose` the margin would run only when the
+per-correction Verbose lines also run, which is the cost the second predicate exists to avoid.
+
+**What breaks if the tag moves.** Half of the pair is checked by the compiler: the `static_assert` above the call fails
+if `[DivergenceProbe.Margin]` stops routing to `OGLogRoute::DivergenceProbe` at plain level `ELogVerbosity::Log`. The
+other half is not: that `OGLogRoute::DivergenceProbe` logs to `LogOGDivergenceProbe` is a `switch` arm in
+`RouteOGMessage` (`UESimulationLogRoutes.h`), which is not `constexpr`. This tag is what says so at the predicate.
+
+*R0, og-input-latency task 2h:* written with the code. `ogLogRouteFor(TEXT("[DivergenceProbe.Margin]"))` finds the row
+whose prefix is `[DivergenceProbe` (`kSimulationLogRoutes`, plain level `HostLogLevel::Log`, mapped to
+`ELogVerbosity::Log`). `RouteOGMessage` strips only `[Verbose]` and `[Warning]`, then matches the prefix and sends a
+`DivergenceProbe` line to `LogOGDivergenceProbe`. The brawler's `Config/DefaultEngine.ini` ships the category at
+`Warning`, so the predicate answers false there. og-simulation's `correctionVerdictMargin::enabled()` is false while
+no predicate is installed.
 
 ---
 

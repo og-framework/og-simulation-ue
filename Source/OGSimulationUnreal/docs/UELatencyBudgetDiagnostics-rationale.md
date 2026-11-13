@@ -29,6 +29,8 @@ two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` →
 * **§8** is how it is built: a header-only template instantiated by the game, and a `.cpp` with one definition.
 * **§9** is the provenance.
 * **§10** is og-ue-simulationcomponentandmanagersplit task 24a: the owner is the session, and the weak-lambda owner stays the actor.
+* **§11** is og-input-latency task 6: the late-heal hop `H6L`, where its three stamps come from, and why a resimulation's
+  use is read from the observation ring.
 
 ---
 
@@ -57,16 +59,18 @@ That test puts it under the codebase's three structural markers:
    (§3).
 3. **A fence test** (§5).
 
-**The verbs.** `stamp`, `post_Internal`, `stampAfterStep_Internal` and `stampStepEnd_Internal` write probe stamps;
+**The verbs.** `stamp`, `stampCorrectionReceived`, `post_Internal`, `stampAfterStep_Internal`,
+`postRelayedReads_Internal` and `stampStepEnd_Internal` write probe stamps;
 `noteWireSample` writes a probe sample (`note*`, `DiagnosticsConventions.md` §3); `wrapInputProvider` adds the capture stamp;
 `onPostTickFlush` is the `H3` and `H3c` end; `tick_GameThread` drains, stamps `H3c` and `H7`, and closes the window. `begin`
 creates the probe and its two mailboxes and binds `onPostTickFlush`; `end` unbinds it; `forgetCharacter` drops a departed
 character's lane. `withInstance` runs a function on the role's instance, if there is one. `clockCountsInWindow` and
 `restartClockWindow` are a backend host's reads and writes of the clock counts.
 
-**Threads.** `stamp`, `noteWireSample`, `onPostTickFlush`, `tick_GameThread`, `begin`, `end`, `forgetCharacter`,
-`withInstance`, `clockCountsInWindow` and `restartClockWindow` are game-thread; `post_Internal`, `stampAfterStep_Internal`,
-`stampStepEnd_Internal` and the wrapped provider run on the step's thread.
+**Threads.** `stamp`, `stampCorrectionReceived`, `noteWireSample`, `onPostTickFlush`, `tick_GameThread`, `begin`, `end`,
+`forgetCharacter`, `withInstance`, `clockCountsInWindow` and `restartClockWindow` are game-thread; `post_Internal`,
+`stampAfterStep_Internal`, `postRelayedReads_Internal`, `stampStepEnd_Internal` and the wrapped provider run on the
+step's thread.
 
 ---
 
@@ -77,7 +81,7 @@ The template names no game type. Everything typed comes from `TraitsT`:
 | member of `TraitsT` | what the template does with it |
 |---|---|
 | `PlayerInput` | the provider's result type: `InputProvider` is `std::function<PlayerInput(const SimulationTimeStep&, const LocalInputCache<PlayerInput>&)>`, which the owner asserts is its own provider type, so the wrapper never converts (a second heap-allocated callable per registration) |
-| `Simulatable` | the type argument of the storage walks and of the two input-resolution reads, `getLastUsedCaptureTick` and `relayedReadObservations` |
+| `Simulatable` | the type argument of the storage walks and of the three input-resolution reads, `getLastUsedCaptureTick`, `relayedReadObservations` and `findRemoteInputCache` |
 | `Component` | the registering component `wrapInputProvider` and `wrap` take, and the element type of the session's delayed-input map (the owner's until og-ue-simulationcomponentandmanagersplit task 26a), whose correction-buffer tick `tick_GameThread` reads through a const pointer (§4) |
 | `SessionOwner` | the session's owner: its static `instanceFor(bool)` and `editLatencyBudgetDiagnostics()`, which `instanceFor` calls (the owner's forwards to its session's). The template's const reference `m_owner` (§4) is to the session, `UESimulationSession<TraitsT>`, since og-ue-simulationcomponentandmanagersplit task 24a (to the owner before), and it reads the session's `m_manager`, `m_storage`, `m_inputResolution` and, since task 26a, `m_delayedInputComponentsById` (the owner's before, read through the session's `owner()`) |
 | `Game` | two static hooks, below |
@@ -139,7 +143,7 @@ The template reads its session's `m_manager`, `m_storage`, `m_inputResolution` a
 through **one const reference**, `m_owner`, to the session (§10): the session and its owner each declare the template a
 friend, and every read goes through that const reference, so it can call only const members
 (`currentIntegratedTick`, `runsPrediction`, `getClientClock`, `forEachSimulatable`'s const overload,
-`getLastUsedCaptureTick`, `getDiagnostics`).
+`getLastUsedCaptureTick`, `getDiagnostics`, `findRemoteInputCache`'s const overload).
 
 ⭐ **Machine-checked.** A `static_assert` beside `m_owner` requires its referenced type to be `const`. A diagnostics class
 with a mutable reference to its owner, which befriends it, would be a write door into every private member of the
@@ -200,7 +204,9 @@ send and receive sites, its step hooks) are the game's documentation; these are 
 | `Handed` → `LeftProcess` (the `H3` and `H3c` ends) | `onPostTickFlush`, bound to `UWorld::OnPostTickFlush` (GT) | See *the `H3` hook* below. |
 | `Handed` (the server's `H3c` start) | `tick_GameThread`, when a component's correction-buffer tick changed since the last frame (GT) | A **lower** bound: a property leaves only when the replication system polls and sends it. The start is late by whatever the owner does on the frame before it calls `tick_GameThread`. |
 | `Consumed` (the server's `H4` end) | `stampAfterStep_Internal`, for the capture tick `getLastUsedCaptureTick` reports after the step, stamped with that step's start time (PT) | An underrun step reports the sentinel and stamps nothing. |
-| `Consumed` (the client's `H6` end; `H6c` through a pending stamp) | `stampAfterStep_Internal`: the relayed-read observation for the step's tick names the applied capture tick (PT); the pending `ClientReceived` → `Consumed` stamp at the start of the first step after receipt | Only reads that applied a relayed capture stamp an end; a miss stamps nothing and the capture finalizes as `noEnd`. `H6c` measures when a correction is available to the next step, not when a resimulation applies it. |
+| `Consumed` (the client's `H6` end; `H6c` through a pending stamp) | `stampAfterStep_Internal`, through `postRelayedReads_Internal`: the relayed-read observation for the step's tick names the applied capture tick (PT); the pending `ClientReceived` → `Consumed` stamp at the start of the first step after receipt | Only reads that applied a relayed capture stamp an end; a miss stamps nothing and the capture finalizes as `noEnd`. `H6c` measures when a correction is available to the next step, not when a resimulation applies it. |
+| `Healed` (the client's `H6L` end), by a use | `postRelayedReads_Internal` (PT): a prediction `Hit` for the step's tick, beside its `Consumed`; and a resimulation's `Hit` for an earlier tick, found as a changed observation (§11) | A resimulation's use is stamped with the start time of the prediction step after the replay: late by at most the replay's length. |
+| `Healed` (the client's `H6L` end), by a correction | `stampCorrectionReceived`, which the binding's `onCorrectionStateAccepted` calls, at the correction's receipt, with the same time as its `ClientReceived` (GT) | `dA` is the newest relayed capture's delay stamp for that character, one value for the lane (§11). |
 | `StepEnd` (the `H5` end, the `H7` start) | `stampStepEnd_Internal`, at each step's end, per simulatable, for `currentIntegratedTick` (PT) | `noEnd` counts the ticks a simulatable's state was not written; a correction rotation skips some on purpose. |
 | `Rendered` (the `H7` end) | `tick_GameThread`: the newest pending tick per simulatable only (GT) | Not the photon: the render poses interpolate behind the simulation, and the render thread and GPU add one or two frames more. |
 | `WIRE` | `noteWireSample`, half the round trip it is given (GT) | Half of a round trip assumes symmetric paths. |
@@ -215,9 +221,12 @@ Everything reaches it one of three ways:
 | `m_clockMailbox` | the client clock's skip/stall/hard-resync counts | the same mailbox type |
 
 Every step-thread read the template makes is same-thread with its writer: the storage walk, `getLastUsedCaptureTick`
-(written while the core collects input on that thread), the relayed-read observation ring (noted there too),
-`currentIntegratedTick` and the client clock's diagnostics. Its game-thread reads (the correction-buffer tick, the
-delayed-input map) are written on the game thread. On a dedicated server the step thread is the game thread, so the
+(written while the core collects input on that thread), the relayed-read observation ring (noted there too, by
+prediction and resimulation reads alike), `currentIntegratedTick` and the client clock's diagnostics. Its game-thread
+reads (the correction-buffer tick, the delayed-input map, and the relay store's newest delay stamp that
+`stampCorrectionReceived` reads) are written on the game thread: the relay store is written by the relayed-ring arrival
+callback (`RemoteInputCache.h`'s threading block). `m_seenReads_Physics` is the template's own, and only the step's
+thread touches it (G-05). On a dedicated server the step thread is the game thread, so the
 mailbox is pushed and drained by one thread: a legal degenerate case of single-producer, single-consumer.
 
 **Lifetime.** `begin` creates the probe and the two mailboxes; nothing resets them before the template is destroyed, so
@@ -246,8 +255,13 @@ In each case `H3` reads as though the message left this frame. Read `H3` as a lo
 
 ```
 [LatencyBudget] role=Client hop=H2 p50=0.131 p95=0.273 p99=0.308 max=0.397 n=601 unit=ms noStart=0 noEnd=0 outOfOrder=0 overflow=0
+[LatencyBudget] role=Client hop=H6L p50=10.112 p95=110.017 p99=120.062 max=150.052 n=599 unit=ms noStart=0 noEnd=0 outOfOrder=0 overflow=0 healedByUse=421 healedByCorrection=178
 [LatencyBudget.Window] role=Client seconds=10.01 stale=0 duplicate=2402 laneOverflow=0 mailboxDropped=0
 ```
+
+The `H6L` line carries the two heal counters **appended** after the fields every hop line has, so a pattern that
+reads the common fields matches it unchanged (og-input-latency task 6; the counters are
+`LatencyBudgetProbe-rationale.md` §4). It comes after `H7` and before `WIRE` in a window.
 
 One `[LatencyBudget]` line per enabled hop and one `[LatencyBudget.Window]` line per window, both under
 **`LogOGLatencyBudget`** at `Warning` (one category per probe family, `UESimulationLogRoutes-rationale.md` §3). They are
@@ -303,3 +317,60 @@ header forward-declares the session. Its member initializer is still `{ std::as_
   `editLatencyBudgetDiagnostics()`, which forwards to the session's. (Since og-ue-simulationcomponentandmanagersplit task
   25 the owner's `instanceFor` itself forwards to the session's registry, `UESimulationSession-rationale.md` §9.)
 * **F1.** Nothing about how the members compile changed: they were already template members compiled optimized (§8).
+
+---
+
+## §11 The late-heal hop `H6L` (og-input-latency task 6)
+
+`H6L` is `ClientReceived → Healed` on the input stream, a client hop (`kClientHops`). The probe's side, and why `H6`
+was not redefined, is `LatencyBudgetProbe-rationale.md` §10. This section is where this template stamps `Healed`.
+
+**The question the task asked first: do resimulation steps reach `stampAfterStep_Internal` with an observation for
+their tick?** No, on either backend, verified 2026-11-11:
+
+* **Jolt.** `SimulationStepDriver::runClientTick` (`SimulationStepDriver.h:120-167`) calls `resimulateIfRequested`
+  (`:129`) before `beforeSimulate` (`:133`); the replay loop there (`:221-236`) calls `onGameSimulation`, the world step and
+  `onPostGameSimulation` per replayed tick and never calls a step hook. `beforePhysics` (`:150`), which reaches
+  `onStepStarted` (`TickDriverStepHooks.h:142-146`) and so `stampAfterStep_Internal`
+  (`BrawlerTickDriverGameUImpl.h:62`), runs once per physics step, for the prediction tick only.
+* **Chaos.** `OnPreSimulate_Internal` calls `stampLatencyAfterStep_Internal` only `if (!isResimulating)`
+  (`ChaosTickBackendUImpl.cpp:266-267`).
+
+A resimulation's reads are still recorded: `collectResimInputForCharacter` notes a `RelayedReadObservation` for the
+replayed tick from its reference row (`SimulationInputResolution.h:1557-1558`) and from its scheduled read
+(`:1576`), into the same per-character ring the prediction read writes (last write wins per tick).
+
+**So a resimulation's use is read back from that ring, on the step's thread, at the next prediction step.**
+`postRelayedReads_Internal` walks the ring once per step per remote character. It keeps a shadow of every slot it has
+seen (`m_seenReads_Physics`):
+
+* the observation **for the step's own tick** is the prediction read: `Consumed` when it applied a capture (`H6`,
+  unchanged), and `Healed` as well when it was a `Hit`;
+* an observation **for an earlier tick that differs from the shadow** was rewritten since the last step, which only a
+  resimulation does: a `Hit` there posts `stampHealedIfPending` (G-04). An unchanged slot posts nothing, so a replay
+  that re-serves what the prediction served costs no mailbox traffic;
+* the first walk of a character only primes the shadow, so a character the template meets mid-session does not post
+  one event per filled slot.
+
+This is the "stamp at the resimulation read site through the physics-thread mailbox" the task asked for, realised
+from the record that read site already writes, rather than with a new hook in the engine-free core: the core files
+are outside this task, and the ring is the record `H6` already reads.
+
+**Its timing.** The prediction step's start time is taken in `beforeSimulate`, after the replay (`TickDriverStepHooks`
+G-03), so a resimulation's `Healed` is late by at most the replay's length. It is never early.
+
+**The shadow's size** is bounded on the step's thread: when a character not in it appears and it already holds
+`ProbeConfig{}.maxLanes` characters (the most lanes the probe tracks), it is cleared and every character re-primes,
+which only skips the resimulation heals of that one step. It is never erased from the game thread (G-05).
+
+**A correction's heal.** The binding's `onCorrectionStateAccepted` calls `stampCorrectionReceived(id, tick)` instead
+of `stamp`. It takes one time and stamps the state stream's `ClientReceived` (the `H6c` start, as before) and then
+`stampHealedByCorrection(id, tick, dA, now)`, where `dA` is `findLatest().dA` of the character's relay store, read on
+the game thread that writes it. A character with no relay store (this client's own) or no arrival yet heals nothing.
+One `dA` serves the whole lane: exact while the delay is steady, which it is in every shipped configuration (the
+floor pins it); after a delay change, the captures still pending were applied with the older delay and are judged
+with the newer one.
+
+**What the counters say.** `healedByUse` is the late (and on-time) population served at its scheduled tick by a
+step; `healedByCorrection` is the population whose first heal was a correction. Their sum is `n`. `noEnd` is the
+captures neither reached before the probe's 64-tick ring reused the slot.
