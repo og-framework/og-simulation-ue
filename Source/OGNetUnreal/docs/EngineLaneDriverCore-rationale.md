@@ -47,7 +47,7 @@ The header holds the licence, the docs pointer, code, four guard tags and these 
 | `start(host, backend, config, mode, callbacks)` | builds the endpoint, sets the connection handler, enables the engine lane (`engineLane()` before `start`, as og-net requires), starts it, and in `OwnThread` mode calls `startOwnThread()`. When og-net's `start` fails it returns false and nothing is left started: the endpoint is destroyed. A second `start` and a missing callback are `OGNET_CHECK`s. |
 | `connect(address, engineDeadlineSeconds)` | client only: remembers both and issues og-net's connect. The deadline is the engine's own: the time its pending connection gives up (§5). |
 | `send(id, bytes)` | §3's verdicts. |
-| `tick(nowSeconds, clientConnectionPending)` | in order: the handler queue (§5), the ring (§6), the drained closes (§7). `clientConnectionPending` is whether the engine still waits for its server connection. |
+| `tick(nowSeconds, clientConnectionPending)` | in order: the handler queue (§5), the ring (§6), the drained closes (§7), the `[OGNet.Window]` close (§11). `clientConnectionPending` is whether the engine still waits for its server connection. |
 | `engineClosed(id, nowSeconds)` | the engine has cleaned up its connection: §7. |
 | `stop(nowSeconds, drainSeconds)` | §8. |
 | `serviceUntil(deadline)` | `HostServiced` mode only (`OGNET_CHECK`): the caller services the endpoint, as og-net's mode B. |
@@ -62,19 +62,39 @@ The callbacks are plain function pointers with one context (`DriverCallbacks`): 
 
 | case | verdict | counted in |
 |---|---|---|
-| the core is not started, or has stopped | `Dead` | — |
+| the core is not started, or has stopped | `Dead` | `sendsDead` |
 | client, server connection not up, not ended: room in the buffer | `Buffered` | `preConnectBuffered` |
 | the same, buffer full | `BufferFull` (the new packet is dropped, the oldest kept) | `preConnectDropped` |
 | the same, packet over 1,189 B | `Refused` | `sendsRefused` |
-| client after its connection ended (§5, §7) | `Dead` | — |
-| an id that is not a live connection of the core | `Dead` | — |
-| a live id, and the engine lane refused the packet | `Refused` | `sendsRefused` |
+| client after its connection ended (§5, §7) | `Dead` | `sendsDead` |
+| an id that is not a live connection of the core | `Dead` | `sendsDead` |
+| a live id, the engine lane did not take the packet, and og-net reports the connection not connected | `Dead` | `sendsDead` |
+| a live id, the engine lane did not take the packet, and og-net still reports the connection connected | `Refused` | `sendsRefused` |
 | a live id, and the lane took it | `Sent` | — |
 
 - **`Dead` covers every id that is not live** (closed by the peer, passed to `engineClosed`, rejected, still pending, or never
   known), not only the ids the core has closed. The engine sends only on connections it has: its connections are created from
   `accept`, so an id it never knew does not reach `send`. A send after a close is normal engine behaviour, and it must not count as
   a refusal: `sendsRefused` means "the lane dropped a packet", and the Ph2 gate's transport-health check expects it to stay 0.
+- **A connection og-net has closed before the core knows it.** The core's record of a connection stays live until the ring's
+  `Disconnected` for it is polled (§6), but og-net closes the connection on its own servicing thread first. On a graceful peer
+  close the engine, handling the peer's close packet from `deliver`, closes its own connection and sends its close reason
+  (P4-5's server log: UNetConnection::Close, then Sending CloseBunch) before the `Disconnected` behind that packet is dispatched;
+  og-net has already dropped the connection, and the lane does not take the packet. That send is a send after a close, so it is `Dead` (P4-5's finding F1: it was counted as `refused=1` on the server's
+  `closed` line after every graceful leave). When the lane does not take a packet for a live id, the core asks og-net whether the
+  connection is still connected, two ways, and the send is `Dead` if either says no:
+  - **the lane's own count.** og-net's reap drops a connection from the engine lane as soon as its state leaves `Connected`
+    (`Closing` or `Disconnected`; `EndpointCore.cpp`, `EndpointCore::reap`, `EngineLane::onDisconnected`), and the lane counts a
+    send to an id it no longer has in `EngineLaneStats::sendsToUnknownConnection` (`EngineLane::send`). The core keeps the count it
+    last read: a failed send that raised it went to a connection og-net no longer has. Only the core sends on the engine lane, so
+    the count changes only inside the core's own `send`;
+  - **the endpoint's connection state.** `ConnectionStats::state` from og-net's `stats(id)` (an unknown id reads
+    `Disconnected`). og-net publishes it every 50 ms (`kStatsPublishSeconds`), so right after the reap it can still read
+    `Connected` (`EngineLaneDriver.ASendAfterAGracefulPeerCloseThatTheCoreHasNotPolledYetIsDeadNotRefused` sends in that gap); it
+    covers a packet the lane turns down for another reason (too large, or the command queue full) on a connection og-net has
+    already closed (`EngineLaneDriver.AnOversizePacketIsRefusedOnALiveConnectionAndDeadOnOneTheEndpointReportsClosed`).
+
+  Both are read only after the lane has turned a packet down, so a sent packet costs nothing more.
 - **A refused send is dropped.** The engine's own reliability resends what matters, as after a UDP loss.
 
 ## §4 The client's pre-connect buffer
@@ -118,8 +138,8 @@ The callbacks are plain function pointers with one context (`DriverCallbacks`): 
 ## §6 The ring, in batches
 
 - `tick` polls the engine lane for at most 256 events at a time (`kBatchEvents`) into a preallocated batch of slots
-  `{kind, id, reason, size, bytes[1232]}`. The poll callback only copies. The callbacks run after `poll` has returned, slot by slot,
-  and the core polls again while a batch came back full.
+  `{kind, id, reason, recvSeconds, size, bytes[1232]}`. The poll callback only copies. After `poll` has returned, the whole batch
+  is noted in the window (§11), then the callbacks run, slot by slot, and the core polls again while a batch came back full.
 - **Why not dispatch inside the callback.** og-net forbids `poll` from its own callback (an `OGNET_CHECK`), and the event's bytes are
   valid only inside it (the ring slot is wiped after the callback returns, `EngineLane-rationale.md` §1, §3). Engine code reached
   from a callback can do anything, including stopping the driver. With dispatch inside the callback, a `deliver` that stopped the
@@ -178,9 +198,10 @@ The callbacks are plain function pointers with one context (`DriverCallbacks`): 
 
 ## §9 `DriverStats`
 
-`accepted`, `rejected`, `ignoredDatagrams`, `unknownDatagrams` (§6); `preConnectBuffered`, `preConnectDropped`, `sendsRefused` (§3,
-§4); `retries` (§5); `closesDrained`, `closesTimedOut` (§7); `handlerQueueDropped` (§5, read under the handler mutex); `batches`
-(non-empty polls) and `maxBatch` (§6). The driver's `closed` line and Ph2's transport-health check read them.
+`accepted`, `rejected`, `ignoredDatagrams`, `unknownDatagrams` (§6); `preConnectBuffered`, `preConnectDropped`, `sendsRefused`,
+`sendsDead` (§3, §4); `retries` (§5); `closesDrained`, `closesTimedOut` (§7); `handlerQueueDropped` (§5, read under the handler mutex); `batches`
+(non-empty polls) and `maxBatch` (§6). The driver's `closed` line and Ph2's transport-health check read them; `sendsDead` is on
+no log line.
 
 ## §10 Tests
 
@@ -188,4 +209,47 @@ The callbacks are plain function pointers with one context (`DriverCallbacks`): 
 time with `TestHost`, both cores in `HostServiced` mode over `SwitchableBackend<VirtualBackend>` without an emulator: each 1 ms step
 calls `serviceUntil(now)` on every started core, then `tick(now, …)` on every core that ticks. The steady case runs real threads in
 `OwnThread` mode on the network's steady clock, with a 30 s give-up. One more case runs a client whose emulator drops every
-outbound datagram: the server never sees a datagram (`EngineLaneDriver.AClientWhoseEmulatorDropsEveryOutboundDatagramNeverReachesTheServer`).
+outbound datagram: the server never sees a datagram (`EngineLaneDriver.AClientWhoseEmulatorDropsEveryOutboundDatagramNeverReachesTheServer`). The window cases are in §11.
+
+
+## §11 The `[OGNet.Window]` lines
+
+The core owns one `ognet::NetWindow` (og-net's `NetWindow-rationale.md`): every og-net run of the driver, server and client,
+writes og-net's window lines, so a capture can attribute a transport difference to a connection, a lane or the endpoint. Ph2's
+gate requires a `[OGNet.Window]` line from every og-net process (task P4-9).
+
+- **Built** at a successful `start`, with the endpoint's role and og-net's default window (`NetWindowConfig`, 10 s). Its
+  connection table is allocated there, so `tick` still allocates nothing (§1).
+- **Fed from the engine poll,** on the tick thread. After each `poll` returns and before any callback runs, every event of the
+  batch is noted:
+  - a `Datagram` as `noteDelivered(Engine, recvSeconds, polled)`, where `polled` is the host's clock read once after the
+    `poll`. og-net stamps `recvSeconds` with the same host clock when its datagram arrives (`EndpointCore.cpp`,
+    `EndpointCore::onDatagram`), so the residence is the time the datagram waited in the ring for the engine's poll;
+  - a `Connected` or `Disconnected` as a `ConnectionEvent` with its id (and reason), and no address.
+
+  Every polled event is noted, whatever the engine's verdict (pending, rejected, draining or unknown): the window reports og-net's
+  connections, not the engine's. Noting the batch before dispatching it means a callback that stops the core cannot hide the
+  rest of the batch from the window.
+- **What it does not see.** The ring carries no address, so a connection line prints the address og-net publishes for the
+  connection (`NetWindow-rationale.md` §4), which follows a roam without an `AddressChanged` event. A connection that came and
+  went before the ring could hold its `Connected` is elided by the lane (`EngineLane-rationale.md` §4) and has no connection
+  line; the Endpoint line still counts its traffic. The handler queue's events (§5) are not forwarded: they all carry id 0,
+  which the window ignores.
+- **Closed** at the end of every `tick` while the core runs: `closeIfDue(now, endpoint, sink, {engine})`. The first `tick`
+  starts the first window. `engine` is a copy of `engineLaneStats()`, read on every tick (a lock and a copy), because the extras
+  are passed before the window knows whether it is due. After `stop` no window is closed, so the last partial window is not
+  written.
+- **The sink** is the host's `log` at `Info`. In the Unreal driver that is `LogOGNetTransport` at `Log`
+  (`OGNetUnrealHost-rationale.md`), the category of the driver's own `[OGNet.Driver]` lines.
+- **No emulator lines.** og-net's emulator keeps its counters as plain fields written on og-net's own thread, and
+  `emulatorStats()` copies them without a lock, so reading them on the tick thread in `OwnThread` mode would be a data race. The
+  window is given no emulator extras, and `[OGNet.Emulator.Window]` lines do not appear.
+- **One thread.** The window fixes its host thread at its first `noteConnection` or `closeIfDue` and checks it on every later
+  call (`OGNET_CHECK`): the tick thread of §1.
+
+Tests (§10's rig):
+
+| Case | What |
+|---|---|
+| `EngineLaneDriver.EachSideWritesOneNetWindowBlockPerWindowThroughItsHostLogFedByTheEnginePoll` | 25 s, Engine datagrams both ways for 15 s: each side writes 2 windows, each with its one `[OGNet.Window]` line (`seconds=10.00`, `Connected`; the client's `peer=` is the server's address), its Engine lane line and one Endpoint line with the `engine.` fields; the Rx residence samples equal the datagrams delivered; every window line is at `Info` |
+| `EngineLaneDriver.TheWindowsEngineResidenceIsHowLongADatagramWaitedForThePollAndAClosedConnectionIsPrintedOnce` | the server stops ticking while the client sends 10 datagrams, then ticks 24 ms later: all 10 residences fall in the 16–32 ms bucket (`residenceP99Us=32000`); the client's `engineClosed` closes the connection, and each side prints it once, `state=Disconnected`, then two Endpoint lines and no further connection line |

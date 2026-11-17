@@ -7,6 +7,7 @@
 #include "OGNetUnreal/Core/SwitchableBackend.h"
 
 #include "OGNet/Backend/EmulatedBackend.h"
+#include "OGNet/Connection/ConnectionStats.h"
 #include "OGNet/Endpoint/EndpointConfig.h"
 #include "OGNet/NetTypes.h"
 
@@ -421,6 +422,59 @@ TEST_CASE("EngineLaneDriver.ALastPacketSentWithEngineClosedReachesThePeerBeforeI
 	CHECK(rig.client->core.send(closed[0].id, text("late")) == SendVerdict::Dead);
 }
 
+TEST_CASE("EngineLaneDriver.ASendAfterAGracefulPeerCloseThatTheCoreHasNotPolledYetIsDeadNotRefused", "[OGNet][EngineLaneDriver]")
+{
+	Rig rig;
+	rig.connectBoth();
+	const ConnectionId atServer = rig.server->peerId();
+	const ConnectionId atClient = rig.client->core.serverConnection();
+	REQUIRE(atServer != ognet::kInvalidConnection);
+	rig.run(0.05);
+
+	rig.server->ticking = false;
+	const uint64_t queuedBefore = rig.server->core.engineLaneStats().eventsQueued;
+	rig.client->core.engineClosed(atClient, rig.now());
+	REQUIRE(rig.runUntil([&] { return rig.server->core.engineLaneStats().eventsQueued == queuedBefore + 1; }, 2.0));
+	REQUIRE(rig.server->count(Kind::Closed) == 0);
+	CHECK(rig.server->core.connectionStats(atServer).state == ognet::ConnectionState::Connected);
+
+	CHECK(rig.server->core.send(atServer, text("the server's close reason")) == SendVerdict::Dead);
+	CHECK(rig.server->core.stats().sendsRefused == 0);
+	CHECK(rig.server->core.stats().sendsDead == 1);
+	CHECK(rig.server->core.engineLaneStats().sendsToUnknownConnection == 1);
+
+	rig.server->ticking = true;
+	REQUIRE(rig.runUntil([&] { return rig.server->count(Kind::Closed) == 1; }, 2.0));
+	CHECK(rig.server->of(Kind::Closed)[0].reason == DisconnectReason::ClosedByPeer);
+	CHECK(rig.server->core.stats().sendsRefused == 0);
+	CHECK(rig.server->core.stats().sendsDead == 1);
+}
+
+TEST_CASE("EngineLaneDriver.AnOversizePacketIsRefusedOnALiveConnectionAndDeadOnOneTheEndpointReportsClosed", "[OGNet][EngineLaneDriver]")
+{
+	Rig rig;
+	rig.connectBoth();
+	const ConnectionId atServer = rig.server->peerId();
+	const ConnectionId atClient = rig.client->core.serverConnection();
+	const std::vector<std::byte> oversize = numbered(0, ognetunreal::kPreConnectSlotBytes + 1);
+	rig.run(0.05);
+
+	CHECK(rig.server->core.send(atServer, oversize) == SendVerdict::Refused);
+	CHECK(rig.server->core.stats().sendsRefused == 1);
+	CHECK(rig.server->core.stats().sendsDead == 0);
+
+	rig.server->ticking = false;
+	rig.client->core.engineClosed(atClient, rig.now());
+	REQUIRE(rig.runUntil([&] { return rig.server->core.connectionStats(atServer).state != ognet::ConnectionState::Connected; }, 2.0));
+	REQUIRE(rig.server->count(Kind::Closed) == 0);
+
+	CHECK(rig.server->core.send(atServer, oversize) == SendVerdict::Dead);
+	CHECK(rig.server->core.stats().sendsRefused == 1);
+	CHECK(rig.server->core.stats().sendsDead == 1);
+	CHECK(rig.server->core.engineLaneStats().sendsTooLarge == 2);
+	CHECK(rig.server->core.engineLaneStats().sendsToUnknownConnection == 0);
+}
+
 TEST_CASE("EngineLaneDriver.AClientWhoseConnectFailsBeforeTheDeadlineReconnectsAndALaterServerAcceptsIt", "[OGNet][EngineLaneDriver]")
 {
 	Rig rig;
@@ -673,4 +727,198 @@ TEST_CASE("EngineLaneDriver.OnItsOwnThreadEachSideSendsFiveHundredInOrderAndStop
 	CHECK(server.core.stats().sendsRefused == 0);
 	CHECK(client.core.stats().sendsRefused == 0);
 	server.core.stop(network.nowSeconds(), 0.2);
+}
+
+namespace
+{
+std::vector<std::string> windowLines(const Side& side, const std::string& prefix)
+{
+	std::vector<std::string> found;
+	for (const TestHost::LogLine& line : side.host.logLines())
+	{
+		if (line.text.rfind(prefix, 0) == 0)
+		{
+			found.push_back(line.text);
+		}
+	}
+	return found;
+}
+
+bool everyWindowLineIsInfo(const Side& side)
+{
+	for (const TestHost::LogLine& line : side.host.logLines())
+	{
+		if (line.text.rfind("[OGNet.Window", 0) == 0 && line.level != static_cast<int>(ognet::LogLevel::Info))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+std::string fieldOf(const std::string& line, const std::string& name)
+{
+	const std::string key = " " + name + "=";
+	const std::size_t at = line.find(key);
+	if (at == std::string::npos)
+	{
+		return {};
+	}
+	const std::size_t begin = at + key.size();
+	const std::size_t end = line.find(' ', begin);
+	return line.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+}
+
+std::vector<uint64_t> histogramOf(const std::string& text)
+{
+	std::vector<uint64_t> counts;
+	std::size_t begin = 0;
+	while (!text.empty())
+	{
+		const std::size_t end = text.find('/', begin);
+		counts.push_back(std::stoull(text.substr(begin, end == std::string::npos ? std::string::npos : end - begin)));
+		if (end == std::string::npos)
+		{
+			break;
+		}
+		begin = end + 1;
+	}
+	return counts;
+}
+
+uint64_t residenceSamples(const std::vector<std::string>& rxLines)
+{
+	uint64_t total = 0;
+	for (const std::string& line : rxLines)
+	{
+		for (const uint64_t count : histogramOf(fieldOf(line, "residence")))
+		{
+			total += count;
+		}
+	}
+	return total;
+}
+
+std::string connectionPrefix(const char* role, ConnectionId id)
+{
+	return std::string("[OGNet.Window] role=") + role + " conn=" + std::to_string(id) + " ";
+}
+
+std::string engineLanePrefix(const char* role, ConnectionId id)
+{
+	return std::string("[OGNet.Window.Lane] role=") + role + " conn=" + std::to_string(id) + " lane=Engine ";
+}
+
+std::string engineRxPrefix(const char* role)
+{
+	return std::string("[OGNet.Window.Rx] role=") + role + " lane=Engine ";
+}
+
+std::string endpointPrefix(const char* role)
+{
+	return std::string("[OGNet.Window.Endpoint] role=") + role + " ";
+}
+} // namespace
+
+TEST_CASE("EngineLaneDriver.EachSideWritesOneNetWindowBlockPerWindowThroughItsHostLogFedByTheEnginePoll", "[OGNet][EngineLaneDriver]")
+{
+	Rig rig;
+	rig.connectBoth();
+	const double windowSeconds = ognet::NetWindowConfig{}.windowSeconds;
+	const ConnectionId atServer = rig.server->peerId();
+	const ConnectionId atClient = rig.client->core.serverConnection();
+	REQUIRE(atServer != ognet::kInvalidConnection);
+	REQUIRE(atClient != ognet::kInvalidConnection);
+	const double stopSendingAt = kStartSeconds + 1.5 * windowSeconds;
+	const double endAt = kStartSeconds + 2.5 * windowSeconds;
+	uint32_t sent = 0;
+	while (rig.now() < endAt)
+	{
+		if (rig.now() < stopSendingAt)
+		{
+			REQUIRE(rig.client->core.send(atClient, numbered(sent)) == SendVerdict::Sent);
+			REQUIRE(rig.server->core.send(atServer, numbered(sent)) == SendVerdict::Sent);
+			++sent;
+		}
+		rig.run(0.02);
+	}
+	REQUIRE(rig.server->count(Kind::Deliver) == sent);
+	REQUIRE(rig.client->count(Kind::Deliver) == sent);
+
+	const std::vector<std::string> atServerLines = windowLines(*rig.server, connectionPrefix("Server", atServer));
+	const std::vector<std::string> atClientLines = windowLines(*rig.client, connectionPrefix("Client", atClient));
+	REQUIRE(atServerLines.size() == 2);
+	REQUIRE(atClientLines.size() == 2);
+	CHECK(windowLines(*rig.server, "[OGNet.Window] ").size() == 2);
+	CHECK(windowLines(*rig.client, "[OGNet.Window] ").size() == 2);
+	for (const std::string& line : atServerLines)
+	{
+		CHECK(fieldOf(line, "seconds") == "10.00");
+		CHECK(fieldOf(line, "state") == "Connected");
+	}
+	for (const std::string& line : atClientLines)
+	{
+		CHECK(fieldOf(line, "seconds") == "10.00");
+		CHECK(fieldOf(line, "state") == "Connected");
+		CHECK(fieldOf(line, "peer") == ognet::formatAddress(serverAddress()));
+	}
+
+	CHECK(windowLines(*rig.server, engineLanePrefix("Server", atServer)).size() == 2);
+	CHECK(windowLines(*rig.client, engineLanePrefix("Client", atClient)).size() == 2);
+	const std::vector<std::string> serverEndpoint = windowLines(*rig.server, endpointPrefix("Server"));
+	const std::vector<std::string> clientEndpoint = windowLines(*rig.client, endpointPrefix("Client"));
+	REQUIRE(serverEndpoint.size() == 2);
+	REQUIRE(clientEndpoint.size() == 2);
+	CHECK_FALSE(fieldOf(serverEndpoint[0], "engine.eventsPolled").empty());
+	CHECK_FALSE(fieldOf(clientEndpoint[0], "engine.eventsPolled").empty());
+
+	CHECK(residenceSamples(windowLines(*rig.server, engineRxPrefix("Server"))) == sent);
+	CHECK(residenceSamples(windowLines(*rig.client, engineRxPrefix("Client"))) == sent);
+	CHECK(everyWindowLineIsInfo(*rig.server));
+	CHECK(everyWindowLineIsInfo(*rig.client));
+}
+
+TEST_CASE("EngineLaneDriver.TheWindowsEngineResidenceIsHowLongADatagramWaitedForThePollAndAClosedConnectionIsPrintedOnce", "[OGNet][EngineLaneDriver]")
+{
+	Rig rig;
+	rig.connectBoth();
+	const double windowSeconds = ognet::NetWindowConfig{}.windowSeconds;
+	const ConnectionId atServer = rig.server->peerId();
+	const ConnectionId atClient = rig.client->core.serverConnection();
+	constexpr uint32_t kSent = 10;
+	constexpr std::size_t kResidenceBucket = 8;
+	static_assert(ognet::kQueueDelayBucketUpperMicros[kResidenceBucket - 1] < 20000 && ognet::kQueueDelayBucketUpperMicros[kResidenceBucket] > 26000,
+		"the held datagrams wait 20 to 26 ms, inside one residence bucket");
+
+	rig.server->ticking = false;
+	for (uint32_t i = 0; i < kSent; ++i)
+	{
+		REQUIRE(rig.client->core.send(atClient, numbered(i)) == SendVerdict::Sent);
+	}
+	rig.run(0.024);
+	REQUIRE(rig.server->count(Kind::Deliver) == 0);
+	rig.server->ticking = true;
+	rig.step();
+	REQUIRE(rig.server->count(Kind::Deliver) == kSent);
+
+	rig.client->core.engineClosed(atClient, rig.now());
+	REQUIRE(rig.runUntil([&] { return rig.server->count(Kind::Closed) == 1; }, 2.0));
+	rig.runUntilTime(kStartSeconds + 2.5 * windowSeconds);
+
+	const std::vector<std::string> rx = windowLines(*rig.server, engineRxPrefix("Server"));
+	REQUIRE(rx.size() == 1);
+	const std::vector<uint64_t> residence = histogramOf(fieldOf(rx[0], "residence"));
+	REQUIRE(residence.size() == ognet::kQueueDelayBuckets);
+	CHECK(residence[kResidenceBucket] == kSent);
+	CHECK(residenceSamples(rx) == kSent);
+	CHECK(fieldOf(rx[0], "residenceP99Us") == std::to_string(ognet::kQueueDelayBucketUpperMicros[kResidenceBucket]));
+
+	const std::vector<std::string> atServerLines = windowLines(*rig.server, connectionPrefix("Server", atServer));
+	const std::vector<std::string> atClientLines = windowLines(*rig.client, connectionPrefix("Client", atClient));
+	REQUIRE(atServerLines.size() == 1);
+	REQUIRE(atClientLines.size() == 1);
+	CHECK(fieldOf(atServerLines[0], "state") == "Disconnected");
+	CHECK(fieldOf(atClientLines[0], "state") == "Disconnected");
+	CHECK(windowLines(*rig.server, endpointPrefix("Server")).size() == 2);
+	CHECK(windowLines(*rig.client, endpointPrefix("Client")).size() == 2);
 }

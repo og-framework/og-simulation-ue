@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // docs/EngineLaneDriverCore-rationale.md · docs/EngineLaneDriverCore-guards.md
 
+#include "OGNet/Connection/ConnectionStats.h"
 #include "OGNet/Endpoint/EndpointConfig.h"
 #include "OGNet/Endpoint/EngineLane.h"
 #include "OGNet/Endpoint/NetEndpoint.h"
+#include "OGNet/Endpoint/NetWindow.h"
 #include "OGNet/Lanes/LaneConfig.h"
 #include "OGNet/NetCheck.h"
 #include "OGNet/NetConcepts.h"
@@ -47,6 +49,7 @@ struct DriverStats
 	uint64_t preConnectBuffered = 0;
 	uint64_t preConnectDropped = 0;
 	uint64_t sendsRefused = 0;
+	uint64_t sendsDead = 0;
 	uint64_t retries = 0;
 	uint64_t closesDrained = 0;
 	uint64_t closesTimedOut = 0;
@@ -116,6 +119,7 @@ public:
 			m_endpoint.reset();
 			return false;
 		}
+		m_window.emplace(ognet::NetWindowConfig{.role = config.role});
 		if (mode == IoMode::OwnThread)
 		{
 			m_endpoint->startOwnThread();
@@ -140,7 +144,7 @@ public:
 	{
 		if (!isRunning())
 		{
-			return SendVerdict::Dead;
+			return dead();
 		}
 		if (m_role == ognet::Role::Client && m_client != ClientState::Up)
 		{
@@ -149,7 +153,7 @@ public:
 		const Record* record = find(id);
 		if (record == nullptr || record->state != RecordState::Live)
 		{
-			return SendVerdict::Dead;
+			return dead();
 		}
 		return sendThroughLane(id, bytes);
 	}
@@ -163,6 +167,7 @@ public:
 		drainHandlerQueue(nowSeconds, clientConnectionPending);
 		pollRing();
 		serviceDrainedCloses(nowSeconds);
+		closeWindowIfDue(nowSeconds);
 	}
 
 	void engineClosed(ognet::ConnectionId id, double nowSeconds)
@@ -277,6 +282,7 @@ private:
 		ognet::EngineEventKind kind = ognet::EngineEventKind::Connected;
 		ognet::ConnectionId id = ognet::kInvalidConnection;
 		ognet::DisconnectReason reason = ognet::DisconnectReason::Timeout;
+		double recvSeconds = 0.0;
 		uint16_t size = 0;
 		std::array<std::byte, kBatchEventBytes> bytes{};
 	};
@@ -314,6 +320,7 @@ private:
 		slot.kind = event.kind;
 		slot.id = event.id;
 		slot.reason = event.reason;
+		slot.recvSeconds = event.recvSeconds;
 		slot.size = static_cast<uint16_t>(event.bytes.size());
 		if (!event.bytes.empty())
 		{
@@ -362,6 +369,7 @@ private:
 			}
 			++m_stats.batches;
 			m_stats.maxBatch = std::max<uint64_t>(m_stats.maxBatch, polled);
+			noteBatchInWindow(polled, m_host->nowSeconds());
 			for (std::size_t i = 0; i < polled; ++i)
 			{
 				dispatch(m_batch[i]);
@@ -376,6 +384,43 @@ private:
 				return;
 			}
 		}
+	}
+
+	void noteBatchInWindow(std::size_t count, double polledSeconds)
+	{
+		for (std::size_t i = 0; i < count; ++i)
+		{
+			const BatchEvent& event = m_batch[i];
+			switch (event.kind)
+			{
+			case ognet::EngineEventKind::Datagram:
+				m_window->noteDelivered(ognet::Lane::Engine, event.recvSeconds, polledSeconds);
+				break;
+			case ognet::EngineEventKind::Connected:
+				m_window->noteConnection(ognet::ConnectionEvent{.kind = ognet::ConnectionEventKind::Connected, .id = event.id});
+				break;
+			case ognet::EngineEventKind::Disconnected:
+				m_window->noteConnection(
+					ognet::ConnectionEvent{.kind = ognet::ConnectionEventKind::Disconnected, .id = event.id, .reason = event.reason});
+				break;
+			}
+		}
+	}
+
+	void closeWindowIfDue(double nowSeconds)
+	{
+		if (!isRunning())
+		{
+			return;
+		}
+		const ognet::EngineLaneStats engine = m_lane->stats();
+		m_window->closeIfDue(
+			nowSeconds, *m_endpoint, ognet::LineSink{&EngineLaneDriverCore::onWindowLine, this}, ognet::NetWindowExtras{.engine = &engine});
+	}
+
+	static void onWindowLine(void* ctx, const char* line)
+	{
+		static_cast<EngineLaneDriverCore*>(ctx)->m_host->log(static_cast<int>(ognet::LogLevel::Info), line);
 	}
 
 	void dispatch(const BatchEvent& event)
@@ -519,7 +564,7 @@ private:
 	{
 		if (m_client == ClientState::Ended)
 		{
-			return SendVerdict::Dead;
+			return dead();
 		}
 		if (bytes.size() > kPreConnectSlotBytes)
 		{
@@ -554,12 +599,30 @@ private:
 
 	SendVerdict sendThroughLane(ognet::ConnectionId id, std::span<const std::byte> bytes)
 	{
-		if (!m_lane->send(id, bytes))
+		if (m_lane->send(id, bytes))
 		{
-			++m_stats.sendsRefused;
-			return SendVerdict::Refused;
+			return SendVerdict::Sent;
 		}
-		return SendVerdict::Sent;
+		if (endpointReportsNotConnected(id))
+		{
+			return dead();
+		}
+		++m_stats.sendsRefused;
+		return SendVerdict::Refused;
+	}
+
+	bool endpointReportsNotConnected(ognet::ConnectionId id)
+	{
+		const uint64_t unknownSends = m_lane->stats().sendsToUnknownConnection;
+		const bool laneDroppedTheId = unknownSends != m_laneUnknownSends;
+		m_laneUnknownSends = unknownSends;
+		return laneDroppedTheId || m_endpoint->stats(id).state != ognet::ConnectionState::Connected;
+	}
+
+	SendVerdict dead()
+	{
+		++m_stats.sendsDead;
+		return SendVerdict::Dead;
 	}
 
 	bool anyQueued() const
@@ -632,6 +695,8 @@ private:
 	std::array<ognet::DisconnectReason, kHandlerQueueSlots> m_handlerDrain{};
 
 	DriverStats m_stats;
+	uint64_t m_laneUnknownSends = 0;
+	std::optional<ognet::NetWindow> m_window;
 	ognet::EngineLane* m_lane = nullptr;
 	std::optional<Endpoint> m_endpoint;
 };
