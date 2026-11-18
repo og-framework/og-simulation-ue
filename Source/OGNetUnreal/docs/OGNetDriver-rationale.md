@@ -35,7 +35,12 @@ tree this document's lint can resolve against.
   and ran this driver.
 - **The switch back** is one line: GameNetDriver's definition with BaseEngine.ini's classes,
   `+NetDriverDefinitions=(DefName="GameNetDriver",DriverClassName="/Script/OnlineSubsystemUtils.IpNetDriver",DriverClassNameFallback="/Script/OnlineSubsystemUtils.IpNetDriver")`.
-  The IpNetDriver section holds the same values as this driver's (§12), so nothing else changes. For one run of a
+  The IpNetDriver section holds the same values as this driver's (§12), so the engine's own traffic is unchanged by it.
+  ⚠ **Since og-input-latency task P5-7 the switch back also switches the simulation's traffic off** (the user's ruling Q2).
+  Inputs, corrections, relay rings, the clock, the tier, the floor and the roster ride og-net's sim lanes, which only this
+  driver creates (its `IOGNetSimLanes`, from the factory the game registers); on IpNetDriver a networked world's session logs
+  `[SimNet.Host] refused role=… driver=IpNetDriver: simulation traffic needs the og-net driver`, shows a toast and runs
+  detached (`UESimulationSession-rationale.md` §16.2). The IpNetDriver section stays, for the beacon and config parity. For one run of a
   non-Shipping build the engine's three-part override does the same:
   `-NetDriverOverrides="GameNetDriver,/Script/OnlineSubsystemUtils.IpNetDriver,/Script/OnlineSubsystemUtils.IpNetDriver"`.
   The override is compiled out of Shipping (UnrealEngine.cpp, line 14431). A one-part or two-part override keeps the

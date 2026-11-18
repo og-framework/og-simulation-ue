@@ -20,6 +20,7 @@
 #include "OGSimulation/Network/SimInbox.h"
 #include "OGSimulation/Network/SimPayloadBuffers.h"
 #include "OGSimulation/Network/SimTransport.h"
+#include "OGSimulation/PCTimeManagement/NetworkTimeEstimator.h"
 #include "OGSimulation/PCTimeManagement/TimeConfig.h"
 #include "OGSimulation/RelayedInputRingCodec.h"
 #include "OGSimulation/SimulatableList.h"
@@ -627,7 +628,9 @@ TEST_CASE("SimNetClient.CorrectionsRingsAndClockTicksReachTheBoundCallbacksInArr
 		clocks.push_back(tick);
 		CHECK(rtt == s.host.rttSeconds);
 	}
-	CHECK(clocks == std::vector<std::uint32_t>{60u, 61u, 62u, 63u, 64u});
+	CHECK(clocks == std::vector<std::uint32_t>{61u, 62u, 63u, 64u});
+	CHECK(s.client->stats().clocksDelivered == 4u);
+	CHECK(s.client->stats().clocksCoalesced == 1u);
 	CHECK(s.host.linesWith("[ReceiveCorrectionState]")
 		== std::vector<std::string>{receiveLine(kSimB, 50u), receiveLine(kSimA, 51u), receiveLine(kSimA, 52u), receiveLine(kSimA, 53u),
 			receiveLine(kSimA, 54u)});
@@ -666,9 +669,51 @@ TEST_CASE("SimNetClient.NoCorrectionOlderThanOneAlreadyInjectedIsDeliveredUnderA
 	std::vector<std::uint32_t> clocks;
 	for (const auto& sample : s.host.timing)
 		clocks.push_back(sample.first);
-	CHECK(clocks == std::vector<std::uint32_t>{5u, 7u, 8u});
+	CHECK(clocks == std::vector<std::uint32_t>{8u});
+	CHECK(s.client->stats().clocksCoalesced == 2u);
 	CHECK(s.client->clockFilter().staleDropped() == 1u);
 	CHECK(s.client->clockFilter().duplicateDropped() == 1u);
+}
+
+TEST_CASE("SimNetClient.QueuedClockTicksReachTheHostAsTheNewestOnePerDrain", "[NetTransport][SimNetClient]")
+{
+	Script s;
+	s.connect();
+	for (std::uint32_t tick = 1487u; tick <= 1502u; ++tick)
+		s.clock(tick);
+	s.drain();
+
+	REQUIRE(s.host.timing.size() == 1u);
+	CHECK(s.host.timing[0].first == 1502u);
+	CHECK(s.host.timing[0].second == s.host.rttSeconds);
+	CHECK(s.client->stats().clocksDelivered == 1u);
+	CHECK(s.client->stats().clocksCoalesced == 15u);
+
+	TimeConfig config;
+	NetworkTimeEstimator estimator(config, nullptr);
+	const auto feed = [&](std::size_t from) {
+		for (std::size_t index = from; index < s.host.timing.size(); ++index)
+		{
+			estimator.updateRTT(s.host.timing[index].second);
+			estimator.recordAuthorityTick(s.host.timing[index].first);
+		}
+	};
+	feed(0u);
+	CHECK(estimator.getMeasuredRTTSampleCount() == 1u);
+	CHECK(estimator.getLastAuthorityTick() == 1502u);
+
+	s.drain();
+	CHECK(s.host.timing.size() == 1u);
+
+	s.clock(1503u);
+	s.clock(1501u);
+	s.drain();
+	REQUIRE(s.host.timing.size() == 2u);
+	CHECK(s.host.timing[1].first == 1503u);
+	feed(1u);
+	CHECK(estimator.getMeasuredRTTSampleCount() == 2u);
+	CHECK(estimator.getLastAuthorityTick() == 1503u);
+	CHECK(s.client->clockFilter().staleDropped() == 1u);
 }
 
 TEST_CASE("SimNetClient.ARingStoredBeforeRegistrationIsReadAtTheBindTimeRead", "[NetTransport][SimNetClient]")
@@ -1305,8 +1350,12 @@ TEST_CASE("SimNetClient.OverOgNetCorrectionsRingsAndClockTicksReachTheBoundCallb
 		queue.releaseAllButRecent(3u);
 	};
 	watcher.tee->arrivals.clear();
+	std::vector<std::size_t> drainEnds;
 	for (frame = 0u; frame < 40u; ++frame)
+	{
 		rig.pass(1.0 / 60.0);
+		drainEnds.push_back(watcher.tee->arrivals.size());
+	}
 
 	const std::vector<Delivery> expected = expectedFromArrivals(watcher.tee->arrivals, false);
 	INFO("delivered:" << describe(deliveries));
@@ -1318,11 +1367,24 @@ TEST_CASE("SimNetClient.OverOgNetCorrectionsRingsAndClockTicksReachTheBoundCallb
 	CHECK(rings >= 30u);
 	CHECK(corrections == 80u);
 
-	std::vector<std::uint32_t> arrivedClocks;
-	for (const Arrival& arrival : watcher.tee->arrivals)
+	std::vector<std::uint32_t> newestPerDrain;
+	std::size_t arrivedClockCount = 0u;
+	std::size_t drainBegin = 0u;
+	for (const std::size_t drainEnd : drainEnds)
 	{
-		if (arrival.kind == InboundKind::Message && arrival.message == SimMessageKind::ClockPublish)
-			arrivedClocks.push_back(arrival.tick);
+		std::optional<std::uint32_t> newest;
+		for (std::size_t index = drainBegin; index < drainEnd; ++index)
+		{
+			const Arrival& arrival = watcher.tee->arrivals[index];
+			if (arrival.kind != InboundKind::Message || arrival.message != SimMessageKind::ClockPublish)
+				continue;
+			++arrivedClockCount;
+			if (!newest || arrival.tick > *newest)
+				newest = arrival.tick;
+		}
+		if (newest)
+			newestPerDrain.push_back(*newest);
+		drainBegin = drainEnd;
 	}
 	std::vector<std::uint32_t> deliveredClocks;
 	for (const auto& sample : watcher.simHost.timing)
@@ -1330,8 +1392,9 @@ TEST_CASE("SimNetClient.OverOgNetCorrectionsRingsAndClockTicksReachTheBoundCallb
 		if (sample.first >= 300u)
 			deliveredClocks.push_back(sample.first);
 	}
-	CHECK(deliveredClocks == arrivedClocks);
-	CHECK(deliveredClocks.size() == 40u);
+	CHECK(deliveredClocks == newestPerDrain);
+	CHECK(arrivedClockCount == 40u);
+	CHECK(deliveredClocks.back() == 339u);
 
 	std::vector<std::string> expectedLines;
 	for (const Delivery& d : deliveries)

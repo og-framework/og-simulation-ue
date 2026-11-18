@@ -342,21 +342,27 @@ says which is which.
   - the key, the owning actor's address (`slotKeyOf`), and its name in UTF-8 for the lines;
   - the role, the session's `GetNetMode() != NM_Client` (the owner's `HasAuthority` is poisoned where this
     statement is, §1);
-  - the pawn's replicated slot, `AOGBrawlerUECharacter::GetPhysicsSlot`, after a `checkf` that the owner is that
-    class, because the slot reaches the clients on its replicated `PhysicsSlotValue`;
-  - the publish, `SetAuthoritativePhysicsSlot`, which the world host calls on the authority for a new assignment.
+  - the slot the peer already knows, the session's `physicsSlotFor(owner, key, storage key)`, after a `checkf` that
+    the owner is that class, because the slot reaches the clients on that character's og-sim-net roster entry;
+  - the publish, the session's `recordAuthoritativeSlot`, which the world host calls on the authority for a new
+    assignment.
 
-  So the authority takes the lowest free slot and writes it to the pawn, which replicates it; a client takes the
-  replicated slot, even when a lower one is free here, and never picks one itself; a client with no replicated slot
-  yet (`WaitForReplication`), or whose replicated slot is still held here by a character that has left the authority
-  but not yet this client (`WaitForRelease`), gets no slot and retries on the next frame; all slots taken is the
+  Until og-input-latency task P5-7 the last two were the pawn's replicated slot (`AOGBrawlerUECharacter::GetPhysicsSlot`,
+  over the replicated `PhysicsSlotValue` that task P5-8 deleted) and its write, `SetAuthoritativePhysicsSlot`
+  (`BrawlerTickDriverGameUImpl-rationale.md` §7).
+
+  So the authority takes the lowest free slot and records it in the session, whose og-sim-net server puts it in the
+  character's roster entry; a client takes the roster entry's slot, even when a lower one is free here, and never picks
+  one itself; a client whose roster entry has no slot yet (`WaitForReplication`), or whose slot is still held here by a
+  character that has left the authority but not yet this client (`WaitForRelease`), gets no slot and retries on the next
+  frame; all slots taken is the
   table's `OG_CHECK`. Each owner logs one `[SimHost.Slot] wait=…` line per wait kind and one
   `[SimHost.Slot] assigned …` line, both at `Log`; `lowestFreeLocally` is the slot a first-free rule would have picked on that peer.
   `registerVizVolume`, which the component calls before the character's simulation id is known, takes the slot
   first and returns an empty volume id while the acquire waits, so the component retries before it builds its
   visualization states (`OGBrawlerSimulatableComponent-rationale.md` §3); `tryRegister` finds the slot there, and its first
-  call returns `Pending` if it does not (`createBodies_GameThread` returns `false`). The slot rides pawn replication
-  only; a query hit's key still uses the simulation id, not the slot.
+  call returns `Pending` if it does not (`createBodies_GameThread` returns `false`). The slot rides the roster entry
+  only (pawn replication until P5-7); a query hit's key still uses the simulation id, not the slot.
 * **The bind** (`tryRegister`'s first call, through `createBodies_GameThread`). After the capsule check (below), this
   class passes the slot request to the tick backend's `acquireAndBind` (§11), which takes the slot from the world host's
   `acquire` and then calls its `bind` with the slot, the simulation id, the simulatable, the owner's static data and

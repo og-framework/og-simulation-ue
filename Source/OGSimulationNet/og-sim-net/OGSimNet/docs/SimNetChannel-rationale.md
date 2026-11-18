@@ -1,4 +1,9 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: InputRedundancyBundleBuilder.h -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: SimulatableNetSyncComponent.cpp -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: SimulatableNetSyncComponent.h -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: USimulatableNetSyncComponent -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: buildRedundancyBundle -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
 # `SimNetChannel.h` — rationale
 
 The narrative behind `ogsimnet::SimNetChannel<SimT, TransportT>`, the per-character owner adapter, and the two names
@@ -10,8 +15,9 @@ pointer, its code and five tags; everything that explains it lives here. Prohibi
 not soften the header to match it.
 
 ⚠ **og-sim-net ships under MPL-2.0, engine-free.** `SimNetChannel.h` includes og-simulation headers and the C++
-standard library only, and names no og-net type. The Unreal owner it stands in for is named below as provenance;
-nothing here needs it.
+standard library only, and names no og-net type. The Unreal owner it stood in for is named below as provenance, in
+the past tense: og-input-latency task P5-8 deleted it (the owner binding's net half and its sibling component).
+Nothing here needs it.
 
 ---
 
@@ -26,15 +32,16 @@ in a `SimulatableOwnerTraits` specialization, and NetSync's registration facades
 
 `SimNetChannel` satisfies both concepts, so one channel object serves a character in both roles. It holds the
 character's three payloads as og-simulation's engine-free buffers (`SimPayloadBuffers.h`), and it hands its input
-bundles to a transport port. It is the og-sim-net counterpart of the Unreal owner, `UESimulatableOwnerBinding` with its
-sibling component `USimulatableNetSyncComponent` (both in `OGSimulationUnreal`), whose members it mirrors with the same
-semantics.
+bundles to a transport port. It was written as the og-sim-net counterpart of the Unreal owner, `UESimulatableOwnerBinding`
+with its sibling component `USimulatableNetSyncComponent` (both in `OGSimulationUnreal`), whose members it mirrors with
+the same semantics; og-input-latency task P5-8 deleted the sibling and the binding's net half.
 
 **NetSync is not edited.** The rotation gate, the applied-capture read, both arrival callbacks and their telemetry run
 unchanged, because the channel plugs into the concepts they were written against.
 
-**Nothing calls it yet.** A game switches to it by pointing its `SimulatableOwnerTraits` at a channel type. Until then
-it is reached only by the tests (§9).
+**The game's owner since og-input-latency task P5-7.** A game switches to it by pointing its `SimulatableOwnerTraits` at
+a channel type. The Unreal brawler's traits name `UESimNetChannel<SimulatableBrawler>` (`UESimNetLanes.h`, in
+`OGSimulationUnreal`), a `SessionChannel` (§10), as both owners; before P5-7 it was reached only by the tests (§9).
 
 ## §2 Template parameters, and the transport
 
@@ -67,20 +74,20 @@ require:
 | `setOnInputHandedCallback` / `clear…` | `sendLocalInputToAuthority` (§5) | `void(const InputBundleBuffer&)` |
 
 NetSync binds the first three at registration and clears them at unregistration. The fourth is not part of either
-concept. It is for the host: the Unreal owner stamps every slot of a sent bundle as handed to the transport (its
+concept. It is for the host: the Unreal owner stamped every slot of a sent bundle as handed to the transport (its
 latency budget's Handed point) right after the send, and the callback gives a host the same bundle at the same point.
 
 Every caller tests the callback before calling it, so an unbound callback drops the delivery, as the Unreal owner's
-callbacks do.
+callbacks did.
 
-**Setting the relay callback does not replay the current ring (G-03).** The Unreal component does replay: when its
-relay host is linked, setting the callback calls it at once with the host's ring. That replay covers a host that
+**Setting the relay callback does not replay the current ring (G-03).** The Unreal component did replay: when its
+relay host was linked, setting the callback called it at once with the host's ring. That replay covers a host that
 replicated, and dropped its notifications, before the link existed. A channel owns its ring and has no link to wait
 for. A ring stored before registration is read at registration by NetSync's own bind-time read, which stays out of the
 relay arrival probe on purpose. A replay would add a probe sample that is not an arrival.
 
-**What stays with the session or host.** The Unreal component does more around each arrival than the concepts need,
-and those parts do not move into the channel:
+**What stays with the session or host.** The Unreal component did more around each arrival than the concepts need,
+and those parts did not move into the channel:
 - the correction's wire-format version latch (an Error line and a toast, then every later correction ignored);
 - the `[ReceiveCorrectionState]` line and the correction's latency stamp;
 - the relayed ring's latency stamps;
@@ -106,7 +113,7 @@ of channels (G-01).
 
 ## §5 Sending input
 
-`sendLocalInputToAuthority(queue, currentTick, redundancyDepth)` follows the Unreal owner's send step by step:
+`sendLocalInputToAuthority(queue, currentTick, redundancyDepth)` follows the deleted Unreal owner's send step by step:
 1. `InputBundleBuffer::reset()` empties the bundle the channel reuses, so no slot of an earlier send survives;
 2. the depth is narrowed to `std::uint8_t`, then clamped to `InputBundleBuffer::kMaxSlots` (G-04);
 3. `PendingInputQueue::forEachRecent(currentTick, depth, ...)` visits the most recent pending entries up to
@@ -114,15 +121,16 @@ of channels (G-01).
 4. the bundle's bytes go to the transport's `sendInputBundle`;
 5. the handed callback, if set, gets the bundle.
 
-The Unreal owner does steps 1 to 3 in `buildRedundancyBundle` (into its replicated bundle struct), step 4 as its
-unreliable send, and step 5 as its Handed stamps.
+The Unreal owner did steps 1 to 3 in `buildRedundancyBundle` (into its replicated bundle struct), step 4 as its
+unreliable send, and step 5 as its Handed stamps, until og-input-latency task P5-8 deleted it.
 
 - **NetSync's slot count decides the depth.** `sendLocalInputToAuthorityAll` passes `redundancySlots(...)`, then
   releases all but that many queue entries. The channel builds the bundle from the count it is given and changes
   nothing in the queue.
 - **An empty bundle is still handed over.** With a depth of 0, or no pending entry at or below `currentTick`, the
-  bundle holds no bytes, and the transport still gets a 0-byte span, as the Unreal owner still sends its empty bundle.
-  (The Unreal server drops an empty bundle on receipt.) Whether an empty bundle goes on the wire is the transport's
+  bundle holds no bytes, and the transport still gets a 0-byte span, as the Unreal owner sent its empty bundle.
+  (The Unreal server dropped an empty bundle on receipt; the sessions' `SimNetBundleTransport` drops it before the
+  wire, §10.) Whether an empty bundle goes on the wire is the transport's
   call; the sessions' channels drop it in `SimNetBundleTransport` (§10).
 - **A duplicate capture tick in one bundle** is the codec's business: `appendSlot` checks it. `forEachRecent` never
   yields one, because the queue holds distinct ticks.
@@ -194,8 +202,9 @@ correction.
   window, clamp, empty bundle, the handed callback after the send).
 
 `SimNetChannelBrawlerTest.cpp` (og-brawler-tests, tags `[WireFormat][SimulationNetSync]`) checks, for the brawler
-simulatable, that the bytes the channel sends equal those of a line-for-line copy of `buildRedundancyBundle` over a test
-buffer, across depths 0 to 259 and three send ticks. The Unreal builder itself cannot be called from that target.
+simulatable, that the bytes the channel sends equal those of a line-for-line copy of the Unreal owner's
+`buildRedundancyBundle` over a test buffer, across depths 0 to 259 and three send ticks. The Unreal builder itself could
+not be called from that target, and og-input-latency task P5-8 deleted it.
 
 Seen failing: with G-01's mark deleted, the sequence case fails at line 4 of the trace, where the mock owners record
 the first correction (`wire write id=7 tick=100 ...`) and the channels record nothing. The traces are 40 and 64 lines
@@ -219,8 +228,8 @@ template <class SimT, class InnerT> using SessionChannel = SimNetChannel<SimT, S
 - **`SessionChannel<SimT, InnerT>`** is the channel type both sessions use: `SimNetServer::Channel<SimT>` and
   `SimNetClient::Channel` are this alias for their transport's adapter type. Over one transport type (`SimNetTransport` serves
   both roles) the server's and the client's channels are therefore one type, which a game's `SimulatableOwnerTraits` can name
-  as both owners, as the Unreal owner is today. Each session `static_assert`s its alias.
-- **Why the drop is not in `SimNetChannel` itself:** the channel mirrors the Unreal owner, which hands over its empty
+  as both owners, as the Unreal brawler's traits do since og-input-latency task P5-7. Each session `static_assert`s its alias.
+- **Why the drop is not in `SimNetChannel` itself:** the channel mirrors the Unreal owner, which handed over its empty
   bundle (§5), and its tests pin that; whether an empty bundle reaches the wire is a transport decision, and the sessions make
   it in one place.
 - The wrapper was the client session's own (`SimNetClient.h`) until og-input-latency task P5-1 made it role-neutral so that

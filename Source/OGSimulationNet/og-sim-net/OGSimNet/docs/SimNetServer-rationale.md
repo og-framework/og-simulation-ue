@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: UESimulatableOwnerBinding::receiveRemoteMoveBundle -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
 # `SimNetServer.h` — rationale
 
 `SimNetServer<Game, HostT, TransportT, PolicyT>` is the authority's sim session over og-net. It drains the server's inbox,
@@ -240,7 +241,8 @@ connections only.
   server's carries `role=server` and the leading `[Warning]`.
 - **`removeCharacter(simId, reason)`**: the stager's `finalReport` (`[RelayFlush] teardown`), then the roster's `remove` and
   `removeFor` in one statement (G-03), then the Remove to every attached connection, then the coordinator's `forgetOwner(simId)`
-  (the engine path's unregister does the same, through `UESimulationSession::forgetReceptionOwner`), then the channel, the
+  (on the engine path the Unreal session's own reception forget did the same until og-input-latency task P5-7, which
+  routed the game's unregistration here), then the channel, the
   stager and the per-receiver correction ticks are erased.
 - The ordering duties the roster leaves to the session (`SimNetRoster-rationale.md` §6) hold: a connection gets its Snapshot
   when it attaches, before any Add or Remove to it; every attached connection gets every Add and Remove when it happens, so in

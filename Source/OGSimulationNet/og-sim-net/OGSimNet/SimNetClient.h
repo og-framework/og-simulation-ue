@@ -87,6 +87,7 @@ struct SimNetClientStats
 	uint64_t correctionsStored = 0u;
 	uint64_t mismatchIgnored = 0u;
 	uint64_t clocksDelivered = 0u;
+	uint64_t clocksCoalesced = 0u;
 	uint64_t floorsReceived = 0u;
 	uint64_t tiersReceived = 0u;
 	uint64_t emptyBundles = 0u;
@@ -148,6 +149,7 @@ public:
 	size_t drain()
 	{
 		const size_t handled = m_transport.inbox().drain([this](const InboundSimRecord& record) { onRecord(record); });
+		deliverNewestClock();
 		++m_stats.drains;
 		++m_window.drains;
 		m_window.maxDepth = std::max<uint64_t>(m_window.maxDepth, handled);
@@ -457,8 +459,19 @@ private:
 	{
 		if (!m_clockFilter.admit(tick))
 			return;
+		if (m_pendingClock)
+			++m_stats.clocksCoalesced;
+		// ⛔G-09  docs/SimNetClient-guards.md
+		m_pendingClock = tick;
+	}
+
+	void deliverNewestClock()
+	{
+		const std::optional<uint32_t> tick = std::exchange(m_pendingClock, std::nullopt);
+		if (!tick)
+			return;
 		++m_stats.clocksDelivered;
-		m_host.onTimingInfo(tick, m_host.serverRttSeconds());
+		m_host.onTimingInfo(*tick, m_host.serverRttSeconds());
 	}
 
 	void onFloor(uint8_t floorTicks)
@@ -546,6 +559,7 @@ private:
 	std::bitset<256> m_everListed;
 	CorrectionStaleFilter m_staleFilter;
 	NewestTickFilter m_clockFilter;
+	std::optional<uint32_t> m_pendingClock;
 
 	SimConnectionId m_serverConnection = kInvalidSimConnection;
 	bool m_refused = false;

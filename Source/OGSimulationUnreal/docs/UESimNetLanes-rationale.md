@@ -55,7 +55,7 @@ The transport and the client session live with the **driver**; the server sessio
 | `afterStart()` | `markEndpointStarted` | `markEndpointStarted` |
 | `afterDispatch()` | the bound dispatch function, if any | `dispatchFrame`, then a disconnect request (below) |
 | `onTickFlush()` | the bound flush function, if any | `flushFrame` |
-| `beforeStop()` | unbind the server session | unbind the client session |
+| `beforeStop()` | the session's stop handler, then unbind the server session | the session's stop handler, then unbind the client session |
 
 `afterDispatch` runs after `Super::PostTickDispatch` (every packet dispatched, before the first tick group), and `onTickFlush`
 after `Super::TickFlush` (after the engine's own send). `OGNetDriver-rationale.md` §13 has the verified engine order.
@@ -87,11 +87,18 @@ a reference to it. `beforeStart` also `checkf`s that the endpoint's role is the 
   (`UESimNetHost-rationale.md` §7). A session sets it before it registers a character.
 - `bindings()` and `editBindings()` give the world session the gate it registers through (`SimNetBindings::verdict`,
   `markRegistered`, `markUnregistered`).
+- `setStopHandler(onStop)` (og-input-latency task P5-7): the world session's handler for the driver's stop, which `beforeStop`
+  calls once, first, and clears. Unreal shuts a world's net driver down before it destroys the world's pawns and ends its
+  play (its map load), and the lanes, with a client's channels, die with the driver. So the session unregisters every
+  registered character there, while the channels and the endpoint still live, and forgets the lanes
+  (`UESimulationSession-rationale.md` §16.5). A session that ends first clears the handler (its `detachFromSimNetLanes`).
 
 ## §6 The server session's binding
 
 `bindServerSession(dispatchFn, flushFn)` `checkf`s that both are set; `unbindServerSession()` clears both. Unbound,
 `afterDispatch` and `onTickFlush` do nothing: there is no server session to drain or flush. `serverSessionBound()` says which.
+The server session sets the stop handler too (§5); its handler unregisters every character, sending the roster Removes over the
+still-running endpoint, then releases og-sim-net's server.
 
 ## §7 Detached lanes
 
@@ -116,11 +123,15 @@ connection handlers, which `beforeStart` installs before the endpoint starts.
 
 The driver destroys the lanes after its endpoint, so after og-net's thread has joined (`OGNetDriver-rationale.md` §13): no
 handler can run into a destroyed transport. Within the lanes, the client session is created after the transport and the host
-it references, and destroyed before them; none of their destructors calls another.
+it references, and destroyed before them; none of their destructors calls another. A world session never keeps a pointer to
+lanes past `beforeStop`: the stop handler (§5) runs first in it and the session forgets the lanes there.
 
-## §10 Before the switch
+## §10 The switch, and the namespace aliases
 
-No factory is registered until the switch task, so the driver never creates a lanes object and nothing in the game includes
-this header except its concept test, `UESimNetHostsConceptTest.cpp` in the brawler game. That file `static_assert`s the shapes
-and runs the automation test `OGBrawler.SimNet.Hosts`, which builds a detached lanes object for each role and flushes a staged
-clock through a detached server's transport to nothing, counted.
+Since og-input-latency task P5-7 the brawler registers its factory (`makeBrawlerSimNetLanes`) at module start-up, so every
+og-net driver makes a lanes object at `InitBase`, and the world session binds to it (`UESimulationSession-rationale.md` §16).
+`UESimNetTransport` and `UESimNetChannel<SimT>` name the transport and the per-character channel at namespace scope, without
+the session traits, so a game's `SimulatableOwnerTraits` can name the channel where the traits are not complete yet; the class's
+`Transport` is `UESimNetTransport`, and the session asserts its channel type equals `UESimNetChannel<Simulatable>`. Before the
+switch nothing in the game included this header except its concept test, `UESimNetHostsConceptTest.cpp`, which still builds a
+detached lanes object for each role (the automation test `OGBrawler.SimNet.Hosts`).

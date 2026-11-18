@@ -91,7 +91,8 @@ replication sends at the engine's flush and applies at the next receive.
   `relayResendEntries`), every client the correction of every channel whose buffer was written this frame (`takeDirty`),
   and every client the clock when its tick changed.
 - **A client** stores each ring with `storeRing`, logs today's `[ReceiveCorrectionState] id= tick=` line and stores each
-  correction with `storeCorrection`, and hands each clock tick to the host's `onTimingInfo`. Its input bundles are the bytes
+  correction with `storeCorrection`, and hands each clock tick to the host's `onTimingInfo`. The server sends at most one
+  clock per frame, so this is also what the session's per-drain coalesce delivers (`SimNetClient-rationale.md` §8). Its input bundles are the bytes
   each channel built, taken from the channel's `setOnInputHandedCallback` callback. An empty bundle is dropped, as the client
   session drops it before the set. The bundles reach the server's next dispatch in client order, A then B, the order in
   which the transport rig's clients flush.

@@ -11,8 +11,6 @@
 
 #include "OGSimulation/SimulationTimeContext.h"
 
-#include "OGSimulationUnreal/SyncedSimulationStateBuffer.h"
-
 //#include "SimulationTimeContextUImpl.generated.h"
 //
 //UCLASS()
@@ -41,7 +39,7 @@
 //    std::optional<AuthoritySimulationTimeManager> m_timingInfo;
 //
 //    UPROPERTY(ReplicatedUsing = OnRep_TimingInfo)
-//    FSmallSimulationStateSyncBuffer m_syncedBuffer;
+//    <the small replicated sync buffer type, deleted by og-input-latency task P5-9> m_syncedBuffer;
 //
 //    static ASimulationTimeContextUImpl* s_instances[2];
 //};

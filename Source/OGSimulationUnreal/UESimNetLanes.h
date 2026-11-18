@@ -26,11 +26,16 @@
 
 inline constexpr size_t kUESimNetInboxSlots = 2048u;
 
+using UESimNetTransport = ogsimnet::SimNetTransport<ognetunreal::SimLaneEndpoint, kUESimNetInboxSlots>;
+
+template <typename SimT>
+using UESimNetChannel = ogsimnet::SessionChannel<SimT, typename UESimNetTransport::ChannelTransport>;
+
 template <typename TraitsT>
 class UESimNetLanes final : public IOGNetSimLanes
 {
 public:
-	using Transport        = ogsimnet::SimNetTransport<ognetunreal::SimLaneEndpoint, kUESimNetInboxSlots>;
+	using Transport        = UESimNetTransport;
 	using ChannelTransport = typename Transport::ChannelTransport;
 	using ServerHost       = UESimNetServerHost<TraitsT>;
 	using ClientHost       = UESimNetClientHost<TraitsT>;
@@ -113,6 +118,10 @@ public:
 
 	virtual void beforeStop() override
 	{
+		FFrameFn onStop = MoveTemp(m_onStop);
+		m_onStop = nullptr;
+		if (onStop)
+			onStop();
 		if (m_isServer)
 			unbindServerSession();
 		else
@@ -141,6 +150,8 @@ public:
 		checkf(m_clientHost.has_value(), TEXT("UESimNetLanes::setOnRegisteredRemoved: only a started client's lanes have a client host"));
 		m_clientHost->setOnRegisteredRemoved(MoveTemp(onRegisteredRemoved));
 	}
+
+	void setStopHandler(FFrameFn onStop) { m_onStop = MoveTemp(onStop); }
 
 	void bindServerSession(FFrameFn dispatchFn, FFrameFn flushFn)
 	{
@@ -190,4 +201,5 @@ private:
 	std::optional<Client> m_client;
 	FFrameFn m_serverDispatch;
 	FFrameFn m_serverFlush;
+	FFrameFn m_onStop;
 };

@@ -188,8 +188,9 @@ UELatencyBudgetDiagnostics<TraitsT>* UELatencyBudgetDiagnostics<TraitsT>::instan
 template <typename TraitsT>
 void UELatencyBudgetDiagnostics<TraitsT>::begin(UWorld& world, bool isAuthority)
 {
-	m_probe = std::make_unique<latencyBudget::LatencyBudgetProbe>(
-		isAuthority ? latencyBudget::kServerHops : latencyBudget::kClientHops);
+	m_probe = std::make_unique<latencyBudget::LatencyBudgetProbe>(isAuthority
+		? (latencyBudget::kServerHops | latencyBudget::kServerNetHops)
+		: (latencyBudget::kClientHops | latencyBudget::kClientNetHops));
 	m_mailbox      = std::make_unique<Mailbox>();
 	m_clockMailbox = std::make_unique<ClockMailbox>();
 	m_postTickFlushHandle =

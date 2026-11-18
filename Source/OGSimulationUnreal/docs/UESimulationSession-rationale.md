@@ -1,4 +1,25 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: onInputRelayHostReady -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
+<!-- lint-external-ref: ISimulationTimingRelayListener -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
+<!-- lint-external-ref: ISimulationConnectionRelayListener -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
+<!-- lint-external-ref: ISimulationInputRelayListener -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
+<!-- lint-external-ref: ASimulationInputRelay -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
+<!-- lint-external-ref: OnRep -- Unreal Engine symbol or file, outside every scan root -->
+<!-- lint-external-ref: PreReplication -- Unreal Engine symbol or file, outside every scan root -->
+<!-- lint-external-ref: onConnectionTierReplayed -- deleted by og-input-latency task P5-9 (the relay actors, their listeners and the session's two replay members); kept in the history -->
+<!-- lint-external-ref: onRelayDelayFloorReplayed -- deleted by og-input-latency task P5-9 (the relay actors, their listeners and the session's two replay members); kept in the history -->
+<!-- lint-external-ref: SimulatableNetSyncComponent.cpp -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: UESimulatableOwnerBinding::receiveRemoteMoveBundle -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: USimulatableNetSyncComponent -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: attachInputRelayHost -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: noteDelayedInputComponent -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
+<!-- lint-external-ref: replayLatchedClientValues -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
+<!-- lint-external-ref: payForIncrease -- removed by og-input-latency task P5-10 (the always-true parameter of applyReplicatedRelayDelayFloor); kept in the history -->
+<!-- lint-external-ref: findTimingRelay -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
+<!-- lint-external-ref: beginReceptionCoordinator -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
+<!-- lint-external-ref: forgetReceptionOwner -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
+<!-- lint-external-ref: getDelayedInputComponentsById -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
+<!-- lint-external-ref: m_delayedInputComponentsById -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
 <!-- lint-external-ref: m_backendWorlds -- RENAMED by og-ue-simulationcomponentandmanagersplit task 35 to m_physicsBackendWorlds; kept in the task-24a seen-failing record of §2 and in §14's record of the rename -->
 <!-- lint-external-ref: UNetConnection::Tick -- Unreal Engine method, outside every scan root (§9.9) -->
 <!-- lint-external-ref: UNetConnection::IsNetReady -- Unreal Engine method, outside every scan root (§9.9) -->
@@ -49,6 +70,10 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
   backend's type and members to `PhysicsBackend`, `m_physicsBackend` and `m_physicsBackendWorlds`.
 * **§15** is og-input-latency task P5-5: the seams the switch to og-net re-points, the reap `afterAuthorityBatch`, the slot
   doors `physicsSlotFor` and `recordAuthoritativeSlot`, and the correction-tick walk `forEachAuthorityCorrectionTick`.
+* **§16** is og-input-latency task P5-7, the switch: the sim traffic on og-net's sim lanes, frame-locked; og-sim-net's server
+  in this session and the lanes' client session; registration through the roster; and the two early unregistration paths.
+  Where an earlier section describes the relays, the listeners, the session's own coordinator or its component map, §16 is
+  what replaced it.
 
 ---
 
@@ -70,7 +95,10 @@ and the per-frame work before the steps with its two probes, PROBE A and PROBE 6
 the teardown, `endPlay`, and the post-physics pass, `onPostPhysicsStep`, with the test hitch cvar's accessor in its
 `.cpp` (§10). **Since task 27b** it holds the start-up, `beginPlay`, with the game's six start-up hooks (§11). **Since
 task 28** it holds the registration sequences, `tryRegister` and `unregisterFromNewFramework`, with the pending record and
-`TryRegisterStatus`, and calls the game's four registration hooks (§12). The owner keeps the wrapper that turns its game's
+`TryRegisterStatus`, and calls the game's four registration hooks (§12). **Since og-input-latency task P5-7** its traffic is
+og-net's (§16): it holds og-sim-net's server on the authority and binds the og-net driver's client session on a client; the
+relay listeners, the timing relay, its own reception coordinator, the delayed-input map, the two sinks and PROBE 5 are gone.
+The owner keeps the wrapper that turns its game's
 character id into the storage key for `unregisterFromNewFramework` (since task 36 its only one: the `tryRegister` and
 `noteDelayedInputComponent` wrappers had no caller since task 29 and are removed), and reaches no private member any
 more (§4).
@@ -81,8 +109,9 @@ member `m_session` (`OGBrawlerSimulationManager-rationale.md` §2, in OGBrawlerU
 **Not copyable.** The copy constructor and assignment are deleted: the members bind each other by reference (§2), and
 the backend holds the session by reference.
 
-**Polymorphic since task 25.** It derives from the three relay listener interfaces (§9), so it has a virtual destructor
-and a vtable; it is never deleted through an interface pointer (the owner holds it as a member).
+**Not polymorphic.** From task 25 until og-input-latency task P5-7 it derived from the three relay listener interfaces
+(§9), with a virtual destructor and a vtable. Since P5-7 it has no base: the og-net hosts call its public members directly
+(§16).
 
 ---
 
@@ -96,8 +125,10 @@ m_owner&, m_game& → m_latencyBudgetDiagnostics → m_physicsBackendWorlds → 
     → m_storage → m_staticData → m_reconciliation → m_inputResolution → m_netSync
     → m_systemsExec → m_integrationLayer → m_manager → m_physicsBackend
     → m_replicatedTierConsumer, m_lastPublishedEffectiveInputDelayTicks
-    → m_receptionCoordinator, m_frameHealthProbe, m_relayWriteProbe, m_connectionBudgetProbe, m_delayedInputComponentsById
-    → m_onTimingInfoReceivedCallback, m_timingRelay
+    → m_detachedSimNetLanes, m_simNetLanes, m_simNetServerHost, m_simNetServer
+    → m_frameHealthProbe, m_connectionBudgetProbe
+    → m_registeredComponentsById, m_simChannelsById, m_authoritativeSlotsByKey, m_simUnregisteredIds
+    → m_onTimingInfoReceivedCallback
     → m_pendingRegistrations
 ```
 
@@ -122,7 +153,11 @@ input reception's state (task 26a) sits inside it in the owner's relative order:
 after the delay publish mark. The map holds weak handles and the probe holds plain counters, so neither one's destruction
 is observable; the coordinator borrows the manager's `TimeConfig` and is asserted below the manager. The two frame probes
 (task 26b) sit where the owner declared them, PROBE A after the coordinator and PROBE 6 after PROBE 5; both hold plain
-counters, so their destruction is not observable either.
+counters, so their destruction is not observable either. **Since og-input-latency task P5-7** the og-net members stand where
+the coordinator stood (§16): the session's own detached lanes, the lanes pointer, the server's host and the server, which
+holds the reception coordinator; the server is destroyed first among them (it references the other three and the manager's
+`TimeConfig`), and one row asserts it. The component map is the registered-component map, beside the channel map, the slot map
+and the early-unregistration set; PROBE 5 and the timing relay pointer are gone.
 
 **The pending registrations come last** (task 28), as manager design §4.5 placed them. In the owner the map was declared
 after the session member, so it was destroyed before the whole session; here it is destroyed first among the session's
@@ -133,8 +168,8 @@ borrows from it.
 
 **What is asserted.** `compositionContractsHold()` holds six `static_assert`s over `__builtin_offsetof` (four before
 task 25, five before task 26a), the `ManagerType` and `getTimeConfigPtr` rows, since task 26a the two reception sink
-concepts (§9.7), since task 34 the five core-system rows (§13), and since task 35 the two executor rows and the
-engine contract (§14), and the
+concepts (§9.7; replaced by og-input-latency task P5-7 with the owner-type row and the re-send bound, §16), since task 34 the
+five core-system rows (§13), and since task 35 the two executor rows and the engine contract (§14), and the
 constructor asserts it, so every row is checked wherever the constructor is instantiated (a member function of a class
 template is compiled only when it is used, and the constructor is the one member every owner uses):
 
@@ -147,7 +182,7 @@ template is compiled only when it is used, and the constructor is the one member
 | `m_physicsBackendWorlds` < `m_physAdapter` < {`m_physReaderAdapter`, `m_queryAdapter`} < `m_integrationLayer` | destruction: the backend's worlds outlive every adapter bound to them, and the integration layer goes before the adapters it holds |
 | `m_manager` < `m_physicsBackend` | destruction: the backend holds the step driver, which unregisters its resync callback from the manager's client clock when it goes, so the backend goes first |
 | `m_manager` < `m_replicatedTierConsumer` | destruction: the tier consumer borrows the manager's `TimeConfig`, so it goes first (task 25; in the owner it was declared above the manager's owner, and only the owner's `EndPlay` reset protected it; that reset is `endPlay`'s since task 27a, `⛔G-21`) |
-| `m_manager` < `m_receptionCoordinator` | destruction: the reception coordinator borrows the manager's `TimeConfig`, so it goes first (task 26a; in the owner it too was declared above the manager's owner, protected only by the owner's `EndPlay` reset, `endPlay`'s since task 27a) |
+| `m_manager` < `m_simNetServer`, and `m_detachedSimNetLanes` < `m_simNetServerHost` < `m_simNetServer` | destruction: og-sim-net's server (with the reception coordinator inside it) references the manager's `TimeConfig`, its host and the lanes' transport, so it goes first (og-input-latency task P5-7; the row was `m_manager` < the session's own coordinator from task 26a) |
 
 Every message names the row it replaced, except the five core-system rows (task 34) and task 35's three rows, which
 replaced no check: their messages state the ruling instead (§13, §14). The rows inside the backend and its worlds are their own assertions
@@ -164,8 +199,8 @@ extraction first asserted it; that task poisoned three reorders and each fired i
 **Seen failing (task 24a).** Swapping the declarations of `m_manager` and `m_backendWorlds` (`m_physicsBackendWorlds`
 since task 35) fails the build with the
 adapter row's message (the task's notes quote it). **Task 25:** declaring `m_replicatedTierConsumer` above `m_manager`
-fails the build with the tier consumer's row. **Task 26a:** declaring `m_receptionCoordinator` above `m_manager` fails
-it with the reception coordinator's row.
+fails the build with the tier consumer's row. **Task 26a:** declaring the reception coordinator above `m_manager` failed
+it with the reception coordinator's row (that row is the og-sim-net server's since og-input-latency task P5-7).
 
 **The systems executor** (`⛔G-01`) is emplaced, not constructed: its body-reading systems hold the adapters, which are
 emplaced in the role branches.
@@ -240,8 +275,11 @@ coordinator calls; and since task 27a `endPlay`, which the owner calls (public, 
 owner's friendship), and two const reads for the game's post-visualization hook, `getSystemsExec` and
 `getDelayedInputComponentsById` (§10); and since task 27b `beginPlay`, which the owner calls after its `Super` (§11); and
 since task 28 `tryRegister` and `unregisterFromNewFramework`, which the owner's wrappers call (§12; since task 29 the
-component's registration skeleton, `UESimulatableOwnerBinding`, calls `tryRegister` and `noteDelayedInputComponent`
-directly, and since task 36 the owner has no wrapper for either). The owner keeps its own
+component's registration skeleton, `UESimulatableOwnerBinding`, calls `tryRegister` and the route's registration
+directly, and since task 36 the owner has no wrapper for either). **Since og-input-latency task P5-7** (§16) the listener
+overrides are plain members the og-net hosts call, the timing buffer's accessor, the route's registration and the two sinks
+are gone, the game's const read is `getRegisteredComponentsById`, the coordinator's accessors answer from og-sim-net's server,
+and `clientBindStep` is the client's roster gate, which the game's key hook calls. The owner keeps its own
 `getLatencyBudgetDiagnostics()` / `editLatencyBudgetDiagnostics()`, which forward here, so its latency lookups (`instanceFor`)
 are unchanged. *R0, task 28:* the mutable one keeps one caller, the latency member's own `instanceFor`
 (`UELatencyBudgetDiagnostics.h`), which reaches it through `TraitsT::SessionOwner::instanceFor`; the const one has no caller
@@ -490,6 +528,11 @@ relay with its callback. Task 25 moved these from the owner, and task 26b the se
 design §9 (M4, deferred) can take it as one block. The input-reception section (task 26a) sits here too, as §9.7, marked
 as exempt from the seam; M4 leaves it in this class.
 
+**Since og-input-latency task P5-7 the relays are not the transport** (§16). The tier and floor helpers, the effective input
+delay, the stall request, the registry, the knobs and the frame probes of this section are unchanged; what they are fed by
+changed. The listener interfaces, the timing relay, the session's coordinator, its component map, the two sinks and PROBE 5
+are retired, and §9.2, §9.5, §9.6 and §9.7 say so where they described them.
+
 ### 9.1 What moved (task 25), and the seam
 
 | member | what it is |
@@ -510,9 +553,10 @@ owner reached the session (`m_session.m_manager` is `m_manager`), where it reach
 
 * **The wire sample** in `onTimingInfoReceived` is the session's own call to its latency member
   (`m_latencyBudgetDiagnostics.noteWireSample`), where the owner called its forward to the same member.
-* **`onInputRelayHostReady` attaches the host to the character's `USimulatableNetSyncComponent`.** The owner found the
-  game's component and called its `attachInputRelayHost`, which the component's binding forwards to that same sibling (the
-  character binds the two in its `PostInitializeComponents`), so the call lands on the same object. The cast of the host's
+* **`onInputRelayHostReady` attached the host to the character's `USimulatableNetSyncComponent`** (the member was removed
+  by og-input-latency task P5-7, the component deleted by P5-8). The owner found the
+  game's component and called its `attachInputRelayHost`, which the component's binding forwarded to that same sibling (the
+  character bound the two in its `PostInitializeComponents`), so the call landed on the same object. The cast of the host's
   owner to `TraitsT::Character` is the one game type the transport names.
 * **`publishServerClock_GameThread`** is new (the initiative's review, finding m-14): the authority's server-clock write into
   the timing relay's buffer, extracted from the owner's post-physics step and called at the position of the block it
@@ -543,16 +587,15 @@ binding's reception lookup) are unchanged.
 instantiates it: only the game module instantiates the session over its traits, so there is one table, as there was one
 static array in the owner.
 
-**The session implements the three listener interfaces,** and the owner registers the session (`&m_session`) in each
-interface's registry at the positions where it registered itself: the timing listener directly after writing the
-registry slot, the connection and input listeners after the tier consumer's start (`beginTierConsumer`) on both roles,
-and, on the client, before the latched values are pulled (`⛔G-07`). The relays call through the interface pointer, so
-nothing on their side changed.
+**The listeners are the og-net hosts since og-input-latency task P5-7.** From task 25 the session implemented the three
+relay listener interfaces and registered itself in each one's registry; P5-7 removed the bases and the registrations. The
+same members (`onTimingInfoReceived`, `onRelayDelayFloorReceived`, `onConnectionTierReceived`; their replay twins until
+og-input-latency task P5-9 deleted them) are public, and the client host calls them while the session is bound (§16).
 
-**The destructor** clears the registry slot and the three listener slots if they still name this session (`⛔G-10`). It is
-a backstop: `endPlay`, which the owner's `EndPlay` calls, clears them first in every world teardown. It runs inside the owner's destructor, during
-the garbage collector's purge, which is why it touches no `UObject`. The owner's destructor, whose whole body this was, is
-gone.
+**The destructor** clears the registry slot if it still names this session, and unbinds from the og-net lanes it is still
+bound to (`⛔G-10`). It is a backstop: `endPlay`, which the owner's `EndPlay` calls, does both first in every world teardown.
+It runs inside the owner's destructor, during the garbage collector's purge, which is why it touches no `UObject` (the lanes
+are not one). The owner's destructor, whose whole body this was, is gone.
 
 **One listener per WORLD, not per CHARACTER.** A tier is a property of the wire, and every character on a machine shares
 one wire. The retired per-character shape had N characters each driving the same effective-delay atomic and each
@@ -564,9 +607,10 @@ against a clock that accumulates debt. One listener per world makes the request 
 **The write crossing carries one scalar.** `publishClientEffectiveInputDelayTicks` writes a lone `std::atomic<int32>`
 inside the input-resolution peer (`SimulationInputResolution`'s effective-delay atomic), which the physics thread loads
 once per tick in `collectInputAll` and once per resimulated tick in `collectResimInputAll`. The worst a race can do is
-apply a new delay one tick late. Everything else in the transport is game-thread-only: the listeners are called from the
-relays' replication callbacks, and the registry, the tier consumer and the timing relay pointer are read and written only
-there, in the owner's start-up, and in the session's teardown and post-physics pass (§10; the owner's until task 27a). *Moved from the brawler's
+apply a new delay one tick late. Everything else in the transport is game-thread-only: the listener members are called by
+the client host from the og-net driver's `PostTickDispatch` (the relays' replication callbacks until og-input-latency task
+P5-7), and the registry and the tier consumer are read and written only there, in the start-up, and in the session's
+teardown and post-physics pass (§10; the owner's until task 27a). *Moved from the brawler's
 `OGBrawlerSimulationManager-rationale.md` §1 ("The write crossing carries one scalar"); R0, task 25: the resimulation load was
 not listed.*
 
@@ -591,10 +635,10 @@ effective = max(floor, tierKnown ? tierInputDelayTicks(tier)
 The pre-arrival case is therefore `max(floor, rttTierInputDelays[kMaxConnectionTierIndex])`. The published value lands in
 the input-resolution peer's effective-delay atomic.
 
-The **floor** rides the session relay (`ASimulationTimingRelay`); the **tier** rides the per-connection relay
-(`ASimulationConnectionRelay`). The two `OnRep`s are genuinely independent and can land in either order, which is exactly
+The **floor** and the **tier** are two og-net Control messages since og-input-latency task P5-7 (the session relay and the
+per-connection relay carried them before). They are independent and can land in either order, which is exactly
 why both call **one** recompute holding **both** cached inputs rather than each writing the atomic on its own (`⛔G-05`):
-two writers each holding half the formula would answer with a stale other half whenever their `OnRep`s interleaved. The
+two writers each holding half the formula would answer with a stale other half whenever their arrivals interleaved. The
 start-up baseline publish (`beginTierConsumer`) goes through the same site.
 
 Both arms are evaluated inside `ReplicatedTierConsumer::effectiveInputDelayTicks`, which uses the same shared lookups
@@ -613,15 +657,15 @@ deliberately ignores, since nothing has been predicted yet.
 is the input-resolution peer's, not the net sync's.
 
 **The tier is server-owned.** The server derives each connection's tier from its own per-connection ping reading
-(og-simulation's `ServerReceptionCoordinator`) and replicates the result to the owning client as
-`ASimulationConnectionRelay`'s tier property. The client never computes a tier and never samples the round trip for tier
+(og-simulation's `ServerReceptionCoordinator`) and sends the result to the owning client, as og-sim-net's
+`SimNetServer::publishTier` since og-input-latency task P5-7 (the connection relay's tier property before). The client never
+computes a tier and never samples the round trip for tier
 purposes, which is what makes a client/server tier disagreement impossible by construction rather than merely unlikely.
 
 **The tier consumer is emplaced on both roles** (`⛔G-06`). A dedicated server never reads the value it publishes there,
 but a listen-server host does: its local player's input delay comes from that cache, and an empty cache would leave the
-atomic at `0` where the no-tier fallback is correct. No tier ever reaches an authority world, because the server writes the
-relay property and `OnRep` is a non-authority callback, so the authority cache stays at that fallback for the whole
-session.
+atomic at `0` where the no-tier fallback is correct. No tier ever reaches an authority world, because the server sends tiers
+to its connections only, so the authority cache stays at that fallback for the whole session.
 
 **The tier consumer is destroyed before the manager.** It borrows the manager's `TimeConfig`. It is declared after
 `m_manager`, so member destruction takes it first, and a `compositionContractsHold()` row asserts that order (§2).
@@ -629,9 +673,9 @@ session.
 
 #### The preserved tier-0 quirk, and its two consequences
 
-**The server never publishes tier 0 as a FIRST value:** the coordinator's last published tier for an owner is taken as 0
-until the first publish. A wire that never leaves tier 0 therefore produces no publish, no connection relay (the relay is
-spawned by the first send) and no call into `onConnectionTierReceived` at all: the client sits on the pre-arrival no-tier
+**The server never publishes tier 0 as a FIRST value:** the last published tier for a connection is taken as 0 until the
+first publish (og-sim-net's `publishTier` keeps that rule since og-input-latency task P5-7). A wire that never leaves tier 0
+therefore produces no publish and no call into `onConnectionTierReceived` at all: the client sits on the pre-arrival no-tier
 fallback while the server parks at tier-0 delay. That standing divergence is preserved deliberately; changing its cause
 changes felt input lag and belongs with the floor work, not with a transport move.
 
@@ -654,17 +698,26 @@ member is the coordinator's map, read with 0 for an owner it has not published, 
 
 #### Replayed values never stall
 
-`onConnectionTierReplayed` and `onRelayDelayFloorReplayed` apply and republish but **do not** stall. For the tier, it is the
+Until og-input-latency task P5-9 deleted them, `onConnectionTierReplayed` and `onRelayDelayFloorReplayed` applied and
+republished but **did not** stall. For the tier, it is the
 first tier ever applied, so no tick was predicted against a previous tier's delay. For the floor, the pull happens inside
 the owner's start-up, before the first prediction tick.
+
+**Since og-input-latency task P5-7 nothing called the two replay members, and P5-9 deleted them.** og-net delivers the floor (and any early tier)
+before the client's world exists, so every value is latched and handed over at the bind; the client host applies a handed-over
+value as received (`UESimNetHost-guards.md` G-05), because today's relay delivered it after the bind, as received, in the common
+case (§16.7).
+
+Since og-input-latency task P5-10 `applyReplicatedRelayDelayFloor` has no `payForIncrease` parameter. Its one caller,
+`onRelayDelayFloorReceived`, passed `true`; the `false` arm was the deleted floor replay's.
 
 A floor **rise** on the live channel is indistinguishable from an upward tier transition to the client: the frontier must
 fall back by the difference, which the clock pays down as stall ticks.
 
-Both listeners **bind, then PULL** (`⛔G-07`). Each property dirties only on change, so an `OnRep` that fired before the bind
-would never be re-notified; the relay latches it and hands it over at the pull. The timing relay is always relevant, so on
-a client it may legitimately already exist or not: a missing relay simply means no floor has arrived, and the relay's own
-client `BeginPlay` replays it if it turns up later.
+Both listeners **bound, then PULLED** (guard G-07, retired by og-input-latency task P5-7): each relay property dirtied only on
+change, so an `OnRep` that fired before the bind was latched by the relay and handed over at the pull. Since P5-7 the client
+session in the driver's lanes latches the floor and the tier, and `bindClientSession` replays them; the call's order after the
+manager and the tier consumer is a `checkf` in `beginClientSimNet` (§16.2).
 
 #### The floor advisory
 
@@ -675,251 +728,66 @@ intake: the owner's ini override at start-up and the floor listener's two entry 
 *Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §5 (all but "The zero input" and "Inbound-hit routing",
 which are the brawler's and stayed), made game-neutral, with the R0 corrections above.*
 
-### 9.5 The relay ring: the host boundary
+### 9.5 The relay ring (retired host boundary)
 
-`ASimulationInputRelay` cannot name a game's character or component, so it cannot resolve its own owner to the object that
-consumes relayed input. The session is the bridge, and **only** the bridge: it holds no state for this channel and no
-per-arrival traffic passes through it. Once the host is attached to the character's `USimulatableNetSyncComponent`, ring
-`OnRep`s go straight from the host to that sibling (`onRelayedInputRingArrived`) and on to the ring callback the game's
-component bound there.
+From task 25 until og-input-latency task P5-7 the session bridged each input relay host (`ASimulationInputRelay`, which cannot
+name a game's character) to its character's net-sync sibling, from the host's own calls in (`onInputRelayHostReady`, an
+`ISimulationInputRelayListener` member). Since P5-7 no input relay is spawned or found: the server's stager
+(`RelayRingStager`, one per character in og-sim-net's server) publishes each frame's ring on og-net's SimRelay lane, and the
+client session stores it in that character's channel (`SimNetChannel::storeRing`), which fires the arrival callback og-sim's
+`SimulationNetSync` bound on the channel at a remote character's registration (§16). A ring that arrives before its character's roster Add is held per sim id and stored at
+the Add (`SimNetClient-rationale.md`).
 
-**No map, deliberately.** The resolution is host → `GetOwner()` → character → sibling: lookups on data that already
-exists, because the actor's owner replicates and the authority spawns the host with the character as its owner
-(`ASimulationInputRelay::spawnForCharacter`). A registry keyed by character would be a second structure to keep in step
-with every spawn, death and travel, for nothing.
+### 9.6 The server clock and its callback
 
-**Idempotent.** The host calls in from its `BeginPlay`, from `OnRep_Owner`, and again from any ring `OnRep` that arrives
-while still unlinked; the sibling's `attachInputRelayHost` absorbs the repeats (it returns when the host is already its
-own). Every hop can legitimately fail during the join window, and every failure is a plain "not yet".
-
-*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §6 ("The host boundary"); R0, task 25: the moved text
-named the brawler component as the attach target and its callback as the arrival's destination; the host has been the
-sibling's since og-ue-simulationcomponentandmanagersplit task 20b, and since task 25 the session attaches to the sibling
-directly. The relay tap ("stage, do not write") describes `relayRemoteInput`, a reception sink that was the owner's until
-task 26a; it moved with it, to §9.7.*
-
-### 9.6 The timing relay, its callback and the server clock
-
-**The relay is found once.** `findTimingRelay` iterates the owner's world for the timing relay on first use and caches the
-pointer; the "timing relay found" line logs that first find. The owner uses it at start-up (to publish the session floor on
-the authority, to pull the latched floor on a client), and the server-clock publish uses it every frame.
-
-**`publishServerClock_GameThread`** writes the authority's server clock into the relay's synced buffer, from
-`onPostPhysicsStep` (§10; the owner's post-physics step until task 27a), between the post-simulation pass and the backend's visualization update, only on a manager that does not
-predict. Clients read the clock from that buffer through the relay's replication; the round trip and the authority tick come
-back through `onTimingInfoReceived`.
+**`publishServerClock_GameThread`** publishes the authority's server-clock tick through og-sim-net's server
+(`SimNetServer::publishClock`), from `onPostPhysicsStep` (§10), between the post-simulation pass and the backend's
+visualization update, only on a manager that does not predict and only while the server exists. The server sends it at the
+next `TickFlush`, as a `ClockPublish` on the SimClock lane, and only when the tick changed. Until og-input-latency task P5-7 it
+was written into the timing relay's synced buffer, which a relay found once per world (and logged `SimulationManager: timing
+relay found`).
 
 **`onTimingInfoReceived`** first hands the round trip to the latency member's wire sample, then either to the callback set
 by `setOnTimingInfoReceivedCallback`, if one is set, or to the manager's network estimator (round trip and authority tick).
-No caller in the tree sets the callback; it and `getSyncedTimingBuffer` are og-simulation's
-`SimulationManagerOwnerConcept`, which the session models (the brawler's concept test asserts it on the session since
-task 25, where it asserted it on the owner before).
+The client host calls it for every newer clock the client session delivers, with the round trip it reads from the server
+connection's FNetPing (`UESimNetHost-rationale.md`), and drops a clock while no session is bound. No caller in the tree sets the
+callback. Until P5-7 the session modelled og-simulation's `SimulationManagerOwnerConcept` with it and the timing buffer's
+accessor; it has no timing buffer since, so it no longer does, and the brawler's concept test no longer asserts it.
 
-**`getSyncedTimingBuffer`** returns the relay's buffer and is a fatal check when no relay exists yet.
+### 9.7 Input reception: og-sim-net's (retired in this class by og-input-latency task P5-7)
 
-*New text, task 25: the owner's rationale described these members only in its thread table and its carried header
-comments (§12, history).*
+From task 26a until P5-7 this class held the server's input reception: its own `ServerReceptionCoordinator` over the engine's
+connection handle, an id → component delivery map and its registration, the delivery and relay sinks the coordinator called,
+PROBE 5 (relay writes per frame), the drain, the reap and the forget. The component binding's RPC tail
+(`UESimulatableOwnerBinding::receiveRemoteMoveBundle`) fed the coordinator. Since P5-7 og-sim-net's `SimNetServer` holds the
+coordinator (its `Coordinator`, over `SimNetConnectionHandle`), and is both sinks itself: the release delivers through the
+character's channel, and the relay sink stages into the character's stager. The session keeps the members its callers name,
+re-pointed (§16.3):
 
-### 9.7 Input reception (task 26a): exempt from the seam
-
-The server's input reception: the reception coordinator and its emplace, the delayed-input map, the two sinks with PROBE 5,
-the per-step release, the reap and the forget. Task 26a moved these from the owner. **The section is exempt from the seam**
-(`⛔G-11`): it is typed on the per-step release, where erasing the game's input type would put an indirect call on the step
-path (manager design §9, step 5), so it stays in this class under M4, and the seam script does not list it.
-
-| member | what it is |
+| member | since P5-7 |
 |---|---|
-| `ReceptionCoordinator`, `m_receptionCoordinator`, `beginReceptionCoordinator` | og-simulation's `ServerReceptionCoordinator` over the engine's connection handle (`FUEConnectionHandle`) and `TraitsT::Simulatable`; its emplace and logger, extracted from the owner's start-up and called at the position of the two statements it holds |
-| `hasServerTierWiring`, `getReceptionCoordinator`, `getServerReceptionTick` | the coordinator's presence, the coordinator itself, and the server's reception tick |
-| `m_delayedInputComponentsById`, `noteDelayedInputComponent` | the id → component delivery route, and its registration |
-| `deliverRemoteInput`, `relayRemoteInput` | the delivery sink and the relay sink; the relay sink holds PROBE 5's write |
-| `m_relayWriteProbe` | PROBE 5 (`⛔G-12`) |
-| `releaseDelayedInputsForStep` | the per-step release (the drain) |
-| `afterAuthorityBatch` | the reap: the coordinator's `reapConnections`, when there is a coordinator (og-input-latency task P5-5, §15) |
-| `forEachAuthorityCorrectionTick` | the walk of the delayed-input map for the latency member's server `Handed` stamps (`⛔G-29`; P5-5, §15) |
-| `forgetReceptionOwner` | the reap and the forget: the coordinator's `forgetOwner`, the map's erase (`⛔G-13`) and PROBE 5's `forgetOwner`, extracted from the owner's unregistration and called at their position (since task 28 the unregistration is the session's own, §12.3) |
+| `ReceptionCoordinator`, `getReceptionCoordinator`, `hasServerTierWiring` | og-sim-net's server's coordinator and its presence |
+| `getServerReceptionTick` | unchanged; the server host answers og-sim-net's `receptionTick()` with it |
+| `releaseDelayedInputsForStep` | `[ReleaseBatch]`, then the server's `releaseForStep` |
+| `afterAuthorityBatch` | the server's `afterBatch` (the reap) |
+| `forEachAuthorityCorrectionTick` | the walk of the registered channels |
 
-Every body moved statement for statement; the task's notes hold the token comparison. The spellings changed where the
-owner reached the session (`m_session.m_manager` is `m_manager`), where the owner named the brawler's types (the map's
-element is `TraitsT::Component`, the input is `TraitsT::PlayerInput`, and the release names `TraitsT::Simulatable`, with the
-`template` keyword a dependent call needs), and at the registration: the owner keeps a wrapper that converts its game's
-character id to the storage key and passes that (the brawler's `noteDelayedInputComponent`). No log text, field, level or
-category changed. The coordinator, PROBE 5 and the map keep the owner's relative order, after the delay publish mark.
+**Still exempt from the seam** (`⛔G-11`): the release is typed on the game's input, and so is og-sim-net's server.
 
-**The callers reach the session.** The hosts call the release and the reap on the session they hold, as its friends: the
-tick-driver game binding's `releaseInputsForAuthorityTick` and `afterInlineBatch`, and a self-scheduled host's per-frame input
-hook (the brawler's Chaos host); since og-input-latency task P5-5 the reap is the session's `afterAuthorityBatch` (§15), so
-no host names the coordinator. The component binding's RPC tail finds the authority's session through its owner,
-`TraitsT::SessionOwner::instanceFor(true)`, then `session()`, for the coordinator, the reception tick and both sinks. The
-latency member reads the map through the session's `forEachAuthorityCorrectionTick` (directly until P5-5, §15). Until task 27a the owner's post-physics step handed the map to its game's score
-push, and the owner's `EndPlay` cleared the map and reset the coordinator; since task 27a `onPostPhysicsStep` hands the
-session to the game's hook, which reads the map through `getDelayedInputComponentsById`, and `endPlay` clears the map and
-resets the coordinator (`⛔G-21`, §10). The per-step release
-and the delivery stay direct calls on the concrete session, so the step path gained no indirect call (the task's notes read
-the disassembly of the release call site).
+**The drain and the reap** keep their pattern: `onFrameStepsDue_GameThread` (PROBE A, then the server test, then PROBE 6;
+§9.9), the drain per authority step or per frame batch, which prints `[ReleaseBatch] first=<tick> numSteps=<n>` on `LogOGNet`
+at `Verbose` (its row is in `kOGAdapterLogRoutes`, `UESimulationLogRoutes-rationale.md` §6), and the reap once per frame. Where
+each host calls them is the host's; the brawler's two hosts are its `OGBrawlerSimulationManager-rationale.md` §7.
 
-#### The coordinator and the transport adapter
+**Threads, and one acknowledged wart.** The reception is game-thread-only: og-sim-net's server drains at the driver's
+`PostTickDispatch` and is called by the hosts on the game thread. `getServerReceptionTick()` still reads the server clock,
+which the physics thread writes, from the game thread with no synchronization; the tier average is insensitive to a one-tick
+skew. *Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §1 ("One acknowledged wart").*
 
-The whole server reception subsystem (the tier table, the delay queue, the claim map, and the orchestration over them) lives
-in og-simulation's engine-agnostic `ServerReceptionCoordinator`. The session owns **one** instance of it and is a thin
-transport adapter: it acquires engine primitives (address, player slot, round trip, sim tick, wire decode) and forwards them
-in. **Authority role only:** `std::nullopt` on a pure client, because the coordinator borrows `const TimeConfig&` from the
-manager's owned config. It is declared after `m_manager`, so member destruction takes it first, and a
-`compositionContractsHold()` row asserts that order (§2); `endPlay` also resets it while the manager exists, as the
-owner's `EndPlay` did before task 27a.
-
-**Reception policy is in the core; primitive acquisition is at the RPC boundary** (`USimulatableNetSyncComponent`'s server
-RPC and its typed tail, `UESimulatableOwnerBinding::receiveRemoteMoveBundle`), where the bundle and the owning actor live.
-The tail forwards straight into `ServerReceptionCoordinator::noteRttSample` (once per bundle) and
-`ServerReceptionCoordinator::receiveInputBundle` (the whole per-slot loop). The session supplies three accessors (the
-coordinator, the server's reception tick and the route's registration) and the two sinks, and none of them carries netcode
-policy. A fourth accessor, `hasServerTierWiring`, had no caller in the tree until og-input-latency task P5-5; since then the
-brawler's Chaos host tests it before its drain and reap (§15).
-
-*R0, task 26a:* the moved text said the route is registered "from the RPC adapter". It is registered by the game
-component's own registration, once, on the authority (the binding's registration skeleton,
-`UESimulatableOwnerBinding::tryRegisterWithNewFramework`, since task 29; the brawler component's own loop before).
-
-#### The two sinks
-
-The session satisfies both `RemoteInputDeliverySink` and `RemoteInputRelaySink`. Both are checked at the
-`receiveInputBundle` call site (its `requires` clause), and both are asserted on the session in `compositionContractsHold()`,
-so a breaking signature change surfaces legibly wherever the session is constructed. Before task 26a they were asserted on
-the owner, beside its two definitions; task 26a saw both assertions fail on the owner's type.
-
-`deliverRemoteInput` is the **one** delivery method that both the per-id drain (built in `releaseDelayedInputsForStep`) and
-the core receive loop's fallback (a malformed slot in `receiveInputBundle`) route through. It resolves id → component
-through `m_delayedInputComponentsById` and hands the input to the inbound path the RPC tail's no-coordinator branch uses
-(the binding's `deliverDelayedRemoteInput`, which calls the component's remote-move callback), with the **original**
-`captureTick`. A stale weak handle means the component was garbage-collected without an unregister: the entry is dropped
-and the input discarded, because a dead component has nothing to receive it.
-
-`m_delayedInputComponentsById` exists because the core claim map is **id-keyed** (an engine-free container cannot hold a
-`TWeakObjectPtr`), so the coordinator's `deliver` callback hands back an id and this map resolves it. The id is the storage
-key. The map is filled by `noteDelayedInputComponent`; pruned by both sinks and by the drain's callback when a weak handle
-has gone stale; erased in `forgetReceptionOwner`, inside the unregistration (the session's own since task 28, §12.3; the owner's before) and so before the component unbinds
-from its sibling (`⛔G-13`); and cleared in `endPlay` (the owner's `EndPlay` until task 27a).
-
-*R0, task 26a:* the moved text listed only the drain's prune and the unregistration's erase; both sinks prune too, and
-`EndPlay` clears the map.
-
-The per-id `deliver` callback answers "is this owner still alive", so the coordinator can drop a stale claim, and routes a
-live delivery through `deliverRemoteInput`. **The liveness check stays on the adapter side,** because the drain's prune
-contract is a `bool` return while the sink method returns `void`, as the concept requires.
-
-*Carried from the owner's source, its note at the route's registration:* "Routing registration for the `deliver` callback.
-⛔ A plain overwrite, ONCE at register." The store is a plain assignment, so a second registration of an id replaces the
-first; the game component registers once, on the authority.
-
-#### The drain and the reap
-
-A frame's game-thread reception work is three pieces (og-simulationscheduler-withjolt task 51):
-* `onFrameStepsDue_GameThread`, the per-frame work before the steps: PROBE A, then the coordinator test, then PROBE 6
-  (§9.9; the owner's until task 26b);
-* `releaseDelayedInputsForStep(firstTick, numSteps)`, the drain only. It tests the coordinator itself, prints one
-  `[ReleaseBatch] first=<tick> numSteps=<n>` line on `LogOGNet` at `Verbose` (the category and level of the coordinator's
-  `[Release]` lines; its row is in `kOGAdapterLogRoutes`, `UESimulationLogRoutes-rationale.md` §6), and calls
-  `ServerReceptionCoordinator::releaseDelayedInputs` with the per-id callback;
-* the reap, `afterAuthorityBatch(firstUpcomingSimTick)`, which tests the coordinator and calls
-  `ServerReceptionCoordinator::reapConnections` (since og-input-latency task P5-5, §15; the hosts called the reap on the
-  coordinator before).
-
-The drain hands over only the game-thread-safe upcoming sim tick and the per-id callback. Where each host calls the three
-pieces is the host's: the driver-scheduled host drains per authority step and reaps once per frame after the inline steps;
-the self-scheduled host drains the whole frame's batch up front and then reaps, once per frame. The brawler's two hosts and
-their call patterns are its `OGBrawlerSimulationManager-rationale.md` §7, in OGBrawlerUnreal's docs.
-
-*R0, task 26a:* the moved text named the router's table `kOGLogRoutes`; it is `kOGAdapterLogRoutes` since
-og-ue-simulationcomponentandmanagersplit task 19.
-
-#### Threads, and one acknowledged wart
-
-Everything in the reception is game-thread-only and has no internal synchronization: the coordinator, PROBE 5 and the map
-are read and written by the RPC tail (the engine's receive dispatch), the hosts' per-frame and per-step calls (on the game
-thread: a driver-scheduled authority steps inline there), the owner's start-up and unregistration, and the session's
-post-physics pass and teardown (the owner's until task 27a).
-
-`getServerReceptionTick()` reads the server clock through `getServerClock()`, which the physics thread writes, from the game
-thread with no synchronization. The RTT sample path has always tolerated this, and the tier average is insensitive to a
-one-tick skew. It was left as it is so that relocating the reception subsystem into the core stayed a pure relocation; a
-follow-up may source it from the host's mapped tick, the way the drain's tick already is. *Moved from the brawler's
-`OGBrawlerSimulationManager-rationale.md` §1 ("One acknowledged wart").*
-
-#### The relay tap: stage, do not write
-
-`relayRemoteInput` is the **outbound** half of the receipt path. Where `deliverRemoteInput` routes an input *into* the
-simulation for the character that sent it, this stages the same `(captureTick, dA, input)` for that character's replicated
-relay ring, which carries it to the **other** clients, so each peer simulates that character with its real input instead
-of extrapolating. `dA` is the **schedule stamp**, the effective input delay the authority held for that wire at receipt, so
-a peer derives the application tick as `captureTick + dA`.
-
-Under bare-C1 flush-on-poll the arrival is **staged**: the binding's `stageRelayedInput` puts it in the sibling's staging
-target, and the relay host's `PreReplication` publishes the whole staged burst once per replication poll, so two arrivals
-in one server frame both reach the wire instead of the second overwriting the first.
-
-**No depth is read at that site any more, and that is the point.** It used to pass a session-configurable retention depth
-into `writeLatest`. On the flush path that same value would make every staged entry after the first supersede its
-predecessor, the ring would carry exactly one entry per round, and bare C1 would silently become replace-latest again, with
-no compile error and no warning. `stageRelayedInput` has no depth parameter (the binding asserts its signature), and the
-capacity is `relayedInputRing::kMaxDepth`, taken as a constant inside the codec; og-simulation-tests' relay redundancy depth
-test is the machine-checked fence that replaced the retired start-up proof line.
-
-The staging outcome is deliberately unchecked: `accepted` can only be false on the stale-write arm, which the
-coordinator's monotonic `acceptedNew` gate makes unreachable from this call site, and `droppedOldest` is already counted on
-the host (the binding counts each overflow drop there).
-
-> ⚠ **Which ring.** The replicated ring is `ASimulationInputRelay::m_relayedInputRing`, registered
-> `DOREPLIFETIME_CONDITION(ASimulationInputRelay, m_relayedInputRing, COND_SkipOwner)`. The tap stages into the host's
-> staging ring, which the flush publishes into it. With no host linked, the tap stages into the sibling's
-> `m_detachedRelayStagingRing`, whose contents nothing replicates.
-
-*R0, task 26a:* the moved text named the sibling's `m_detachedRelayRing` as the tap's no-host fallback. That ring is the
-read fallback (`getRelayedInputRing` with no host); the staging fallback is `m_detachedRelayStagingRing`
-(`USimulatableNetSyncComponent::relayStagingTarget`).
-
-*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §6 ("The relay tap: stage, do not write"), with the R0
-above. Its history of the retired dual write, and the brawler's visualization read of the relayed input, stayed there.*
-
-#### PROBE 5: relay writes per frame (`m_relayWriteProbe`), server only
-
-All the frame probes are purely diagnostic: nothing reads them but the log lines they feed. Per-window summaries go out at
-`Warning`, and nothing is emitted per tick or per write at any verbosity.
-
-**What it settles.** Replication polls a replicated property once per server game-thread frame and compares the live value
-against its shadow. **When this probe was built** the ring shipped at depth 1 (replace-latest), so a second write inside the
-same frame overwrote the first in server memory, and no client and no client-side probe could tell that apart from a
-send-path drop: both surface as `[RelayProbe.Arrival] gapCaptureTicks > 1`. Flush-on-poll has since removed that mechanism
-(the relay tap above); the probe stayed because the **quantity**, writes per frame, is still the one nobody had measured.
-
-The relay-loss elimination chain does not cover this. It eliminated the server's own write with "writes on every accepted
-receipt, and receipts are complete", which is true and is about the wire *into* the server; and the server frame rate with
-"about one sim tick per frame", which is true and about a different clock: these writes are paced by **packet arrival**, not
-by the sim.
-
-**`GFrameCounter`, not an invocation count.** The frame is the unit replication polls on, so the engine's own frame identity
-is the only correct key; a local counter incremented at the tap would measure the tap's call rate instead.
-
-**Three fractions, never collapsed.** `receivedX1000` is upstream completeness (only input redundancy raises it).
-`observableX1000` is the coalescing ceiling (depth raises exactly this one), and it reports the **flush** ceiling since the
-write path changed, which is why the stage capacity is *injected* into the probe from the codec constant rather than assumed
-(`⛔G-12`). `deliverableX1000` is their product and is the only one comparable to the client's arrival rate. A single merged
-"loss" number would decide the remedy on merged evidence. `replaceLatestObservableX1000` recomputes the same window the way
-the retired write path imposed it, so archived windows stay directly comparable, and the improvement is two numbers on one
-line rather than a claim.
-
-Line 2 carries the run-length shape plus the capture-tick range, so a server window can be aligned against a client window
-by its capture ticks, and by its owner id.
-
-*R0, task 26a:* the moved text said owner ids "are per-process and do not match across logs". The id is the storage key,
-which for the brawler has been its pawn's replicated character id since the sim-id change (the brawler's
-`OGBrawlerSimulationManager-rationale.md` §15), the same number on every peer.
-
-**Volume: two `Warning` lines per 120 writing frames per relayed character** (og-simulation's `kRelayWriteProbeWindowRuns`).
-Nothing per write is emitted at any verbosity, deliberately: a per-write line is a per-tick line.
-
-*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §8 ("PROBE 5") with the R0 above. PROBE A and PROBE 6
-followed in task 26b (§9.9); the resim-gate feeds, the rewind-push probe and the Jolt host's window line stayed in the
-brawler's §8.*
+**The relay's schedule stamp is unchanged.** The coordinator still hands the relay sink `(captureTick, dA, input)`, where `dA`
+is the effective input delay the authority held for that wire at receipt, so a peer derives the application tick as
+`captureTick + dA`; og-sim-net's stager publishes the whole frame's staged entries once, at the flush, as the input relay's
+`PreReplication` did, so two arrivals in one server frame both reach the wire.
 
 ### 9.8 The session knobs (task 26b)
 
@@ -930,13 +798,13 @@ og-input-latency task 4 added two more keys, read by the same intake, and a four
 | function | what it holds | where the owner calls it |
 |---|---|---|
 | `readSessionKnobs(worldIsAuthority)` | the intakes (`⛔G-14`, `⛔G-15`, `⛔G-16`, and since og-input-latency task 4 `⛔G-27`); it reaches no session state and returns the requests in a `SessionKnobs` value | after the latency member's begin, before the backend builds its world: both roles |
-| `applySessionKnobs(knobs)` | the floor's clamp, set, ini line and advisory; the rotation width's clamp and set; the rotation width's proof line; the floor's publish onto the timing relay | in the authority branch, after the neutral input, before the tier consumer's start |
+| `applySessionKnobs(knobs)` | the floor's clamp, set, ini line and advisory; the rotation width's clamp and set; the rotation width's proof line; the floor's publish through og-sim-net's server (`publishFloor`, since og-input-latency task P5-7; onto the timing relay before) | in the authority branch, after the neutral input and the og-sim-net server's start, before the tier consumer's start |
 | `applyResimTriggerPolicy(knobs)` | the policy's parse, apply and proof line (`⛔G-17`) | after both role branches |
-| `applyLatencyKnobs(knobs)` (og-input-latency task 4) | the two latency knobs' clamp and set, and their one proof line | after both role branches, directly after `applyResimTriggerPolicy` |
+| `applyLatencyKnobs(knobs)` (og-input-latency task 4) | the two latency knobs' clamp and set, and their one proof line; since og-input-latency task 27 also the re-centre window's clamp, set and proof line | after both role branches, directly after `applyResimTriggerPolicy` |
 
 The statements moved unchanged: the intake's locals are returned in a `SessionKnobs` value, and the two apply functions
 read the same four fields from it (as task 26b left it; `applyLatencyKnobs` reads only the four fields og-input-latency
-task 4 added); the owner's `m_session.` prefix fell away. No log text, field,
+task 4 added, and the two og-input-latency task 27 added); the owner's `m_session.` prefix fell away. No log text, field,
 level or category changed. The `[StateRotation] session` and `[ResimGate] session` lines are the start-up's identity lines,
 and task 26b's harness sessions hold them, and the floor's lines, byte-identical.
 
@@ -977,14 +845,14 @@ sound only because it is written once at composition, before any correction can 
 is *replicated* to clients. A client reading its own ini could disagree with the server, which is the two-ends-diverge
 failure the whole tier ruling exists to avoid.
 
-The clamped value is stamped into `TimeConfig` and then published on the session's timing relay, which the game's
-composition root must spawn **before** the session owner, precisely so that write has somewhere to land (the brawler's
-`USimulationManagerSubsystem::OnWorldBeginPlay` spawns the relay first, on every non-client world). Reaching the failure
-branch, the `[RelayDelayFloor] no timing relay at manager BeginPlay` line, means no client will ever learn a nonzero
-floor: nothing publishes the floor after start-up.
+The clamped value is stamped into `TimeConfig` and then published through og-sim-net's server (`publishFloor`, since
+og-input-latency task P5-7), which `beginServerSimNet` emplaces just before the knobs are applied, so the publish always has
+a server (a `checkf` says so). The server sends the floor to every attached connection and to each connection that attaches
+later; nothing publishes the floor after start-up. Before P5-7 the floor was written onto the timing relay, which the game's
+composition root spawned first for that reason, and a missing relay meant no client learned a nonzero floor.
 
-Two intakes share one clamp: this ini override, and the floor listener (`onRelayDelayFloorReceived` and
-`onRelayDelayFloorReplayed`), where the value arrives off the wire as a `uint8` and is clamped rather than trusted (a
+Two intakes share one clamp: this ini override, and the floor's receipt from the server (`onRelayDelayFloorReceived`; its replay
+twin was deleted by og-input-latency task P5-9), where the value arrives off the wire as a `uint8` and is clamped rather than trusted (a
 corrupt or version-mismatched byte must not schedule a read past the point where the delay line has already evicted the
 capture). The manager's setter clamps again; the call sites exist so an out-of-range value is *visible* in the log rather
 than silently corrected.
@@ -1066,6 +934,21 @@ shared `latencyKnobs::` function and set through the manager's setter, which cla
 `TimeConfig`, and printed once per session on every peer. Its trailing token is `ini` when either key was present and
 `compiled` when neither was. **After both role branches**, like the policy's (`⛔G-24`'s reason): one call proves the
 same thing on both roles.
+
+#### `RecentreSettleSamples`: the clock's re-centre window (og-input-latency task 27)
+
+One integer key under `[OGNetcode]`, read by the same intake and applied by `applyLatencyKnobs` after the two latency
+knobs. It feeds `TimeConfig::recentreSettleSamples`, the number of measured RTT samples (valid and above 0) the client clock waits after a join
+or a hard resync before its one-shot re-centre; 0 disables the re-centre. What the re-centre does is og-simulation's
+`TimeConfig-rationale.md` §14. The key exists so the re-centre's A arm (0) runs on the same binary as its B arm (the
+compiled default).
+
+**Not authority-gated**, for `RedundancyFrames`' reason: the field acts only on a predicting client, which must read its
+own ini, and reading it on both roles keeps one `TimeConfig` shape. A negative value is reported by a
+`[ClockRecentre.Config] ini [OGNetcode] RecentreSettleSamples=… out of range, clamped to 0` line and set to 0. The proof
+line, `[ClockRecentre.Config] recentreSettleSamples=… (ini|compiled)`, is unconditional, at `Warning`, read back from
+`TimeConfig`, once per session on every peer. It is a line of its own so the `[LatencyKnobs]` line's text is unchanged,
+and its tag is not the clock's `[Clock.Recentre]`, which a client logs once per arm.
 
 #### The retired fourth knob
 
@@ -1256,12 +1139,15 @@ backend calls `onPostPhysicsStep`.
 1. `m_physicsBackend.onEndPlayBegin()` (`⛔G-20`). A driver-scheduled backend unregisters the frame host's two tick functions,
    so no new frame starts, and waits for every outstanding step task (`TickDriverBackendUImpl-guards.md` G-01); a
    self-scheduled backend's may be empty. Nothing moves above it.
-2. The delayed-input map's clear, the reception coordinator's reset (`⛔G-21`) and the tier consumer's reset, while the
-   manager still exists: both borrowers hold the manager's `TimeConfig` (§2 asserts that member destruction takes them
-   first too).
-3. The registry (§9.2): if this session holds the authority slot, the slot is cleared and the role's three relay listeners
-   are unregistered; then the same for the client slot. The destructor repeats this as a backstop (`⛔G-10`).
-4. If the owner still has a world: the latency member's `end` (it unbinds its post-tick-flush handler), then the backend's
+2. `detachFromSimNetLanes` (since og-input-latency task P5-7, §16.6): the session unbinds from the og-net lanes it is still
+   bound to.
+3. og-sim-net's server's and its host's resets and the two registered maps' clears (`⛔G-21`), then the tier consumer's reset,
+   while the manager still exists: the server and the tier consumer both hold the manager's `TimeConfig` (§2 asserts that
+   member destruction takes them first too). Until P5-7 this step reset the session's own reception coordinator and cleared
+   the delayed-input map.
+4. The registry (§9.2): if this session holds the authority slot, the slot is cleared; then the client slot. The destructor
+   repeats this as a backstop (`⛔G-10`). Until P5-7 each role's three relay listeners were unregistered here too.
+5. If the owner still has a world: the latency member's `end` (it unbinds its post-tick-flush handler), then the backend's
    `onEndPlayWorld` (a self-scheduled backend removes its engine delegates there).
 
 Nothing resets the manager, the composition or the backend: they live until the session is destroyed, with its owner.
@@ -1272,9 +1158,10 @@ Nothing resets the manager, the composition or the backend: they live until the 
    apply, `TickDriverBackendUImpl-rationale.md`); empty on a self-scheduled backend.
 3. The manager's post-simulation pass, `onPostSimulationGameThread()` (§8).
 4. The authority's server-clock publish, `publishServerClock_GameThread()` (§9.6).
-5. `m_physicsBackend.updateVisualization_GameThread()`.
-6. `Game::afterVisualization(*this)`, the game's hook, at the position of the game statement it replaced.
-7. The latency member's `tick_GameThread`, with the backend's diagnostics view (`UELatencyBudgetDiagnostics-rationale.md`).
+5. For a session on its own detached lanes only (§16.2): the lanes' `afterDispatch` and `onTickFlush`.
+6. `m_physicsBackend.updateVisualization_GameThread()`.
+7. `Game::afterVisualization(*this)`, the game's hook, at the position of the game statement it replaced.
+8. The latency member's `tick_GameThread`, with the backend's diagnostics view (`UELatencyBudgetDiagnostics-rationale.md`).
 
 It is private: the backend hosts call it as the session's friends (§4), a driver-scheduled backend through the game's
 tick-driver binding (`onPostPhysics`, at the frame's end of physics), a self-scheduled one from the engine's post-tick
@@ -1283,7 +1170,8 @@ delegate, bound to a weak lambda whose weak object is the owner.
 **The game's hook, `afterVisualization(session)`.** The game's statement that sat between the visualization update and the
 latency tick (the brawler's: its ring-out score push) is the hook's body, verbatim, and the session calls it with itself,
 `const`. The hook reads the session through const reads only: `getManager()`, and the two task 27a added,
-`getSystemsExec()` and `getDelayedInputComponentsById()`, each a const reference to the member it names. The latency
+`getSystemsExec()` and the component map's read (`getRegisteredComponentsById()` since og-input-latency task P5-7), each a
+const reference to the member it names. The latency
 tick, which followed the game's statement, is the session's own statement after the hook. The brawler's hook is
 `BrawlerSessionGameUImpl-rationale.md` §5, in OGBrawlerUnreal's docs.
 
@@ -1338,19 +1226,20 @@ site (the task's notes show what it checked).
 5. The role: `worldIsAuthority` is the owner's net mode not being `NM_Client`, never the actor's `HasAuthority()` (§5).
 6. The latency member's `begin` (`UELatencyBudgetDiagnostics-rationale.md`): its probe and two mailboxes, and its
    post-tick-flush binding, all before stepping starts.
-7. `readSessionKnobs` (§9.8), then the backend's `buildWorld` (the adapters, §3).
+7. `readSessionKnobs` (§9.8; since og-input-latency task P5-7 it also reads `SimTrafficImmediate`, and a nonzero value logs
+   its refusal here, §16.2), then the backend's `buildWorld` (the adapters, §3).
 8. The role branch.
-   * **Authority:** registry slot 0 (a `checkf` if it is taken) and the timing-relay listener (§9.2); the router logger
-     lambda (`RouteOGMessage`); the integration layer; `Game::emplaceSystems` (`UESimulationSession-guards.md` G-01); the
-     manager, without prediction; the three peers' loggers; the neutral input, `Game::neutralInput()` (`⛔G-23`, §11.3);
-     `applySessionKnobs` (§9.8); `beginTierConsumer()` (`⛔G-06`, §9.4); the connection and input relay listeners;
-     `beginReceptionCoordinator` (§9.7); `simlog::setGlobal`; `Game::installGameLoggers(worldIsAuthority)`;
-     `bindCorrectionFieldDiffGate()` (§11.4).
-   * **Client:** registry slot 1 and the timing-relay listener; the router logger; the integration layer;
-     `Game::emplaceSystems`; the manager, with prediction; the loggers; the neutral input; `beginTierConsumer()`; the
-     connection and input relay listeners, then `replayLatchedClientValues` (`⛔G-07`, §9.4); `simlog::setGlobal`;
+   * **Authority:** registry slot 0 (a `checkf` if it is taken) (§9.2); the router logger lambda (`RouteOGMessage`); the
+     integration layer; `Game::emplaceSystems` (`UESimulationSession-guards.md` G-01); the manager, without prediction; the
+     three peers' loggers; the neutral input, `Game::neutralInput()` (`⛔G-23`, §11.3); `beginServerSimNet` (§16.2);
+     `applySessionKnobs` (§9.8); `beginTierConsumer()` (`⛔G-06`, §9.4); `simlog::setGlobal`;
+     `Game::installGameLoggers(worldIsAuthority)`; `bindCorrectionFieldDiffGate()` (§11.4).
+   * **Client:** registry slot 1; the router logger; the integration layer; `Game::emplaceSystems`; the manager, with
+     prediction; the loggers; the neutral input; `beginTierConsumer()`; `beginClientSimNet` (§16.2); `simlog::setGlobal`;
      `Game::installGameLoggers(worldIsAuthority)`; `bindCorrectionFieldDiffGate()`; and the `[ResimProbe.Session]` line
      (compiled only `#if !NO_LOGGING`: its arguments call members a `NO_LOGGING` category does not have).
+   * Until og-input-latency task P5-7 the authority also registered the three relay listeners and emplaced its own
+     reception coordinator, and the client registered the listeners and pulled the latched tier and floor from the relays.
 9. `applyResimTriggerPolicy` (`⛔G-24`), once, after both branches (§9.8); then `applyLatencyKnobs` (§9.8), once, the same
    way (og-input-latency task 4).
 10. `m_game.afterSessionConfigured(worldNetMode)`: the game's checks that need the configured session.
@@ -1551,10 +1440,11 @@ and return `Ready`. Every call before that returns `Pending`, and the component 
    declaration's own body; any unresolvable body returns `Pending`. The named, order-first read says out loud which body a
    `Pending` waits on. When the root body is one of the declarations' own bodies, as the brawler's is, the walk tests it
    again and the first read adds no guarantee the walk does not give.
-5. **The registration:** the authority registers the simulatable with the component as both its prediction and its
-   authority owner; a client registers it with the component and the input provider, wrapped by the latency member
-   (`wrapInputProvider`, the capture stamp; `UELatencyBudgetDiagnostics-rationale.md`). The wrap is the session's own
-   statement. Then the line `tryRegister: registered simulatable id=%u isAuthority=%d` (`LogOGMgmt`, `Log`), which prints
+5. **The registration:** the authority adds the character to og-sim-net's server and registers the simulatable with the
+   returned channel as both its prediction and its authority owner (a refused add returns `Refused`); a client registers it
+   with the client session's channel and the input provider, wrapped by the latency member (`wrapInputProvider`, the capture
+   stamp; `UELatencyBudgetDiagnostics-rationale.md`), and marks the id registered in the roster bindings (since
+   og-input-latency task P5-7, §16.4; the component was both owners before). The wrap is the session's own statement. Then the line `tryRegister: registered simulatable id=%u isAuthority=%d` (`LogOGMgmt`, `Log`), which prints
    this call's role; a component passes the same role on every attempt (its world's net mode).
 6. **The game's `afterRegistered(id, isAuthority)`** (the brawler: its pre-diet cap), then the systems executor's notify
    (`⛔G-25`, §12.4), then the backend's `onRegistered_GameThread`; the record is erased, and the call returns `Ready`.
@@ -1586,18 +1476,20 @@ In order:
    the character, while it is still in storage, so a system's unregister hook can still reach it; and only for a character
    that is in storage, because one whose registration never reached `Ready` has nothing to drop, and a hook's
    `view.get<>(id)` would have nothing to return.
-3. **`unregisterSimulatable`:** the owner callbacks, then the containers.
-4. **`forgetReceptionOwner(id)`** (§9.7): the reception coordinator drops this owner's claim and its dedup watermark, the
-   delayed-input map drops the id (`⛔G-13`: this erase stays here, ahead of the component's unbind from its sibling), and
-   PROBE 5 drops its per-owner state. Promptly, rather than waiting for garbage collection to make an engine handle stale:
-   the coordinator's claim map is keyed by id and cannot hold an engine weak pointer. PROBE 5's map then stays bounded by
-   live ids, as the coordinator's does; a half-open run belonging to a dead owner is discarded rather than reported, which
-   is correct, since its length is unknowable. The coordinator is a no-op on a pure client.
+3. **`unregisterSimulatable`:** the owner callbacks, then the containers. The owner is the character's channel since
+   og-input-latency task P5-7, or none for an id that never reached `Ready`.
+4. **`forgetSimNetCharacter(id, isAuthority)`** (`⛔G-13`, §16.5): the registered maps and the slot drop the id; on the server
+   og-sim-net's `removeCharacter` sends the roster Remove, drops the coordinator's claim and dedup watermark for this owner
+   (`forgetOwner`) and destroys the channel and the stager; on a client the roster bindings mark the id unregistered. Promptly,
+   rather than waiting for garbage collection: the coordinator's claim map is keyed by id. Until P5-7 this step was the
+   session's own forget: its coordinator's `forgetOwner`, the delayed-input map's erase and PROBE 5's forget.
 5. **The game's `onUnregistered(id)`** (the brawler: its roster's forget, then its input-history feed's forget).
 6. **The latency member's forget,** the session's own statement.
 7. **The backend's `onUnregistered_GameThread`,** then the line `NewFramework: unregistered simulatable id=%u`.
 
-It is called for every component that ends play, registered or not.
+It is called for every component that ends play, registered or not. Since og-input-latency task P5-7 the work is
+`unregisterCharacter`, and `unregisterFromNewFramework` returns first for an id a roster Remove or the lanes' stop already
+unregistered (`⛔G-30`, §16.5), so each character is unregistered once.
 
 ### 12.4 The executor's notify runs on both roles
 
@@ -1786,7 +1678,11 @@ session's friends (§4).
 | `recordAuthoritativeSlot(owner, key, slot)` | the slot publish: `SetAuthoritativePhysicsSlot(slot)` on `owner` as the traits' `Character` | the setter `callWithSlotRequest` hands `slotCall` |
 | `forEachAuthorityCorrectionTick(function)` | the walk of `m_delayedInputComponentsById`: it skips a stale weak pointer and an unbound component (`⛔G-29`), reads the component's correction-buffer tick, skips tick 0, and calls `function(id, tick)` | the latency member's server branch of `tick_GameThread`, which keeps the per-id `Handed` stamp (`UELatencyBudgetDiagnostics-rationale.md` §12) |
 
-**No file but this header names `m_receptionCoordinator` since P5-5.** The Chaos host's test of it became
+**The switch re-pointed all four** (og-input-latency task P5-7, §16.3, §16.4): the reap is og-sim-net's server's
+`afterBatch`, the slot doors read and write the session's slot map on the authority and the roster entry on a client, and
+the walk reads the registered channels. The table above is P5-5's state.
+
+**No file but this header named the session's coordinator member since P5-5.** The Chaos host's test of it became
 `hasServerTierWiring()` and its reap `afterAuthorityBatch`. The tick-driver binding never named the member: it called
 `getReceptionCoordinator()`, which the component binding's RPC tail still calls (§9.7).
 
@@ -1808,3 +1704,141 @@ copy of it.
 
 **What did not change.** No log text, level, category or order. The header grew by 50 lines, most of them above `checkf`s,
 which moves only the `__LINE__` a failed check reports.
+
+---
+
+## §16 The switch: sim traffic on og-net, frame-locked (og-input-latency task P5-7)
+
+Task P5-7 moved every sim payload off Unreal's replication onto og-net's sim lanes, in one build: inputs, corrections, relay
+rings, the server clock, the connection tier, the relay-delay floor and (new) the roster. og-sim-net's sessions carry them
+(`SimNetServer`, `SimNetClient`), over `UESimNetLanes`, the og-net driver's per-driver lanes object (`UESimNetLanes-rationale.md`),
+with the Unreal hosts of `UESimNetHost.h` (`UESimNetHost-rationale.md`). The traffic is **frame-locked**: received at the
+driver's `PostTickDispatch`, sent at its `TickFlush` (the P5 design, K3). The old carriers (the net-sync component's RPC and
+correction property, the input, timing and connection relays, the three listener interfaces) are no longer written or
+spawned by anything; later tasks delete them (P5-8, P5-9).
+
+### 16.1 Who owns what
+
+| piece | owner | why |
+|---|---|---|
+| the transport (`SimNetTransport` over the driver's erased endpoint) | the driver's lanes, from `InitBase` | og-net delivers from before the world exists (K4) |
+| a client's `SimNetClient`, its roster mirror and its channels; the bindings (`SimNetBindings`) | the driver's lanes | the roster, floor and tier arrive before the client's world exists, and are latched there |
+| the server's `SimNetServer` (it owns og-simulation's reception coordinator) and its host, `UESimNetServerHost` | this session: `m_simNetServer`, `m_simNetServerHost` | its lifetime is the world's, and it borrows the manager's `TimeConfig` |
+| detached lanes, for a world with no og-net driver | this session: `m_detachedSimNetLanes` | one code path either way; sends are dropped and counted |
+
+`m_simNetLanes` points at the lanes the session is bound to, the driver's or its own detached ones. It is cleared by the
+lanes' stop handler and by `detachFromSimNetLanes`, so the session never keeps a pointer to lanes the driver destroyed.
+
+### 16.2 `beginPlay`: finding the lanes, and the proof line
+
+`findDriverSimNetLanes` casts the world's net driver to `UOGNetDriver` and takes its `GetSimLanes()`. The game registers one
+factory (the brawler's `makeBrawlerSimNetLanes`), which makes `UESimNetLanes<TraitsT>` for the driver's role, so the
+`static_cast` to this session's lanes type is the factory's own type; a `checkf` compares the lanes' role with the world's.
+
+- **Authority** (`beginServerSimNet`, after the neutral input, before `applySessionKnobs`): with no lanes, a networked world
+  logs `[SimNet.Host] refused role=server driver=<class>: simulation traffic needs the og-net driver` at `Error` on
+  `LogOGNet` and shows a 15 s toast (the user's ruling Q1: no Fatal); a standalone world says nothing. Either way it uses
+  detached server lanes. Then the host, then the server, with the manager's `TimeConfig` and og-sim-net's
+  `correctionAllowanceBytes` for the endpoint's lane table and budget at `NetConfig::tickFrequencyHz`; then the lanes get the
+  server's two frame functions (`bindServerSession`) and the session's stop handler.
+- **Client** (`beginClientSimNet`, where `replayLatchedClientValues` stood): a `checkf` that the manager and the tier
+  consumer exist (the bind replays into both; this replaced guard G-07); with no lanes, the same refusal line with
+  `role=client`, the toast, and detached client lanes. Then the session's handler for a roster Remove
+  (`setOnRegisteredRemoved`), its stop handler, and `bindClientSession(*this)`, which binds the host, replays the latched
+  floor and tier, and seeds the bindings from the roster mirror before any registration (`SimNetBindings-rationale.md` §6).
+- **The proof line**, once per session, from `logSimNetHostLine`:
+  `[Warning][SimNet.Host] role=<server|client> immediate=0 rttSource=EnginePing driver=<OGNet|detached> inbox=2048`.
+  `immediate=0` is the frame-locked mode; `rttSource=EnginePing` names WIRE's source (the connection's FNetPing, D13).
+- **`[OGNetcode] SimTrafficImmediate`** is read by `readSessionKnobs` on both roles, the game ini first, then the engine ini.
+  A nonzero value logs an `Error` (`immediate sim traffic needs Ph4's code`) and the session runs frame-locked anyway.
+- **The floor** is published through the server, `publishFloor`, at the end of `applySessionKnobs`, where the timing relay's
+  write stood; the server sends it to every attached connection and to each one that attaches later.
+- **A detached session** is driven from `onPostPhysicsStep`: the lanes' `afterDispatch` and `onTickFlush`, after the clock's
+  publish, so its counters and window lines behave as the driver's would. Nothing arrives, and every send is dropped.
+
+### 16.3 The frame work
+
+| session member | before P5-7 | since |
+|---|---|---|
+| `releaseDelayedInputsForStep` | the coordinator's release, delivered through the component map | `[ReleaseBatch]` kept, then the server's `releaseForStep` |
+| `afterAuthorityBatch` | the coordinator's `reapConnections` | the server's `afterBatch` |
+| `publishServerClock_GameThread` | the clock into the timing relay's buffer | the server's `publishClock(tick)`, sent at the next flush |
+| `getReceptionCoordinator`, `hasServerTierWiring` | the session's own coordinator | the server's `coordinator()`; presence is the server's |
+| `forEachAuthorityCorrectionTick` | the component map, skipping an unbound component (G-29) | the registered channels (`m_simChannelsById`), skipping a buffer shorter than its header and tick 0 |
+| PROBE 6's test (`⛔G-18`) | the coordinator's presence | the server's presence |
+
+**PROBE 5 is gone** (it was guard G-12): it counted the writes of the session's relay sink, and og-sim-net's server is the
+relay sink now, staging into its own `RelayRingStager`; the stager reports its own window (`[RelayFlush]`). `[RelayProbe.Write]`
+no longer appears in a server log.
+
+**The client's `Handed` stamps** come from the channel's `setOnInputHandedCallback`, set at registration for a local
+character, one stamp per bundle slot, as the component binding's send did. The other stamps are the hosts' (og-sim-net calls
+them at the drain and the flush): `ServerReceived`, `ClientReceived`, the correction's, and the new `NetReceived` at the
+datagram's receive time, which the latency member's masks now include (`kServerNetHops`, `kClientNetHops`).
+
+### 16.4 Registration
+
+**Server.** The slot door `recordAuthoritativeSlot` stores the slot the backend chose in `m_authoritativeSlotsByActor`, keyed by
+the pawn actor (the tick-driver host's slot key is that actor's address, and a slot is requested before the pawn has a sim id:
+the visualization volume's request comes from the registration's first loop), and `physicsSlotFor` reads it back; the character's replicated slot property is no longer written (P5-8
+deletes it). Each `checkf` of the property's setter (authority only, a slot of the physics world, once per character) moved
+into the door, and its message says so. At the `Ready` step, `addSimNetCharacter` calls the server's `addCharacter` with the sim
+id, the recorded slot, the pawn's root connection's og-net id (`kInvalidSimConnection` for a server-local pawn, or a connection
+of another driver), the pawn's local player index (`GetPlayerSlotForActor`) and the pawn's name. A refusal (`nullptr`, logged by
+og-sim-net as `[Roster.Refused] role=server …`) returns `TryRegisterStatus::Refused`: the pending record is erased, an `Error`
+line names the id, and the binding abandons. Otherwise the character registers with its channel as both owners, as it did with
+the component.
+
+**Client.** The binding gate is `clientBindStep(id, engineSaysLocal)`, which the game's key hook asks once the pawn's key is
+known: `Wait` (no roster entry yet: the hook answers `Retry`, inside the binding's 600 attempts), `Ready`, or, on a role
+mismatch, the `[Roster.BindMismatch]` line and a `checkf` (`Abandon` with checks off; P7's C-3). A detached client answers
+`Abandon` with one `Error`, so it does not wait into the 600-attempt `checkf` (Q1: no Fatal). The slot door answers from the
+roster entry: the game binding passes the pawn's storage key (its replicated sim id, 0 until that has arrived, which answers
+"not yet" as the replicated slot property's absence did). At `Ready`, the channel is the client session's (`client.channel(simId)`); if the roster removed it between the
+gate and the bodies, the call stays `Pending`. A `checkf` compares the input provider's presence with the roster's local index,
+then the character registers, a local one gets the `Handed` callback, and the bindings mark the id registered.
+
+**The registered maps.** `m_registeredComponentsById` (the game component per id, both roles; the brawler's ring-out push reads
+it on the server through `getRegisteredComponentsById`) and `m_simChannelsById` (the channel per id) are written at `Ready` and
+erased by `forgetSimNetCharacter`.
+
+### 16.5 Unregistration: whichever comes first
+
+`unregisterFromNewFramework` is the pawn's `EndPlay` path; `unregisterCharacter` is the work, in today's order: the executor's
+notify (`⛔G-26`), `unregisterSimulatable` with the channel (both owners on the server, the prediction owner on a client; none
+for an id that never reached `Ready`), the channel's `Handed` callback cleared, `forgetSimNetCharacter` (`⛔G-13`), the game's
+`onUnregistered`, the latency member's forget, the backend's unregistration, and the `NewFramework: unregistered` line.
+`forgetSimNetCharacter` erases the two maps and the slot, then on the server removes the character (`removeCharacter`, reason
+`Left`: the roster Remove to every attached connection, the coordinator's `forgetOwner`, the channel's and the stager's
+destruction), and on a client marks the bindings unregistered.
+
+Two other paths run `unregisterCharacter` before the pawn's `EndPlay`, and each records the id in `m_simUnregisteredIds`, so
+the later `EndPlay` returns at its first statement (`⛔G-30`) and the line prints once:
+- **a client's roster Remove** of a registered id (`onSimNetRegisteredRemoved`, called by the client host inside og-sim-net's
+  Remove handling, before the channel is erased; P7's C-4);
+- **the lanes' stop** (`onSimNetLanesStopping`, from `beforeStop`): Unreal's map load shuts the world's net driver down before
+  it destroys the pawns and ends the world's play (the engine's LoadMap), and the lanes, with a client's channels, are destroyed
+  with the driver. So the stop unregisters every registered character while the channels and the endpoint still live, then
+  releases the server and its host and forgets the lanes.
+
+### 16.6 Teardown
+
+`endPlay`, after the backend's `onEndPlayBegin` (`⛔G-20`): `detachFromSimNetLanes` (a server's frame functions unbound; a
+client's registered ids marked unregistered in the bindings, its Remove handler cleared and the client session unbound),
+then (`⛔G-21`) the server and its host reset, the two maps and the slot map cleared and the unregistered-id set cleared (since
+og-input-latency task P5-9; the session dies with the world, so the set held nothing a later call reads), then the tier
+consumer's reset and the registry. A
+pawn that ends after the session finds no session in the registry and skips its unregistration, as before. The destructor
+calls `detachFromSimNetLanes` too, as a backstop for an owner destroyed without `EndPlay` (`⛔G-10`): it touches the lanes
+object only, never a `UObject`.
+
+### 16.7 What the switch kept, and what it changed on purpose
+
+- **The owner type** is og-sim-net's one channel, `UESimNetChannel<Simulatable>`, for both roles; `compositionContractsHold()`
+  asserts it against both sessions' `Channel`, and the `TimeConfig` re-send clamp against the relay codec's bound (that
+  assertion stood beside the input relay's spawn in the component binding before).
+- **The reception policy** is unchanged: the coordinator is the same class, over og-sim-net's `SimNetConnectionHandle`
+  (`NetConfig::Address`), with one RTT sample per bundle and the release per authority step.
+- **The latched floor is applied as received** (`UESimNetHost-guards.md` G-05): it pays for an increase, as today's post-bind
+  property arrival did, so the client's join keeps its `[RelayDelayFloor] floor = 6 ticks, UPWARD` stall line.
+- **The `[Roster.*]` lines** og-sim-net writes without a level token go out at `Warning` through the hosts (P5-4's F1).

@@ -255,8 +255,17 @@ block in the order the single table had before task 12. `RouteOGMessage`, `OG_LO
 
 **Which rows are og-simulation's** was decided by the emitters (og-tickdriver task 12): a row went to og-simulation when
 og-simulation alone emits its tag; its emitting files are listed in og-simulation's `SimulationLogRoutes-rationale.md`
-§5. `[SimNet.` and `[Roster.` are the exception: og-sim-net, built on og-simulation, emits them, and the Unreal host is planned
-to emit a `[SimNet.Host]` line; they sit in og-simulation's block so every og-sim-net host has them (that file's §5). The adapter's 14 rows are those a game's host also emits or alone emits (`[ResimProbe`, `[ServerReceive]` and
+§5. `[SimNet.` and `[Roster.` are the exception, kept by decision (og-input-latency P5-7, 2026-11-18): og-sim-net, built on
+og-simulation, emits both families, and this module emits both too. They sit in og-simulation's block so every og-sim-net host
+has them (that file's §5). This module's emitters:
+- `UESimulationSession.h` prints one `[Warning][SimNet.Host]` start-up line per process through `RouteOGMessage`;
+- `UESimulationSession.h` (a refused driver, a refused `SimTrafficImmediate`) and `UESimNetLanes.h` (a client's disconnect
+  after a refused roster) print `[SimNet.Host]` lines directly with `UE_LOG(LogOGNet, Error, ...)`, past the table;
+- `UESimulationSession.h` emits `[Roster.BindMismatch]` on a client, through `ueSimNetHost::routeLine` (`UESimNetHost.h`).
+  Both of that header's hosts log every og-sim-net line through `routeLine` too. `routeLine` puts `[Warning]` in front of a token-less
+  `[Roster.` line, so the line prints at `Warning` and the game's shipped `LogOGNet=Warning` does not filter it out.
+
+The adapter's 14 rows are those a game's host also emits or alone emits (`[ResimProbe`, `[ServerReceive]` and
 `[RelayProbe` are emitted by both), plus the four with no emitter. All 14 moved here from the first game's module
 unchanged in task 19 (Q5: the router stays one plain function and no game block exists); the table was renamed from
 `kOGGameLogRoutes` (Q4).

@@ -12,6 +12,5 @@ public class OGSimulationUnreal : ModuleRules
 		bUseUnity = false;
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Chaos", "Core", "PhysicsCore", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "OGSimulation", "OGNet", "OGNetUnreal", "OGSimulationNet" });
-		SetupIrisSupport(Target);
 	}
 }

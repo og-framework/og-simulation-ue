@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: isNetSyncBound -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
 # `UELatencyBudgetDiagnostics.h` — guards
 
 Prohibitions with a tagged site in `UELatencyBudgetDiagnostics.h`. Ids are opaque, stable, and retired rather than

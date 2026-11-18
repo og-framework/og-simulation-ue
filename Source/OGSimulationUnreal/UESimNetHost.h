@@ -4,8 +4,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/ChildConnection.h"
 #include "Engine/Engine.h"
 #include "Engine/NetConnection.h"
+#include "GameFramework/Actor.h"
 #include "HAL/PlatformTime.h"
 #include "OGNetUnreal/Core/SimLaneEndpoint.h"
 #include "OGNetUnreal/OGNetConnection.h"
@@ -16,24 +18,145 @@
 #include "OGSimNet/SimNetTransport.h"
 #include "OGSimulation/LatencyBudgetProbe.h"
 #include "OGSimulation/Network/SimTransport.h"
-#include "OGSimulationUnreal/UEConnectionHandle.h"
 #include "OGSimulationUnreal/UELatencyBudgetDiagnostics.h"
 #include "OGSimulationUnreal/UESimulationLogRoutes.h"
 #include "Runtime/Engine/Public/Net/NetPing.h"
 #include "Templates/Function.h"
 
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 
 template <typename TraitsT> class UESimulationSession;
 
 inline constexpr uint64 kSimNetWireMismatchToastKey = 0x4F47574DF0000001ull;
 inline constexpr float kSimNetWireMismatchToastSeconds = 15.f;
+inline constexpr char kSimNetRosterLinePrefix[] = "[Roster.";
+inline constexpr char kSimNetWarningToken[] = "[Warning]";
+inline constexpr size_t kSimNetWarnedRosterLineBytes = ogsimnet::kRosterLogLineBytes + sizeof(kSimNetWarningToken);
+
+OGSIMULATIONUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(LogOGRtt, Log, All);
+
+inline constexpr double kNoRttReadingMs = -1.0;
+inline constexpr double kNoRttReadingSeconds = -1.0;
+static_assert(kNoRttReadingMs < 0.0 && kNoRttReadingSeconds < 0.0,
+	"The no-reading RTT sentinels are negative: ServerReceptionCoordinator::noteRttSample skips rttMs < 0, and "
+	"NetworkTimeEstimator::updateRTT rejects and counts a negative sample, while 0 is a real 0 ms ping. Was "
+	"UEConnectionHandle.h's sentinel comment, moved here by og-input-latency task P5-9");
+
+inline UNetConnection* GetRootNetConnection(AActor* actor)
+{
+	if (actor == nullptr)
+	{
+		return nullptr;
+	}
+
+	UNetConnection* conn = actor->GetNetConnection();
+	while (conn != nullptr)
+	{
+		UChildConnection* childConn = conn->GetUChildConnection();
+		if (childConn == nullptr)
+		{
+			break;
+		}
+
+		UNetConnection* parent = childConn->GetParentConnection();
+		if (parent == nullptr)
+		{
+			break;
+		}
+
+		conn = parent;
+	}
+
+	return conn;
+}
+
+inline uint8 GetPlayerSlotForActor(AActor* actor)
+{
+	if (actor == nullptr)
+	{
+		return 0;
+	}
+
+	// ⛔G-06  docs/UESimNetHost-guards.md
+	const UNetConnection* conn = actor->GetNetConnection();
+	if (conn == nullptr)
+	{
+		return 0;
+	}
+
+	// ⛔G-07  docs/UESimNetHost-guards.md
+	const uint32 childId = conn->GetConnectionHandle().GetChildConnectionId();
+
+	// ⛔G-08  docs/UESimNetHost-guards.md
+	return static_cast<uint8>(childId > 255u ? 255u : childId);
+}
+
+inline double readRoundTripMs(UNetConnection* conn)
+{
+	auto warnOnce = [](const TCHAR* cause)
+	{
+		static bool bWarned = false;
+		if (bWarned)
+		{
+			return;
+		}
+		bWarned = true;
+		UE_LOG(LogOGRtt, Warning,
+			TEXT("[RttSample] SERVER tier RTT source unavailable (%s). No tier will be ")
+			TEXT("derived or published for this connection, so it stays on the default ")
+			TEXT("tier 0. One-shot warning."),
+			cause);
+	};
+
+	if (conn == nullptr)
+	{
+		return kNoRttReadingMs;
+	}
+
+	UE::Net::FNetPing* netPing = conn->GetNetPing();
+	if (netPing == nullptr)
+	{
+		warnOnce(TEXT("no FNetPing on the connection - check net.NetPingEnabled"));
+		return kNoRttReadingMs;
+	}
+
+	if (!EnumHasAnyFlags(netPing->GetPingTypes(), EPingType::RoundTrip))
+	{
+		warnOnce(TEXT("EPingType::RoundTrip not enabled - check net.NetPingTypes"));
+		return kNoRttReadingMs;
+	}
+
+	// ⛔G-09  docs/UESimNetHost-guards.md
+	const UE::Net::FPingValues pingVals = netPing->GetPingValues(EPingType::RoundTrip);
+	if (pingVals.Current < 0.0)
+	{
+		warnOnce(TEXT("EPingType::RoundTrip enabled but its accumulator is empty (no ack sampled yet)"));
+		return kNoRttReadingMs;
+	}
+
+	// ⛔G-10  docs/UESimNetHost-guards.md
+	return pingVals.Current * 1000.0;
+}
 
 namespace ueSimNetHost
 {
 inline void noteDelivered(ognetunreal::SimLaneEndpoint& endpoint, SimLane lane, double recvSeconds)
 {
 	endpoint.noteDelivered(static_cast<ognet::Lane>(lane), recvSeconds, FPlatformTime::Seconds());
+}
+
+inline void routeLine(const char* line)
+{
+	if (std::strncmp(line, kSimNetRosterLinePrefix, sizeof(kSimNetRosterLinePrefix) - 1u) != 0)
+	{
+		RouteOGMessage(line);
+		return;
+	}
+	char warned[kSimNetWarnedRosterLineBytes] = {};
+	std::snprintf(warned, sizeof(warned), "%s%s", kSimNetWarningToken, line);
+	RouteOGMessage(warned);
 }
 } // namespace ueSimNetHost
 
@@ -76,7 +199,7 @@ public:
 		return m_session != nullptr ? m_session->getServerReceptionTick() : 0;
 	}
 
-	void log(const char* line) { RouteOGMessage(line); }
+	void log(const char* line) { ueSimNetHost::routeLine(line); }
 
 	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds)
 	{
@@ -161,24 +284,19 @@ public:
 			m_session->onTimingInfoReceived(authorityTick, roundTripSeconds);
 	}
 
-	void onRelayFloor(uint8_t floorTicks, bool replayed)
+	void onRelayFloor(uint8_t floorTicks, [[maybe_unused]] bool replayed)
 	{
 		if (m_session == nullptr)
 			return;
-		if (replayed)
-			m_session->onRelayDelayFloorReplayed(floorTicks);
-		else
-			m_session->onRelayDelayFloorReceived(floorTicks);
+		// ⛔G-05  docs/UESimNetHost-guards.md
+		m_session->onRelayDelayFloorReceived(floorTicks);
 	}
 
-	void onConnectionTier(uint8_t oldTier, uint8_t newTier, bool replayed)
+	void onConnectionTier(uint8_t oldTier, uint8_t newTier, [[maybe_unused]] bool replayed)
 	{
 		if (m_session == nullptr)
 			return;
-		if (replayed)
-			m_session->onConnectionTierReplayed(newTier);
-		else
-			m_session->onConnectionTierReceived(oldTier, newTier);
+		m_session->onConnectionTierReceived(oldTier, newTier);
 	}
 
 	void onRosterAdded(uint8_t simId)
@@ -219,7 +337,7 @@ public:
 		}
 	}
 
-	void log(const char* line) { RouteOGMessage(line); }
+	void log(const char* line) { ueSimNetHost::routeLine(line); }
 
 	void stampClientReceived(ogsimnet::SimNetStream stream, uint8_t simId, uint32_t tick, double recvSeconds)
 	{

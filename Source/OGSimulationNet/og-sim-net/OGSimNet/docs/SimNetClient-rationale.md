@@ -159,10 +159,31 @@ In order:
 
 ## §8 The clock
 
-A clock tick goes through the `NewestTickFilter` (newest wins, as for corrections) and then to
-`onTimingInfo(tick, serverRttSeconds())`. The clock needs no roster: it is delivered whether or not a Snapshot has arrived,
-in both orders. Today's timing relay hands a tick to the client's listener whenever one exists and keeps none for later; the
-session's host always exists, so nothing is dropped for lack of a listener.
+A clock tick goes through the `NewestTickFilter` (newest wins, as for corrections). A tick the filter admits is only
+latched (`onClock`, G-09); after the inbox is drained, `drain()` hands the newest latched tick to
+`onTimingInfo(tick, serverRttSeconds())` once, so the host gets **at most one clock sample per drain** and a drain with no
+admitted tick calls nothing. `clocksDelivered` counts the host calls, `clocksCoalesced` the admitted ticks a newer one in the
+same drain replaced. The clock needs no roster: it is delivered whether or not a Snapshot has arrived, in both orders. Today's
+timing relay handed a tick to the client's listener whenever one existed and kept none for later; the session's host always
+exists, so nothing is dropped for lack of a listener. The latched tick is delivered after every other record of the drain,
+so a clock admitted before a `Disconnected` record or a roster refusal in the same drain reaches the host after it, and the
+host takes one sample from a connection that has closed (a clock message after a refusal is ignored, G-04, and never
+latched).
+
+**Why the coalesce, and why here** (og-input-latency task 27, scope (i)). The drain runs once per client frame, so this is
+one sample per frame. The server publishes one clock per server frame, and while a client's frames do not drain (at a join)
+the messages queue: og-input-latency's Ph3 gate run (task P5-25) counted 10 to 17 in a client's first drain, as many as
+the client's first step batch. Delivered one by one, each
+was an `updateRTT` with the same `serverRttSeconds()` reading plus a `recordAuthorityTick`. The replicated timing relay this
+replaced coalesced to its latest value, so its first frame carried one sample. The coalesce lives in the session, not in a
+host, so every host (the Unreal one, `UESimNetClientHost::onTimingInfo`, and a later Godot one) gets it, and the scripted
+tests can count it.
+
+⚠ **It is hygiene, not the Ph3 landing fix.** Read from that run's logs in its review: every first-frame sample carried a
+smoothed RTT of 0 and the floor offset, so the newest sample gives the same target as the last of the sixteen. The landing above
+target comes from the hard resync's frame running its remaining catch-up steps past the target, which the clock's one-shot
+re-centre (`TimeConfig::recentreSettleSamples`) corrects. What the coalesce does change is the estimator's sample count, which
+the re-centre's settle window counts: sixteen identical readings would have counted as sixteen samples.
 
 ## §9 The floor and the tier
 
@@ -247,8 +268,10 @@ Every 10 s of the host's `nowSeconds`, checked at the end of `flushFrame`:
 recording endpoint; the others run P2-10's server session and the client sessions over og-net's `VirtualNetwork`.
 
 - **Arrival order:** scripted, and over og-net with a tee on the client's inbox that records each record as the session drains
-  it: corrections and rings reach the bound callbacks, and clock ticks the host, in arrival order; the
-  `[ReceiveCorrectionState]` lines equal today's format string.
+  it: corrections and rings reach the bound callbacks in arrival order, and the host gets the newest clock tick of each
+  drain; the `[ReceiveCorrectionState]` lines equal today's format string.
+- **The clock coalesce (G-09):** five clock messages queued before one drain reach the host as one call with the newest tick
+  (`clocksDelivered` 1, `clocksCoalesced` 4); a drain with none calls nothing; the next drain delivers its own newest.
 - **Stale corrections:** a scripted reorder and duplicate (ticks 10, 12, 11, 12, 13, 9, 14 deliver 10, 12, 13, 14), and over
   og-net with the emulator's 30 % duplicates and 0–40 ms reordering lag on the client's inbound side: every injected tick is
   newer than the last, the deliveries equal a newest-wins pass over the recorded arrivals, and some arrivals were stale.

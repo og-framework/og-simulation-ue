@@ -95,6 +95,17 @@ the consequence of ignoring it.
 - **What breaks if it moves:** nothing in a checked build, where the `OG_CHECK` stops first. The case that reaches it is the
   poison arm that keeps a removed channel (rationale §12).
 
+## G-09 — `onClock` only latches the tick; the drain delivers the newest one
+
+- **Site:** the `m_pendingClock = tick;` in `onClock`.
+- **Prohibition:** do not call `onTimingInfo` from `onClock`, and do not deliver more than one clock tick per drain.
+- **Consequence:** every clock message queued since the last drain becomes its own RTT sample and authority tick. At a join
+  that is 10 to 17 samples in one frame, all with the same RTT reading (og-input-latency's Ph3 gate run, task P5-25),
+  so one reading fills the estimator's sample count, and the clock's re-centre window (`TimeConfig::recentreSettleSamples`)
+  fills that many samples early.
+- **What breaks if it moves:** `SimNetClient.QueuedClockTicksReachTheHostAsTheNewestOnePerDrain` fails at
+  `REQUIRE(s.host.timing.size() == 1u)` with `16 == 1`: one host call per queued tick where one is expected.
+
 ---
 
 ## §R Retired ids

@@ -1,8 +1,29 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: UEConnectionHandle.h -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
+<!-- lint-external-ref: PreReplication -- Unreal Engine replication hook name, outside every scan root -->
+<!-- lint-external-ref: noteStageOverflowDrop -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
+<!-- lint-external-ref: ISimulatableOwnerBinding -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: InputRedundancyBundleBuilder.h -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: ServerReceiveRemoteMove -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: SimulatableNetSync -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: SimulatableNetSyncComponent-rationale.md -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: USimulatableNetSyncComponent -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: attachInputRelayHost -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: bindNetSync -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: getInputRelayHost -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: isNetSyncBound -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: makeRingFlushedCallback -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: noteRelayedRingArrived -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: onCorrectionStateAccepted -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: onRelayedInputRingArrived -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: receiveRemoteMoveBundle -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: relayStagingTarget -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: simulationKey -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: unbindNetSync -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: UESimulationSession::relayRemoteInput -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
 <!-- ================= DECLARED LINT ESCAPES ==================================
      Every token below is CORRECT and cannot resolve. ========================= -->
 <!-- lint-external-ref: UE_LOG -- Unreal Engine macro, outside every scan root -->
-<!-- lint-external-ref: PostLogin -- Unreal Engine method, outside every scan root; moved here with the spawn-order account (task 29) -->
 # `UESimulatableOwnerBinding.h` — rationale
 
 Companion to `Plugins/OGSimulation/Source/OGSimulationUnreal/UESimulatableOwnerBinding.h`. The header carries only code,
@@ -13,20 +34,29 @@ assertion messages, log strings, the docs pointer and one-line tags `⛔G-nn` �
 > (2026-10-21) with the non-template base only; task 21 (2026-10-21) added the CRTP template and moved the typed half of
 > the brawler's component into it, with its narrative (§3–§6, from the game component's rationale, made game-neutral).
 
-* **§1** is the non-template base, `ISimulatableOwnerBinding`.
+**Since og-input-latency task P5-8 the binding is the registration skeleton and nothing else** (§10). Its net half — the
+non-template interface the net-sync component called through, the owner-concept surface, the RPC tail, the stamp blocks,
+the two per-packet lines and the staging write — had no caller since task P5-7 moved every sim payload to og-net, and P5-8
+deleted it together with the net-sync component. §1 and §3–§6 are kept as the history of that half.
+
+* **§1** is the non-template base, `ISimulatableOwnerBinding` (history: deleted by P5-8).
 * **§2** is the template: its shape, its members, the key hook and the checks the compiler makes.
-* **§3** is the RPC tail: primitives in, policy out.
-* **§4** is the five latency-budget stamp blocks.
-* **§5** is the two per-packet log lines.
-* **§6** is the staging write.
+* **§3** is the RPC tail: primitives in, policy out (history: retired by P5-7, deleted by P5-8).
+* **§4** is the five latency-budget stamp blocks (history: deleted by P5-8).
+* **§5** is the two per-packet log lines (history: deleted by P5-8).
+* **§6** is the staging write (history: deleted by P5-8).
 * **§7** is how it is built and what that does to the code.
 * **§8** is the provenance.
 * **§9** is the registration skeleton (task 29): the two polling loops, the four registration hooks, the attempt budget,
   provider presence, the spawn order, the provider latch and the delivery route.
+* **§10** is the deletion of the net half (og-input-latency task P5-8).
 
 ---
 
 ## §1 `ISimulatableOwnerBinding` — the one way the wire component reaches the game
+
+> **History.** og-input-latency task P5-8 deleted this base with the net-sync component that called through it (§10). The
+> text below describes it as it stood until then.
 
 `USimulatableNetSyncComponent` (`SimulatableNetSyncComponent-rationale.md`) owns a character's reflected wire surface
 and must stay free of game types. It reaches the typed game side only through this base, held as a pointer that the
@@ -39,7 +69,7 @@ a non-template base; this is the same shape as the relay host's listener interfa
 |---|---|---|
 | `simulationKey` | the tier send's `check` and `[ConnectionTier]` line, and the owner-skip lines | the game's storage key, through the game's key hook |
 | `onCorrectionStateAccepted` | `OnRep_CorrectionState`, after the wire-format fence, before the core's callback | the typed read of the correction state, `[ReceiveCorrectionState]`, and the `ClientReceived` stamp with the `H6L` heal by correction (§4) |
-| `receiveRemoteMoveBundle` | `ServerReceiveRemoteMove_Implementation`, after its fences | the typed RPC tail: reception, delay, delivery (§3) |
+| `receiveRemoteMoveBundle` | `ServerReceiveRemoteMove_Implementation`, after its fences | the typed RPC tail (§3); since og-input-latency task P5-7 a one-shot `Warning` and nothing else, because inputs arrive on og-net |
 | `noteRelayedRingArrived` | `onRelayedInputRingArrived`, after the owner-skip check, before the core's callback | the probe's `ClientReceived` stamps for a relayed ring |
 | `makeRingFlushedCallback` | `attachInputRelayHost`, on the authority only | the callback the relay host calls after a flush that published entries (the probe's `Handed` stamps) |
 
@@ -66,55 +96,54 @@ here). Task 21's first step built exactly
 this, with the template empty, in the Jolt Editor (header tool and build), the Chaos Editor and the Development Game and
 Server targets before anything moved into it (§8).
 
-**What it supplies.** The template derives from `ISimulatableOwnerBinding`, so the sibling reaches it through §1's five
-calls, and it is the whole owner-concept surface the core expects of the game component (`OwnerT` stays the core's
-owner type; the core's `SimulatableOwnerTraits` names the game component, not the binding):
+**What it supplies** (since og-input-latency task P5-8): the registration skeleton of §9, and a protected,
+non-virtual destructor. The binding has no public member and no virtual member, and it is not the core's owner of the
+character: the core's `SimulatableOwnerTraits` names the character's og-sim-net channel for both roles since task P5-7.
 
 | part | members |
 |---|---|
-| the five interface members | `simulationKey`, `onCorrectionStateAccepted`, `receiveRemoteMoveBundle`, `noteRelayedRingArrived`, `makeRingFlushedCallback`: **private `final`** overrides |
-| the owner-concept aliases | `SyncedCorrectionBufferType` (`FSimulationStateSyncBuffer`) and `RelayedInputRingType` (`FRelayedInputRing`); the core's `PredictionSyncedBufferOwnerConcept` reads them as `OwnerT::` names |
-| the type-free forwarders | the correction-state callback pair, both `getSyncedCorrectionStateBuffer` overloads, both `getRelayedInputRing` overloads, the relayed-ring callback pair, `attachInputRelayHost`: one-liners onto the sibling |
-| the typed owner-concept members | `sendLocalInputToAuthority` (builds the redundancy bundle, hands it to the sibling's `sendInputBundleToAuthority`, stamps), the remote-move callback pair and its member, `deliverDelayedRemoteInput`, `stageRelayedInput` (§6) |
-| the sibling pointer | `m_netSync`, set by `bindNetSync` (public: the owning actor calls it) and cleared by `unbindNetSync` (protected: the component's teardown calls it); the protected `netSync()` accessor `checkf`s that the pointer is set; the public `isNetSyncBound()` says whether it is |
-| the registration skeleton (task 29, §9) | the protected `beginRegistration()` (the game component's `BeginPlay` calls it); the private loops `tryInitializeWithManager` and `tryRegisterWithNewFramework`, their next-tick reschedulers, the two attempt counters and `kMaxRegistrationAttempts`; the game supplies four private hooks |
+| the registration skeleton (task 29, §9) | the protected `beginRegistration()` (the game component's `BeginPlay` calls it); the private loops `tryInitializeWithManager` and `tryRegisterWithNewFramework`, their next-tick reschedulers, the two attempt counters and `kMaxRegistrationAttempts`; the game supplies four private hooks and the key hook |
+| the destructor | protected and non-virtual: the game component is a `UObject`, destroyed as itself by the engine, and nothing holds it through the binding |
 
-The `const` buffer and ring getters reach the sibling's `const` overloads through a `const` view of the sibling. (Task
-20a's `const` buffer forwarder called the sibling's non-`const` overload; the buffer is the same object, so only the
-overload changed.)
+Until P5-8 it also derived from `ISimulatableOwnerBinding` (§1) and was the whole owner-concept surface the core expected of
+the game component: the five interface overrides, the owner-concept aliases, the forwarders onto the net-sync sibling, the
+typed owner-concept members, the sibling pointer, the five stamp blocks and the stage (§10 lists them).
 
-**The key hook, and why every override is `final` (review B-2, ruling Q-F).** `simulationKey()` returns the game
-component's `storageKeyOfOwner()`, a hook with its **own** name. If the game's hook were also called `simulationKey()`,
-with the same signature, it would *override* the interface member instead of serving it: the binding's override would be
-dead, and with the hook deleted the binding's own inherited override would satisfy every lookup and recurse. With the
-overrides `final`, a game member named like an interface member is a compile error (`C3248`), never a silent override.
+**The key hook (review B-2, ruling Q-F).** The game component's `storageKeyOfOwner()` returns its storage key; loop two's
+session-owner `checkf` names the owner by it. Until P5-8 the interface's `simulationKey()` override returned it, and every
+override was `final`, so a game member named like an interface member was a compile error (`C3248`) rather than a silent
+override; with the interface gone the binding has nothing a game member could override.
 
 **The hook check is an inline requires-expression in a binding member body.** The hooks are private members of the game
 component, which declares its binding specialization a friend. Access
 in a requires-expression is checked in the context where it appears, so a namespace-scope `concept` cannot see a private
-hook; the check is a `static_assert` of a requires-expression inside `simulationKey()`'s body, which the friendship
-covers, and it fires when that body is instantiated. Its message names the hook and the ruling. A game component
-without the hook fails there with that message, ahead of the plain lookup error.
+hook; the check is a `static_assert` of a requires-expression inside `tryRegisterWithNewFramework`'s body (inside
+`simulationKey()`'s until P5-8), which the friendship covers, and it fires when that body is instantiated. Its message names
+the hook, the ruling and the site it moved from. A game component without the hook fails there with that message, ahead of
+the plain lookup error.
 
 **The traits** are constrained by the concept `UESimulatableOwnerBindingTraits`: the types the template names
 (`Simulatable`, `PlayerInput`, `State`, `SessionOwner`). `OwnerT` is incomplete where the base list instantiates the
 class, so nothing about it is checked there: every member that reaches into `OwnerT` does so in a function body, through
-`derived()` (a `static_cast` to `OwnerT&`).
+`derived()` (a `static_cast` to `OwnerT&`). (Since P5-8 the binding itself names neither `PlayerInput`
+nor `State`; the concept still requires both.)
 
-**The session owner.** The RPC tail reaches the authority's session owner through `TraitsT::SessionOwner::instanceFor`,
-and from its session (`session()`) the reception coordinator (`getReceptionCoordinator`) and the server reception tick
-(`getServerReceptionTick`), and it hands that session to the coordinator as both sinks; the coordinator's type is
-deduced. Until og-ue-simulationcomponentandmanagersplit task 26a the three were the owner's, as the game component had them on its own manager type. The
-stamp blocks reach the latency member through `UELatencyBudgetDiagnostics<TraitsT>::withInstance`.
-
-**`isNetSyncBound()`, and the diagnostics loop.** The latency template's server loop reads each delayed-input
-component's correction buffer through the `const` getter, which dereferences the sibling pointer. It skips a component
-whose binding is not bound (`UELatencyBudgetDiagnostics-guards.md` G-03). The component's own teardown uses the same
-query before it detaches the relay host through `netSync()`.
+**The session owner.** The registration skeleton reaches the session owner of its world's role through
+`TraitsT::SessionOwner::instanceFor`, and from it the session (`session()`). Until og-input-latency task P5-7 the RPC tail
+reached the authority's session the same way for the reception coordinator, the server reception tick and the two sinks
+(§3), and until P5-8 the stamp blocks reached the latency member through `UELatencyBudgetDiagnostics<TraitsT>::withInstance`
+(§4).
 
 ---
 
 ## §3 The RPC tail — primitives in, policy out
+
+> **Retired by og-input-latency task P5-7.** Inputs reach the server on og-net's SimInput lane, where og-sim-net's server
+> runs the same core calls (one `noteRttSample` per bundle, then `receiveInputBundle`) with the og-net connection and the
+> roster's local index (`SimNetServer-rationale.md`). The net-sync RPC has no caller (the core's input sender is the
+> character's og-sim-net channel), so `receiveRemoteMoveBundle` logs a one-shot `[ServerReceive]` `Warning` if a bundle
+> arrives on it anyway and returned; its guards G-02 … G-06 are retired. The text below is the tail as it stood until P5-7;
+> P5-8 deleted the function with the binding's net half (§10).
 
 `ServerReceiveRemoteMove` is a thin transport adapter. The RPC is declared on `USimulatableNetSyncComponent`, which runs
 its wire-format fences and then calls `receiveRemoteMoveBundle` here. Everything below the fence is engine-primitive
@@ -161,6 +190,10 @@ code owns that pairing (the brawler: its component's and manager's rationale).
 
 ## §4 The latency-budget stamps
 
+> **History.** og-input-latency task P5-8 deleted all five blocks with the binding's net half (§10). Since task P5-7 the
+> Unreal sim-net hosts stamp these points (`UESimNetHost.h`: `stampHanded`, `stampServerReceived`, `stampClientReceived`).
+> The text below describes the blocks as they stood until P5-8.
+
 Five blocks in this header stamp the latency-budget probe. Each is a timestamp and nothing else: it reads values the
 code beside it already has, writes only the probe, and changes no input, no wire byte and no ordering of the netcode it
 sits next to. The template's own stamp points, their threads and errors are `UELatencyBudgetDiagnostics-rationale.md`
@@ -169,7 +202,7 @@ sits next to. The template's own stamp points, their threads and errors are `UEL
 | member | stamp | role |
 |---|---|---|
 | `sendLocalInputToAuthority`, after the send | `Handed` for every capture tick in the bundle | client |
-| `receiveRemoteMoveBundle`, which the sibling's RPC calls after its fences | `ServerReceived` for every capture tick in the bundle, and one `WIRE` sample from `readRoundTripMs` per bundle when there is a root connection | authority |
+| `receiveRemoteMoveBundle`, which the sibling's RPC calls after its fences | none since og-input-latency task P5-7 (it was `ServerReceived` for every capture tick in the bundle, and one `WIRE` sample per bundle when there was a root connection; the server host stamps both since) | authority |
 | `onCorrectionStateAccepted`, which the sibling's `OnRep_CorrectionState` calls; after the `[ReceiveCorrectionState]` line | `ClientReceived` for the correction's tick, and `Healed` for the character's pending relayed captures the correction contains, both through `UELatencyBudgetDiagnostics::stampCorrectionReceived` (og-input-latency task 6) | client |
 | `noteRelayedRingArrived`, which the sibling's `onRelayedInputRingArrived` calls after the owner-skip check, before the core callback | `ClientReceived` for every capture tick in the ring other than the `kNoInputCaptureTick` sentinel | client |
 | the callback `makeRingFlushedCallback` returns, which the sibling's `attachInputRelayHost` binds as the relay host's flush callback, authority only | `Handed` for every capture tick a flush published, other than the sentinel | authority |
@@ -193,11 +226,16 @@ the tier's sample; this is a separate one, also once per bundle).
 
 ## §5 The two per-packet log lines
 
+> **History.** og-input-latency task P5-8 deleted both emitters with the binding's net half (§10). Since task P5-7 a
+> client's `[ReceiveCorrectionState] id=%u tick=%u` is og-sim-net's client session's line (`SimNetClient.h`), with the same
+> text. The text below describes the two lines as they stood here until P5-8.
+
 Two lines in this header are logged with `OG_LOG_ROUTED`, not with `UE_LOG` at a fixed level:
 
 * `[ReceiveCorrectionState] id=%u tick=%u` in `onCorrectionStateAccepted` (client, one per accepted correction);
-* `[ServerReceive] id=%u tick=%u` on the no-wire path of `receiveRemoteMoveBundle` (G-04; authority, one per bundle
-  slot).
+* `[ServerReceive] id=%u tick=%u` on the no-wire path of `receiveRemoteMoveBundle` (authority, one per bundle slot), until
+  og-input-latency task P5-7; since then that function writes one `[ServerReceive] id=%u: …` `Warning` at most, with
+  `UE_LOG`.
 
 Their level is their row's `plainLevel` in `kOGLogRoutes` (`UESimulationLogRoutes.h`): `Verbose` for both, so
 `LogOGNet=Log` does not print them and `LogOGNet=Verbose` does. The rule and the table are
@@ -207,6 +245,10 @@ coordinator's per-slot loop logs it through its logger and the router, so a log 
 ---
 
 ## §6 The staging write — `stageRelayedInput`
+
+> **History.** og-input-latency task P5-8 deleted the function and its guard G-01 (§10). Since task P5-7 og-sim-net's
+> server stages each character's relays in a per-character `RelayRingStager`, which counts a stage overflow as
+> `stageOverflowDrops=` on its `[RelayFlush]` line. The text below describes the write as it stood until P5-8.
 
 The session's relay tap (`UESimulationSession::relayRemoteInput`, the session owner's until og-ue-simulationcomponentandmanagersplit task 26a) calls `stageRelayedInput` on the
 character's component. It takes the host and the staging target from the sibling (`getInputRelayHost`,
@@ -233,25 +275,30 @@ the much louder fault that no host exists at all.
 **Header-only, instantiated by the game.** The template's out-of-line members are defined in this header between an
 `OGSIM_OPTIMIZE_OFF`/`ON` pair and are instantiated only in the game module (the one-module rule: no plugin object code
 instantiates them). The brawler declares its one specialization with an explicit instantiation declaration in its component's header
-and defines it once, with an explicit instantiation definition, in the component's `.cpp`, so the virtual members are compiled in that
-one translation unit, where the session owner's type is complete, and in no other that includes the component's header
-(its generated reflection code among them). The in-class one-liners are inline and compile wherever they are used.
+and defines it once, with an explicit instantiation definition, in the component's `.cpp`, so the out-of-line members are compiled in
+that one translation unit, where the session owner's type is complete, and in no other that includes the component's header
+(its generated reflection code among them). Until og-input-latency task P5-8 those members included the interface's five
+virtual overrides, and the in-class one-liners (the forwarders) compiled wherever they were used; the template has neither
+since.
 
 **Optimization (og-ue-simulationcomponentandmanagersplit lead ruling F1).** MSVC compiles a template instantiation with
 the `#pragma optimize` state in force at the end of the instantiating translation unit, and every game `.cpp` ends with
 `OGSIM_OPTIMIZE_ON`; so the out-of-line members compile optimized in Development, although the pair is there. The pair
 documents intent. Task 21's notes list the functions whose Development state moved from unoptimized to optimized.
 
-**Includes.** The template needs the sibling, the redundancy bundle builder, the relay host (`noteStageOverflowDrop`,
-and since task 29 its spawn and find), the connection helpers, the latency template, the log routes and og-sim's queue and
-codec headers; since task 29 also the engine's timer manager (the next-tick reschedules) and the session's header, for
-`TryRegisterStatus`, the namespace-scope enum the skeleton tests the session's answer against (a non-dependent name,
-so it must be declared where the template is defined). The sibling's own header forward-declares the base; the sibling's
-`.cpp` includes this header for the base's complete type, and so since task 29 also compiles the session's header. That
-adds no plugin object code: no template member is instantiated there (the one-module proof), and the three og-sim inline
-variables whose initializers that translation unit now also carries (`simlog::g_sink`,
-`simulationLog::detail::t_integrateScope`, `correctionFieldDiff::g_enabledPredicate`) were already in the plugin through
-the latency template's and the session's own `.cpp`, one definition each.
+**Includes** (since og-input-latency task P5-8). The template needs the engine's timer manager (the next-tick
+reschedules), the latency template (the `InputProvider` type loop two hands the session), the log routes (`LogOGMgmt`, the
+category of loop two's lines), the session's header, for `TryRegisterStatus`, the namespace-scope enum the skeleton tests
+the session's answer against (a non-dependent name, so it must be declared where the template is defined), and og-sim's
+compiler-control header for the optimize pair.
+
+Until P5-8 it also included the sibling, the redundancy bundle builder, the relay host (`noteStageOverflowDrop`, and from
+task 29 to P5-7 its spawn and find), the connection helpers, the input relay's ring and og-sim's queue and codec headers,
+for the net half. The sibling's `.cpp` included this header for the base's complete type, and so from task 29 on it also
+compiled the session's header; that added no plugin object code, because no template member was instantiated there and the
+three og-sim inline variables it carried (`simlog::g_sink`, `simulationLog::detail::t_integrateScope`,
+`correctionFieldDiff::g_enabledPredicate`) were already in the plugin through the latency template's and the session's own
+`.cpp`. With the sibling deleted, no plugin translation unit includes this header.
 
 ---
 
@@ -301,9 +348,8 @@ tryInitializeWithManager         until the session owner exists (TraitsT::Sessio
 tryRegisterWithNewFramework      until the session owner exists; then the hook resolveRegistrationKey(owner of the
                                  session, isAuthority): ready(storage key), retry() or abandon(); the local-prediction
                                  test; makeInputProvider(key) for a locally predicted owner only; makeSimulatable(); the
-                                 session's tryRegister, again next frame while it answers Pending; then the provider
-                                 latch on the sibling, the relay host's spawn (authority) or find (client), the delivery
-                                 route (authority) and the `NewFramework: registered` line
+                                 session's tryRegister, again next frame while it answers Pending, and an Error and
+                                 the end on Refused; then the `NewFramework: registered` line
 ```
 
 **The four hooks** are private members of the game component, which declares its binding specialization a friend
@@ -326,14 +372,13 @@ statement is a `static_assert` over the hooks it calls, with their parameter and
 cannot see private hooks. Deleting a hook fails there, with the message naming the hooks and the ruling (task 29 saw both
 fail: `makeSimulatable` deleted, and `initializeWithManager` deleted, `C2338` each).
 
-**No hook shares a name with an interface member.** The interface's five members are the binding's `final` overrides,
-so a game member with an interface member's name and signature is a compile error (`C3248`; task 29 saw it for
-`simulationKey()` and `onCorrectionStateAccepted()`). A same-named member with another signature would only hide the
-interface member in the game class, which the sibling never calls through; the four hook names are unlike all five, so
-neither case arises.
+**Hook names.** Until og-input-latency task P5-8 the interface's five members were the binding's `final` overrides, so a
+game member with an interface member's name and signature was a compile error (`C3248`; task 29 saw it for
+`simulationKey()` and `onCorrectionStateAccepted()`), and the four hook names were chosen unlike all five. Since P5-8 the
+binding declares no virtual member, so no game member can override one of its members.
 
-**Which session door the skeleton calls.** The session's own: `regManager->session().tryRegister(key, …)` and
-`regManager->session().noteDelayedInputComponent(key, derived())`, with the storage key the hook resolved. The brawler's
+**Which session door the skeleton calls.** The session's own: `regManager->session().tryRegister(key, …)`, with the storage
+key the hook resolved (and, until og-input-latency task P5-7, the session's delivery-route registration after it). The brawler's
 session owner keeps its two wrappers that take the game's character id (task 28); the skeleton does not use them, because
 a generic skeleton has no game id type. The wrapper's one extra statement, a `checkf` that the id is not the null id,
 guarded a condition the hook's `retry()` already excludes on this path.
@@ -353,9 +398,10 @@ shipped phrase "the manager logs", the session owner owning that host.
 
 **Loop two** waits for the session owner, then for the game's key (`retry()`), then for the character's bodies to become
 resolvable — the session's `tryRegister` answers `Pending` until it has created them and the physics adapter resolves
-every one — and on success does four things in a deliberate order: register with the core, latch the provider decision
-(§9.5), spawn or find the relay host (§9.5), and, on the authority only, register the id → component delivery route
-(§9.6). Then it logs `NewFramework: registered`.
+every one — and on success logs `NewFramework: registered`. On a client the game's key hook also waits for the character's
+og-sim-net roster entry (the session's `clientBindStep`, since og-input-latency task P5-7). A `Refused` (og-sim-net's server
+refused the character) ends loop two with an `Error`. Until P5-7, success also latched the provider decision on the sibling,
+spawned or found the relay host and registered the delivery route (§9.5, §9.6).
 
 Every step of both loops can legitimately answer "not yet", repeatedly, and "not yet" is never an error. Only exhausting
 `kMaxRegistrationAttempts` is. A game's `abandon()` is not "not yet": it ends loop two for good, with nothing logged by
@@ -392,45 +438,21 @@ The skeleton asks the game for a provider (`makeInputProvider`) only inside `if 
 it for the latency stamps (`UELatencyBudgetDiagnostics::wrapInputProvider`) and keeps it in the pending record until
 the registration completes.
 
-### 9.5 The spawn ordering, and the provider latch
+### 9.5 The spawn ordering, and the provider latch (retired by og-input-latency task P5-7)
 
-**The relay host is spawned on the authority at the moment registration completes, above the delivery-route
-registration, and that order is load-bearing** (G-10). `noteDelayedInputComponent` is what lets the session's
-`relayRemoteInput` find this component at all; if the host were not linked by then, the first relay writes would stage
-into the sibling's no-host fallback, invisible to every client and with nothing logged. Spawning first closes that window
-by construction rather than by timing. A client finds its host (`findForOwner`) and attaches it; a host that has not
-replicated yet is found as null, which the sibling's `attachInputRelayHost` ignores, and the session's
-`onInputRelayHostReady` attaches it to the sibling when it arrives (`SimulatableNetSyncComponent-rationale.md` §10).
+Until P5-7 the authority spawned the character's input relay host at the moment registration completed, before it
+registered the delivery route (guard G-10), handed the host the session's re-send count, and a client found its host; then
+the skeleton latched its provider decision on the sibling. Since P5-7 og-sim-net's server stages and sends each character's
+relays itself, reading the re-send count from `TimeConfig` at every flush, so there is no host to spawn, find or attach, and
+the sibling's owner-skip check, which the latch fed, has no input traffic to skip. The assertion that kept the knob's clamp
+equal to the codec's re-send bound moved to the session (`compositionContractsHold`).
 
-**The re-send count (og-input-latency task 8).** Between the spawn and the attach, the authority hands the relay host
-the session's `TimeConfig::relayResendEntries`, through `ASimulationInputRelay::setRelayResendEntries`, read from the
-session's `getTimeConfigPtr` (null before the manager is built, in which case the host keeps its default of 0). The host
-passes it to every flush (`RelayedInputRingCodec-rationale.md` §15). It is set here, once, because this is the only
-place the authority creates the host, and the session reads the knob's ini key at start-up, before any character
-registers. A `static_assert` beside the call holds the knob's clamp maximum (`latencyKnobs::kMaxRelayResendEntries`)
-equal to the codec's `relayedInputRing::kMaxResendEntries`. A client never sets it: a client's host never flushes.
+### 9.6 The delivery route (retired by og-input-latency task P5-7)
 
-This is also why the host is not spawned on demand from the write path, the way the connection relay is: that actor
-has no always-reached creation point earlier than its first write, and `PostLogin` misses seamless travel. This one
-does. The teardown has a synchronous signal for the same reason, the character ending play; who destroys and who unbinds
-is the sibling's §10.
-
-**The provider latch.** Once the session answers `Ready`, the skeleton writes its provider decision to the sibling
-(`netSync().setHasLocalInputProvider(isLocallyPredicted)`), and the sibling's owner-skip check reads it
-(`SimulatableNetSyncComponent-guards.md` G-15). The decision is the same evaluation the core registered with, written
-once per completed registration and never on a `Pending` attempt.
-
-### 9.6 The delivery route
-
-The id → component route that the session's `deliverRemoteInput` (the core's malformed-slot path and the release drain)
-and `relayRemoteInput` (the staging write) resolve against is registered once, at registration time
-(`noteDelayedInputComponent`, G-11), paired with the erase in the session's `unregisterFromNewFramework` (its
-`forgetReceptionOwner`) — not per parked slot inside the receive loop — so it exists for the whole registered lifetime
-of the component. **Authority only:** the reception coordinator, the delay queue and the drain exist only on the authority
-(the session's `beginPlay` begins the coordinator in its authority branch), and the core wires the inbound delivery
-callback only at registration, so the route and its target come up together. The erase side is a pair as well: the
-session drops the coordinator's claim through `ServerReceptionCoordinator::forgetOwner` at the same moment. A game may read
-the same map (`getDelayedInputComponentsById`) as its list of registered characters.
+Until P5-7 the skeleton registered the id → component route the session's two sinks resolved against, once, on the authority
+(guard G-11). og-sim-net's server is both sinks since, and delivers through the character's channel; the session's
+`tryRegister` records the registered component itself, for both roles, in the map a game may read as its list of registered
+characters (`getRegisteredComponentsById`).
 
 ### 9.7 Equivalence (task 29)
 
@@ -443,3 +465,28 @@ loop two's key wait (it names the hook's answer, not the brawler's id). **Optimi
 bodies are template members, so they compile optimized in Development, as §7 says; none does floating-point arithmetic
 (task 29's notes list the functions and their disassembly reading). The hook bodies stay non-template members of the
 component and keep its file's optimization state.
+
+---
+
+## §10 The net half deleted (og-input-latency task P5-8, 2026-11-18)
+
+**What was deleted.** From this header: `ISimulatableOwnerBinding` with its five private pure virtuals, its friend and its
+destructor `static_assert` (§1); the five `final` overrides, `simulationKey`, `onCorrectionStateAccepted`,
+`receiveRemoteMoveBundle`, `noteRelayedRingArrived` and `makeRingFlushedCallback` (§3–§5); the owner-concept aliases
+`SyncedCorrectionBufferType` and `RelayedInputRingType`; the forwarders (the correction-state and relayed-ring callback
+pairs, both buffer getters, both ring getters, `attachInputRelayHost`); `sendLocalInputToAuthority`, the remote-move
+callback pair, its member and `deliverDelayedRemoteInput`; `stageRelayedInput` and its signature `static_assert` (§6,
+guard G-01); the sibling pointer with `bindNetSync`, `unbindNetSync`, `netSync()` and `isNetSyncBound()`; and the includes
+only they needed. In the same task the sibling, `USimulatableNetSyncComponent`, and `InputRedundancyBundleBuilder.h` were
+deleted, and the brawler's pawn lost its `SimulatableNetSync` subobject and the bind in its `PostInitializeComponents`.
+
+**Why it was unreachable.** Since task P5-7 the core's owner of a character, on both roles, is the character's og-sim-net
+channel (`UESimNetChannel`, `UESimNetLanes.h`), so the core called none of the forwarders or typed members. The sibling's
+correction property was never written and its input RPC never called, so none of the five overrides ran: P5-7's
+`receiveRemoteMoveBundle` was a one-shot `Warning` that never printed. The two lines and the stamps of §4 and §5 are
+og-sim-net's client and the Unreal sim-net hosts' since P5-7 (§4, §5), and the stage is og-sim-net's server's (§6).
+
+**What stays, and what moved.** The registration skeleton (§9) is unchanged statement for statement. The key hook's
+`static_assert` moved from `simulationKey()`'s body to `tryRegisterWithNewFramework`'s, with its message re-worded for its
+new site; the loops' two hook `static_assert` messages lost the clause about interface member names, which no longer has
+a referent. No log line, no `checkf` text and no registration step changed.
