@@ -50,27 +50,6 @@ harness session would show it.
 **What breaks if the tag moves.** Nothing mechanical; the two-phase shape is rationale §2. (Added by task 19a, from
 the design review's finding that a single per-call hook would not be statement-exact.)
 
-## G-03 — the server loop skips a component whose binding is not bound
-
-**Site:** `if (!component->isNetSyncBound()) continue;` in `tick_GameThread`'s server loop, the statement after the
-null check on the weak pointer.
-
-**The prohibition.** ⛔ Keep this skip, and keep it before the correction-buffer read. Do not fold it into a getter
-that returns some other buffer, and do not replace it by erasing the map entry from this class: the map is the session's
-own production state (the session owner's until og-ue-simulationcomponentandmanagersplit task 26a), which this class
-reads through a const reference only (rationale §4).
-
-**The consequence.** A game component's `const` `getSyncedCorrectionStateBuffer()` forwards to its
-`USimulatableNetSyncComponent` through the binding's sibling pointer, which the component's teardown clears. Without
-the skip, a component that is in the map, still valid as a weak pointer and already unbound would be dereferenced
-through a null pointer on the game thread of a Development server.
-
-**What breaks if the tag moves.** Nothing in any shape that runs today: the owner erases the map entry in its
-unregistration, which the component's teardown runs before it unbinds, and a component reaches the map only after it
-is bound. The skip keeps the read safe if a later change reorders those (rationale §4). It changes no log line: every
-component the loop reads today is bound. (Added by og-ue-simulationcomponentandmanagersplit task 21, a lead ruling
-of that task.)
-
 ## G-04 — a resimulation's use stamps `Healed` only, never `Consumed`
 
 **Site:** `post_Internal(latencyBudget::Event::stampHealedIfPending(id, read.appliedCaptureTick, stepStartSeconds));`
@@ -108,4 +87,14 @@ map's size is bounded on the step's thread instead (rationale §11).
 
 ## §R — Retired ids
 
-None.
+⛔ **An id is never reused.** A retired id may be named in prose; it may never again appear as a `⛔G-nn` tag.
+
+### G-03 — RETIRED by og-input-latency task P5-5 (2026-11-17): moved to `UESimulationSession-guards.md` G-29
+
+**Was:** *"the server loop skips a component whose binding is not bound"*. Its tag sat in `UELatencyBudgetDiagnostics.h`,
+above `if (!component->isNetSyncBound()) continue;` in `tick_GameThread`'s server loop.
+
+**Why it retired.** Its subject moved. Task P5-5 moved the loop's walk of the session's delayed-input map (the null check,
+this skip, the correction-buffer read and the skip of tick 0) into the session's `forEachAuthorityCorrectionTick`, which
+`tick_GameThread` now calls with the per-id `Handed` stamp. The entry moved with its text, re-worded only for the new site.
+**Successor:** `UESimulationSession-guards.md` G-29.

@@ -10,11 +10,13 @@
 #include <initializer_list>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
 {
 using ogsimnet::DecodedRoster;
+using ogsimnet::RosterAddRefusal;
 using ogsimnet::RosterApplyResult;
 using ogsimnet::RosterAuthority;
 using ogsimnet::RosterEntry;
@@ -535,6 +537,81 @@ TEST_CASE("SimNetRoster.TagTexts", "[NetTransport][SimNetRoster]")
 	CHECK(std::string(ogsimnet::formatRosterRefused(RosterRefusal::DuplicateLocalIndex).data())
 		== "[Roster.Refused] reason=DuplicateLocalIndex");
 	CHECK(std::string(ogsimnet::formatRosterBindMismatch(7u, true, false).data()) == "[Roster.BindMismatch] simId=7 roster=Local engine=Remote");
+	STATIC_CHECK(std::string_view(ogsimnet::rosterAddRefusalName(RosterAddRefusal::None)) == "None");
+	STATIC_CHECK(std::string_view(ogsimnet::rosterAddRefusalName(RosterAddRefusal::Full)) == "Full");
+	STATIC_CHECK(std::string_view(ogsimnet::rosterAddRefusalName(RosterAddRefusal::DuplicateOwnerSlot)) == "DuplicateOwnerSlot");
+}
+
+TEST_CASE("SimNetRoster.AnAddPastCapacityIsRefusedAsFullAndChangesNothing", "[NetTransport][SimNetRoster]")
+{
+	RosterAuthority authority;
+	REQUIRE(authority.add(RosterRecord{1u, 0u, kConnA, 0u}) == RosterAddRefusal::None);
+	for (uint8_t simId = 2u; simId <= 8u; ++simId)
+	{
+		REQUIRE(authority.add(RosterRecord{simId, static_cast<uint8_t>(simId - 1u), std::nullopt, kRosterNotLocal})
+			== RosterAddRefusal::None);
+	}
+	REQUIRE(authority.liveCount() == 8u);
+	REQUIRE(authority.revision() == 8u);
+	const std::vector<uint8_t> snapshotBefore = u8Of(authority.snapshotFor(kConnA).view());
+	RosterMirror mirror;
+	REQUIRE(applyMessage(mirror, authority.snapshotFor(kConnA)).applied());
+
+	CHECK(authority.add(RosterRecord{9u, kRosterNoSlot, std::nullopt, kRosterNotLocal}) == RosterAddRefusal::Full);
+	CHECK(authority.add(RosterRecord{10u, kRosterNoSlot, kConnA, 1u}) == RosterAddRefusal::Full);
+	CHECK(authority.add(RosterRecord{11u, kRosterNoSlot, kConnA, 0u}) == RosterAddRefusal::DuplicateOwnerSlot);
+	CHECK(authority.liveCount() == 8u);
+	CHECK(authority.revision() == 8u);
+	CHECK(authority.recordFor(9u) == nullptr);
+	CHECK(authority.recordFor(10u) == nullptr);
+	CHECK(authority.recordFor(11u) == nullptr);
+	CHECK(authority.checkInput(kConnA, 10u) == RosterInputVerdict::UnknownSim);
+	CHECK((authority.ownerOf(1u) == kConnA));
+	CHECK(u8Of(authority.snapshotFor(kConnA).view()) == snapshotBefore);
+
+	authority.remove(8u, RosterRemoveReason::Despawned);
+	CHECK(authority.add(RosterRecord{9u, kRosterNoSlot, std::nullopt, kRosterNotLocal}) == RosterAddRefusal::Full);
+	CHECK(authority.revision() == 9u);
+	REQUIRE(applyMessage(mirror, authority.removeFor(8u)).applied());
+	CHECK(authority.add(RosterRecord{9u, kRosterNoSlot, std::nullopt, kRosterNotLocal}) == RosterAddRefusal::None);
+	CHECK(authority.revision() == 10u);
+	CHECK(applyMessage(mirror, authority.addFor(kConnA, 9u)).applied());
+	CHECK(packedAll(mirror.entries()) == packedAll(authority.viewFor(kConnA).span()));
+	CHECK(authority.liveCount() == 8u);
+}
+
+TEST_CASE("SimNetRoster.ASecondLiveOwnerAndLocalIndexIsRefusedAndChangesNothing", "[NetTransport][SimNetRoster]")
+{
+	RosterAuthority authority;
+	REQUIRE(authority.add(RosterRecord{1u, 0u, kConnA, 0u}) == RosterAddRefusal::None);
+	REQUIRE(authority.add(RosterRecord{2u, 1u, kConnB, 0u}) == RosterAddRefusal::None);
+	REQUIRE(authority.add(RosterRecord{3u, kRosterNoSlot, std::nullopt, 0u}) == RosterAddRefusal::None);
+	const std::vector<uint8_t> snapshotBefore = u8Of(authority.snapshotFor(kConnA).view());
+	const std::vector<uint8_t> strangerBefore = u8Of(authority.snapshotFor(kConnC).view());
+
+	CHECK(authority.add(RosterRecord{4u, 2u, kConnA, 0u}) == RosterAddRefusal::DuplicateOwnerSlot);
+	CHECK(authority.add(RosterRecord{5u, kRosterNoSlot, kConnB, 0u}) == RosterAddRefusal::DuplicateOwnerSlot);
+	CHECK(authority.liveCount() == 3u);
+	CHECK(authority.revision() == 3u);
+	CHECK(authority.recordFor(4u) == nullptr);
+	CHECK(authority.recordFor(5u) == nullptr);
+	CHECK(authority.checkInput(kConnA, 4u) == RosterInputVerdict::UnknownSim);
+	CHECK(authority.checkInput(kConnA, 1u) == RosterInputVerdict::Accepted);
+	CHECK((authority.localIndexOf(1u) == uint8_t{0u}));
+	CHECK(u8Of(authority.snapshotFor(kConnA).view()) == snapshotBefore);
+	CHECK(u8Of(authority.snapshotFor(kConnC).view()) == strangerBefore);
+
+	CHECK(authority.add(RosterRecord{4u, 2u, kConnA, 1u}) == RosterAddRefusal::None);
+	CHECK(authority.add(RosterRecord{5u, 3u, kConnC, 0u}) == RosterAddRefusal::None);
+	CHECK(authority.add(RosterRecord{6u, kRosterNoSlot, std::nullopt, 0u}) == RosterAddRefusal::None);
+	CHECK(authority.revision() == 6u);
+
+	authority.remove(1u, RosterRemoveReason::LocalPlayerLeft);
+	(void)authority.removeFor(1u);
+	CHECK(authority.add(RosterRecord{7u, kRosterNoSlot, kConnA, 0u}) == RosterAddRefusal::None);
+	CHECK(authority.checkInput(kConnA, 7u) == RosterInputVerdict::Accepted);
+	CHECK(authority.revision() == 8u);
+	CHECK(authority.liveCount() == 6u);
 }
 
 TEST_CASE("SimNetRoster.Death.ASlotReusedBeforeItsRemoveIsQueuedFiresTheCheck", "[.][OGSimDeath]")
@@ -606,26 +683,6 @@ TEST_CASE("SimNetRoster.Death.AddIntoALiveSlotFiresTheCheck", "[.][OGSimDeath]")
 	authority.add(RosterRecord{1u, 0u, kConnA, 0u});
 	authority.add(RosterRecord{2u, 0u, kConnB, 0u});
 	FAIL("RosterAuthority::add into a live entry's slot did NOT fire its OG_CHECK");
-}
-
-TEST_CASE("SimNetRoster.Death.AddOfALiveOwnerAndLocalIndexFiresTheCheck", "[.][OGSimDeath]")
-{
-	RosterAuthority authority;
-	authority.add(RosterRecord{1u, 0u, kConnA, 0u});
-	authority.add(RosterRecord{2u, 1u, kConnA, 0u});
-	FAIL("RosterAuthority::add of a live (owner, localIndex) did NOT fire its OG_CHECK");
-}
-
-TEST_CASE("SimNetRoster.Death.ANinthCharacterFiresTheCheck", "[.][OGSimDeath]")
-{
-	RosterAuthority authority;
-	for (uint8_t simId = 1u; simId <= 8u; ++simId)
-	{
-		authority.add(RosterRecord{simId, static_cast<uint8_t>(simId - 1u), std::nullopt, kRosterNotLocal});
-	}
-	REQUIRE(authority.liveCount() == 8u);
-	authority.add(RosterRecord{9u, kRosterNoSlot, std::nullopt, kRosterNotLocal});
-	FAIL("RosterAuthority::add of a ninth character did NOT fire its OG_CHECK");
 }
 
 TEST_CASE("SimNetRoster.Death.RemoveOfAnUnknownSimIdFiresTheCheck", "[.][OGSimDeath]")

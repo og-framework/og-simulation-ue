@@ -84,6 +84,24 @@ shipped configuration reaches 256, so the difference would appear only in a conf
 **What breaks if it moves.** `SimNetChannel.BrawlerBundleBytesEqualBuildRedundancyBundle` (og-brawler-tests) fails at
 depths 256 and 259.
 
+## G-05 — an empty bundle never reaches the wrapped transport
+
+**Tag site:** `SimNetChannel.h`, `SimNetBundleTransport::sendInputBundle`, immediately above `if (bundle.empty())`.
+
+**The prohibition.** Do not delete the check, and do not forward the empty span to the wrapped transport.
+
+**Consequence.** A channel hands over a 0-byte bundle when it has no slot to send (depth 0, or nothing pending at or below
+the tick). An input set cannot frame a 0-byte entry: a transport that appended one would make the server refuse the whole
+set, which drops every other local player's bundle in it. `SimNetTransport` refuses the span itself, but counts it as a
+malformed bundle (`inputBundlesRefused`), which hides real refusals.
+
+**What breaks if it moves.** `SimNetClient.AFrameSendsOneHeldSetAndDropsEmptyBundles` fails: `emptyBundles` 0 and
+`inputBundlesRefused` 1. `SimNetServer.ItsChannelIsTheSessionChannelTypeAndAnEmptyBundleIsCounted` fails on the server's
+`emptyBundles`.
+
+**Moved here** by og-input-latency task P5-1 (2026-11-17) from `SimNetClient-guards.md` G-05, retired there, when the client's
+wrapper became the role-neutral `SimNetBundleTransport`.
+
 ---
 
 ## §R Retired ids

@@ -45,30 +45,6 @@ concept SimNetClientTransport = requires(T& transport, uint8_t simId, SimConnect
 	{ transport.serverConnection() } -> std::same_as<SimConnectionId>;
 };
 
-template <ClientSimTransport InnerT>
-class SimNetClientChannelTransport
-{
-public:
-	SimNetClientChannelTransport(InnerT inner, uint64_t& emptyBundles) : m_inner(std::move(inner)), m_emptyBundles(&emptyBundles) {}
-
-	void sendInputBundle(std::span<const std::byte> bundle)
-	{
-		// ⛔G-05  docs/SimNetClient-guards.md
-		if (bundle.empty())
-		{
-			++*m_emptyBundles;
-			return;
-		}
-		m_inner.sendInputBundle(bundle);
-	}
-
-	void endInputSends() { m_inner.endInputSends(); }
-
-private:
-	InnerT m_inner;
-	uint64_t* m_emptyBundles;
-};
-
 template <class List>
 inline constexpr size_t kSimulatableCount = 0u;
 
@@ -147,9 +123,16 @@ class SimNetClient
 public:
 	using SimT = typename FirstSimulatable<Sims>::type;
 	using Shape = simEnvelope::ShapeFor<typename SimT::InputType, typename SimT::StateType>;
-	using InnerChannelTransport = decltype(std::declval<TransportT&>().channelTransport(uint8_t{}));
-	using ChannelTransport = SimNetClientChannelTransport<InnerChannelTransport>;
-	using Channel = SimNetChannel<SimT, ChannelTransport>;
+	using ChannelTransport = decltype(std::declval<TransportT&>().channelTransport(uint8_t{}));
+	using Channel = SessionChannel<SimT, ChannelTransport>;
+
+	static_assert(kIsSessionChannel<Channel, SimT, ChannelTransport>,
+		"SimNetClient: a character's channel is SessionChannel<SimT, ChannelTransport>, the type SimNetServer::Channel<SimT> is "
+		"for the same transport, so one SimulatableOwnerTraits owner type serves both roles. Was SimNetClientChannelTransport, "
+		"the client's own wrapper");
+	static_assert(SimNetDeliveryHookWellFormed<HostT>,
+		"SimNetClient: the host's noteDelivered member, if it has one, must be callable as noteDelivered(SimLane, double "
+		"recvSeconds) -> void; any other shape would never be called");
 
 	SimNetClient(HostT& host, TransportT& transport) : m_host(host), m_transport(transport)
 	{
@@ -270,6 +253,8 @@ private:
 		case InboundKind::Message:
 			++m_stats.messages;
 			++m_window.messages;
+			if constexpr (SimNetDeliveryHook<HostT>)
+				m_host.noteDelivered(record.lane, record.recvSeconds);
 			onMessage(record);
 			return;
 		}
@@ -368,7 +353,8 @@ private:
 		if (m_channels.find(simId) != m_channels.end())
 			return;
 		m_everListed.set(simId);
-		auto created = std::make_unique<Channel>(ChannelTransport(m_transport.channelTransport(simId), m_stats.emptyBundles), simId,
+		auto created = std::make_unique<Channel>(
+			SimNetBundleTransport<ChannelTransport>(m_transport.channelTransport(simId), m_stats.emptyBundles), simId,
 			"sim" + std::to_string(simId));
 		Channel& added = *created;
 		m_channels.emplace(simId, std::move(created));
@@ -587,8 +573,8 @@ using ReferenceClientTransport = simNetTransportSelfCheck::ReferenceTransport;
 static_assert(SimNetClientTransport<ReferenceClientTransport>,
 	"SimNetTransport is the client session's transport: inbox, flush, the set's end, the per-character adapter and the "
 	"server connection. Was SimNetClient-rationale.md §3");
-static_assert(ClientSimTransport<SimNetClientChannelTransport<ReferenceClientTransport::ChannelTransport>>,
-	"SimNetClientChannelTransport is a channel's ClientSimTransport: it wraps the transport's per-character adapter. Was "
-	"SimNetClient-rationale.md §11");
+static_assert(ClientSimTransport<SimNetBundleTransport<ReferenceClientTransport::ChannelTransport>>,
+	"SimNetBundleTransport is a channel's ClientSimTransport: it wraps the transport's per-character adapter. Was "
+	"SimNetClient-rationale.md §11, for SimNetClientChannelTransport");
 } // namespace simNetClientSelfCheck
 } // namespace ogsimnet

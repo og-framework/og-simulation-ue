@@ -9,6 +9,7 @@ public class OGSimulationNet : ModuleRules
 	public OGSimulationNet(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.NoPCHs;
+		FPSemantics = FPSemanticsMode.Precise;
 		bUseUnity = false;
 		bEnableExceptions = false;
 		bUseRTTI = false;

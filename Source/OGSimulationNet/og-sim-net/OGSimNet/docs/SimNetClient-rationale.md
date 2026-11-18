@@ -39,8 +39,13 @@ registers each channel with `SimulationNetSync` from the host's roster events, a
   game with two types needs a type field in the roster, which is a wire change. The brawler has one (`SimulatableBrawler`).
 - **`HostT`** satisfies `SimNetClientHost` (`SimNetHost.h`).
 - **`TransportT`** satisfies `SimNetClientTransport` (§3).
-- `SimT` is the game's simulatable, `Shape` its envelope shape, and `Channel` the channel type the host registers with
-  `SimulationNetSync` as the character's prediction owner (`SimNetChannel<SimT, ChannelTransport>`).
+- `SimT` is the game's simulatable, `Shape` its envelope shape, `ChannelTransport` the type the transport's
+  `channelTransport(simId)` returns, and `Channel` the channel type the host registers with `SimulationNetSync` as the
+  character's prediction owner: `SessionChannel<SimT, ChannelTransport>` (`SimNetChannel.h`). It is the type
+  `SimNetServer::Channel<SimT>` is for the same transport, so a game's `SimulatableOwnerTraits` names one owner type for both
+  roles; a `static_assert` pins the alias.
+- **`HostT`'s optional `noteDelivered`** (§4): a `static_assert` refuses a host member of that name that the session could
+  not call as `noteDelivered(SimLane, double)` (`SimNetDeliveryHookWellFormed`, `SimNetHost.h`).
 
 ## §3 The transport
 
@@ -73,6 +78,12 @@ Each message is decoded with the game's shape, for the server-to-client directio
 - Any other refusal, and any kind a client never receives (an input set), counts `badDecode` and is dropped.
 - **Roster** → the mirror (§5); **RelayRing** → §6; **CorrectionState** → §7; **ClockPublish** → §8; **RelayFloor** and
   **ConnectionTier** → §9.
+
+**The delivery hook.** When the host has `noteDelivered(SimLane, double recvSeconds)`, the session calls it once for every
+`Message` record it drains, with the record's lane and receive time, before the refusal check and before it decodes the
+message: a message ignored while the stream is refused, and a malformed one, are delivered messages too. A `Connected` or
+`Disconnected` record calls nothing. A host without the member compiles unchanged and is never called. The server session
+does the same (`SimNetServer-rationale.md` §3).
 
 ## §5 The roster and the channels
 
@@ -179,10 +190,11 @@ stream cannot be trusted, and the client disconnects with the reason.
 
 ## §11 Sends
 
-- **The adapter.** Each channel holds a `SimNetClientChannelTransport`, which wraps the transport's per-character adapter
-  (`channelTransport(simId)`). It drops an empty bundle and counts it (`emptyBundles`; G-05). A channel hands over a 0-byte
-  bundle when it has no slot to send, as today's owner hands over an empty one. Today's empty bundle goes on the wire as an
-  RPC and the server drops it on receipt; here it never goes on the wire, and an input set never holds a 0-byte entry.
+- **The adapter.** Each channel holds a `SimNetBundleTransport` (`SimNetChannel.h`, role-neutral since the server's channels
+  hold one too), which wraps the transport's per-character adapter (`channelTransport(simId)`). It drops an empty bundle and
+  counts it in the session's `emptyBundles` (`SimNetChannel-guards.md` G-05). A channel hands over a 0-byte bundle when it has
+  no slot to send, as today's owner hands over an empty one. Today's empty bundle goes on the wire as an RPC and the server
+  drops it on receipt; here it never goes on the wire, and an input set never holds a 0-byte entry.
 - **One set per frame.** NetSync's send loop calls each local channel's `sendLocalInputToAuthority`; the transport appends
   each bundle to one input set. `endInputSends()` ends the set. `flushFrame()` ends it too, before it flushes the transport
   (G-06), so a host that does not call `endInputSends()` still sends one set per frame, and the next frame's bundles never join
@@ -247,6 +259,10 @@ recording endpoint; the others run P2-10's server session and the client session
   gap (scripted, and over og-net, where the host carries out the disconnect and the server detaches the connection); a
   malformed roster; the roster's channels and a second Snapshot; one held set per frame with empty bundles dropped, and the
   immediate mode; the window line.
+- **The delivery hook:** a host with `noteDelivered` sees one call per message record, with its lane and receive time (a
+  malformed message and one ignored while refused included), and none for connection events.
+- **One channel type:** over one transport the client's `Channel` and the server's `Channel<SimT>` are the same type, and it
+  satisfies both NetSync owner concepts.
 - **The SimInput rate:** four local players, one set per 144 Hz frame and one per 60 Hz tick, at 3 and 8 slots, against the
   cap in og-net's default lane table. A hidden `[.][SimNetRate]` case prints the table for 60, 120, 144 and 240 frames per
   second.

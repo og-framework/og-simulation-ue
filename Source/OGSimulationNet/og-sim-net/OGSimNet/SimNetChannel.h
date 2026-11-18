@@ -146,4 +146,31 @@ private:
 	std::function<void(std::uint32_t, const InputType&)>    m_onRemoteMoveReceived;
 	std::function<void(const InputBundleBuffer&)>           m_onInputHanded;
 };
+
+template <ClientSimTransport InnerT>
+class SimNetBundleTransport
+{
+public:
+	SimNetBundleTransport(InnerT inner, std::uint64_t& emptyBundles) : m_inner(std::move(inner)), m_emptyBundles(&emptyBundles) {}
+
+	void sendInputBundle(std::span<const std::byte> bundle)
+	{
+		// ⛔G-05  docs/SimNetChannel-guards.md
+		if (bundle.empty())
+		{
+			++*m_emptyBundles;
+			return;
+		}
+		m_inner.sendInputBundle(bundle);
+	}
+
+	void endInputSends() { m_inner.endInputSends(); }
+
+private:
+	InnerT         m_inner;
+	std::uint64_t* m_emptyBundles;
+};
+
+template <class SimT, class InnerT>
+using SessionChannel = SimNetChannel<SimT, SimNetBundleTransport<InnerT>>;
 } // namespace ogsimnet

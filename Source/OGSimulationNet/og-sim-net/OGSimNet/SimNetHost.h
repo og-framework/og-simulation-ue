@@ -38,6 +38,31 @@ concept SimNetClientHost = requires(H& host, const char* line, SimNetStream stre
 	{ host.stampClientReceived(stream, simId, tick, seconds) } -> std::same_as<void>;
 };
 
+template <class H>
+concept SimNetDeliveryHook = requires(H& host, SimLane lane, double recvSeconds)
+{
+	{ host.noteDelivered(lane, recvSeconds) } -> std::same_as<void>;
+};
+
+namespace simNetHostMemberNames
+{
+struct Names
+{
+	int noteDelivered;
+};
+
+template <class H>
+struct Probe : H, Names
+{
+};
+} // namespace simNetHostMemberNames
+
+template <class H>
+concept SimNetHostHasNoDeliveryMember = requires { &simNetHostMemberNames::Probe<H>::noteDelivered; };
+
+template <class H>
+concept SimNetDeliveryHookWellFormed = SimNetDeliveryHook<H> || SimNetHostHasNoDeliveryMember<H>;
+
 namespace simNetHostSelfCheck
 {
 struct ReferenceServerHost
@@ -69,6 +94,27 @@ struct ServerHostWithAFloatRtt : ReferenceServerHost
 	float rttMs(SimConnectionId conn);
 };
 
+struct ReferenceDeliveryServerHost : ReferenceServerHost
+{
+	void noteDelivered(SimLane lane, double recvSeconds);
+};
+
+struct ReferenceDeliveryClientHost : ReferenceClientHost
+{
+	void noteDelivered(SimLane lane, double recvSeconds);
+};
+
+struct HostWithTheEndpointsThreeArgumentNoteDelivered : ReferenceServerHost
+{
+	void noteDelivered(SimLane lane, double recvSeconds, double nowSeconds);
+};
+
+struct HostWithAPrivateNoteDelivered : ReferenceClientHost
+{
+private:
+	void noteDelivered(SimLane lane, double recvSeconds);
+};
+
 static_assert(SimNetServerHost<ReferenceServerHost>, "SimNetServerHost self-check: the reference server host must satisfy the concept");
 static_assert(SimNetClientHost<ReferenceClientHost>, "SimNetClientHost self-check: the reference client host must satisfy the concept");
 static_assert(!SimNetServerHost<ReferenceClientHost> && !SimNetClientHost<ReferenceServerHost>,
@@ -76,5 +122,18 @@ static_assert(!SimNetServerHost<ReferenceClientHost> && !SimNetClientHost<Refere
 static_assert(!SimNetServerHost<ServerHostWithAFloatRtt>,
 	"SimNetServerHost: rttMs returns double. The tier table smooths a double, and a narrowed reading would change tier "
 	"transitions silently (the coordinator's 'rttMs stays double' fence)");
+static_assert(SimNetServerHost<ReferenceDeliveryServerHost> && SimNetDeliveryHook<ReferenceDeliveryServerHost>
+		&& SimNetClientHost<ReferenceDeliveryClientHost> && SimNetDeliveryHook<ReferenceDeliveryClientHost>,
+	"SimNetDeliveryHook self-check: a host with noteDelivered(SimLane, double) is still its role's host, and has the hook");
+static_assert(!SimNetDeliveryHook<ReferenceServerHost> && SimNetDeliveryHookWellFormed<ReferenceServerHost>
+		&& SimNetDeliveryHookWellFormed<ReferenceClientHost>,
+	"SimNetDeliveryHook: the hook is optional; a host without a noteDelivered member is well formed and is never called");
+static_assert(SimNetDeliveryHookWellFormed<ReferenceDeliveryServerHost> && !SimNetHostHasNoDeliveryMember<ReferenceDeliveryServerHost>,
+	"SimNetHostHasNoDeliveryMember self-check: the name probe sees a public noteDelivered");
+static_assert(!SimNetDeliveryHookWellFormed<HostWithTheEndpointsThreeArgumentNoteDelivered>
+		&& !SimNetDeliveryHookWellFormed<HostWithAPrivateNoteDelivered>,
+	"SimNetDeliveryHookWellFormed: a host member named noteDelivered that the sessions cannot call as noteDelivered(SimLane, "
+	"double) -> void (another arity, such as the endpoint's (lane, recvSeconds, now), or private) is refused, because the "
+	"sessions would silently never call it");
 } // namespace simNetHostSelfCheck
 } // namespace ogsimnet

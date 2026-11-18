@@ -16,11 +16,12 @@ number is spent forever.
 
 ## G-01 — the reflected header includes no og-net header
 
-**Tag site:** `OGNetDriver.h`, after the last engine include and before the generated header: an absence tag, with the blank
-line under it where an og-net include would be typed.
+**Tag site:** `OGNetDriver.h`, after the last include and before the generated header: an absence tag, with the blank line under
+it where an og-net include would be typed.
 
 **The prohibition.** Do not include an og-net header (`OGNet/...`) or one of this module's `OGNetUnreal/Core/...` headers in
-`OGNetDriver.h`, and do not replace the forward-declared `FOGNetEndpointHost` with a member that needs one. og-net's types stay
+`OGNetDriver.h`, and do not replace the forward-declared `FOGNetEndpointHost` with a member that needs one. The same holds for
+`OGNetSimLanes.h`, which this header includes: it forward-declares `ognetunreal::SimLaneEndpoint` and includes no og-net header. og-net's types stay
 in `OGNetDriver.cpp`, behind the pimpl.
 
 **The consequence.** `OGNetDriver.h` is a public header of a module that depends on og-net privately. Any module that
@@ -44,3 +45,20 @@ clock makes the shut-down drain wait far too long or not at all. And the emulato
 
 **What breaks if it moves.** No test in this module. The shut-down drain loses its bound, and emulated packets are released
 by a clock that stands still between frames.
+
+## G-03 — a held join is released only outside the frame that opened the connection
+
+**Tag site:** `OGNetDriver.cpp`, the line above the `if` in `FOGNetEndpointHost::ReleaseHeldJoin` that keeps holding while og-net
+is not up or the engine's frame counter is not past the held frame.
+
+**The prohibition.** Do not drop or weaken the frame condition (`GFrameCounter <= HeldJoinFrame`): do not release UE's hello as
+soon as og-net is up, and do not compare with `<` or with a frame other than the one InitConnect ran in.
+
+**The consequence.** At start-up og-net is up during the client's first engine tick, which is still frame 0. A hello released
+there is acked at the start of frame 1, so UE's first round-trip sample still holds the end of the engine-init frame (68 ms in
+P4-12's `Ph2_c_B1` client1 log; 60-120 ms on rendered clients). That sample feeds `RoundTrip=PlayerStateAvg`'s first bucket,
+and through it the prediction clock's target offset: the F10 lead error this hold removes (`OGNetDriver-rationale.md` §14).
+
+**What breaks if it moves.** `OGNet.Unreal.Driver.HelloAfterTheConnectingFrame` fails: og-net comes up inside the test's frame,
+so the hello leaves before the frame ends and the "UE packets sent in the frame that opened the connection" check reads 1. No
+runtime check fires.

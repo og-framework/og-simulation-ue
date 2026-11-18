@@ -11,6 +11,7 @@
 #include "OGNet/NetCheck.h"
 #include "OGNet/NetConcepts.h"
 #include "OGNet/NetTypes.h"
+#include "OGNetUnreal/Core/SimLaneEndpoint.h"
 
 #include <algorithm>
 #include <array>
@@ -38,6 +39,12 @@ struct DriverCallbacks
 	void (*closed)(void* ctx, ognet::ConnectionId id, ognet::DisconnectReason reason) = nullptr;
 	void (*serverConnectionUp)(void* ctx, ognet::ConnectionId id) = nullptr;
 	void (*connectEnded)(void* ctx, ognet::DisconnectReason reason) = nullptr;
+};
+
+struct SimLaneAttach
+{
+	void* ctx = nullptr;
+	void (*beforeStart)(void* ctx, SimLaneEndpoint& endpoint) = nullptr;
 };
 
 struct DriverStats
@@ -82,7 +89,7 @@ public:
 	using Callbacks = DriverCallbacks;
 	using Endpoint = ognet::NetEndpoint<HostT, BackendT>;
 
-	EngineLaneDriverCore() = default;
+	EngineLaneDriverCore() : m_simEndpoint(this, simEndpointOps()) {}
 	~EngineLaneDriverCore() { m_endpoint.reset(); }
 
 	EngineLaneDriverCore(const EngineLaneDriverCore&) = delete;
@@ -90,12 +97,14 @@ public:
 	EngineLaneDriverCore(EngineLaneDriverCore&&) = delete;
 	EngineLaneDriverCore& operator=(EngineLaneDriverCore&&) = delete;
 
-	bool start(HostT& host, BackendT& backend, const ognet::EndpointConfig& config, IoMode mode, const Callbacks& callbacks)
+	bool start(HostT& host, BackendT& backend, const ognet::EndpointConfig& config, IoMode mode, const Callbacks& callbacks,
+		const SimLaneAttach* attach = nullptr)
 	{
 		OGNET_CHECK(!m_started, "EngineLaneDriverCore::start called twice: a core starts one endpoint once");
 		OGNET_CHECK(callbacks.accept != nullptr && callbacks.deliver != nullptr && callbacks.closed != nullptr
 				&& callbacks.serverConnectionUp != nullptr && callbacks.connectEnded != nullptr,
 			"EngineLaneDriverCore::start needs all five callbacks");
+		OGNET_CHECK(attach == nullptr || attach->beforeStart != nullptr, "EngineLaneDriverCore::start: an attach needs its beforeStart");
 		m_host = &host;
 		m_backend = &backend;
 		m_mode = mode;
@@ -110,12 +119,21 @@ public:
 		m_batchCount = 0;
 		m_client = ClientState::Idle;
 		m_serverId = ognet::kInvalidConnection;
+		m_config = config;
+		m_forward = ognet::ConnectionHandler{};
 		m_endpoint.emplace(host, backend);
 		m_endpoint->setConnectionHandler(ognet::ConnectionHandler{&EngineLaneDriverCore::onConnectionEvent, this});
 		m_lane = &m_endpoint->engineLane();
+		if (attach != nullptr)
+		{
+			m_attaching = true;
+			attach->beforeStart(attach->ctx, m_simEndpoint);
+			m_attaching = false;
+		}
 		if (!m_endpoint->start(config))
 		{
 			m_lane = nullptr;
+			m_forward = ognet::ConnectionHandler{};
 			m_endpoint.reset();
 			return false;
 		}
@@ -291,11 +309,16 @@ private:
 
 	static void onConnectionEvent(void* ctx, const ognet::ConnectionEvent& event)
 	{
+		EngineLaneDriverCore& self = *static_cast<EngineLaneDriverCore*>(ctx);
+		// ⛔G-05  docs/EngineLaneDriverCore-guards.md
+		if (self.m_forward.fn != nullptr)
+		{
+			self.m_forward.fn(self.m_forward.ctx, event);
+		}
 		if (event.kind != ognet::ConnectionEventKind::Disconnected || event.id != ognet::kInvalidConnection)
 		{
 			return;
 		}
-		EngineLaneDriverCore& self = *static_cast<EngineLaneDriverCore*>(ctx);
 		const std::lock_guard<std::mutex> lock(self.m_handlerMutex);
 		if (self.m_handlerCount == kHandlerQueueSlots)
 		{
@@ -303,6 +326,51 @@ private:
 			return;
 		}
 		self.m_handlerQueue[self.m_handlerCount++] = event.reason;
+	}
+
+	static EngineLaneDriverCore& coreOf(void* ctx) { return *static_cast<EngineLaneDriverCore*>(ctx); }
+
+	static SimLaneEndpointOps simEndpointOps()
+	{
+		SimLaneEndpointOps ops;
+		ops.send = [](void* ctx, ognet::ConnectionId id, ognet::Lane lane, std::span<const std::byte> bytes) {
+			if (coreOf(ctx).m_endpoint.has_value())
+			{
+				coreOf(ctx).m_endpoint->send(id, lane, bytes);
+			}
+		};
+		ops.broadcastExcept = [](void* ctx, ognet::ConnectionId skip, ognet::Lane lane, std::span<const std::byte> bytes) {
+			if (coreOf(ctx).m_endpoint.has_value())
+			{
+				coreOf(ctx).m_endpoint->broadcastExcept(skip, lane, bytes);
+			}
+		};
+		ops.setLaneHandler = [](void* ctx, ognet::Lane lane, ognet::LaneHandler handler) {
+			OGNET_CHECK(coreOf(ctx).m_attaching,
+				"SimLaneEndpoint::setLaneHandler outside the attach's beforeStart: the core's sim endpoint takes handlers only there, "
+				"before og-net's endpoint starts");
+			coreOf(ctx).m_endpoint->setLaneHandler(lane, handler);
+		};
+		ops.setConnectionHandler = [](void* ctx, ognet::ConnectionHandler handler) {
+			OGNET_CHECK(coreOf(ctx).m_attaching,
+				"SimLaneEndpoint::setConnectionHandler outside the attach's beforeStart: og-net's thread reads the forward target from "
+				"the endpoint's start on, so it is stored before start only");
+			coreOf(ctx).m_forward = handler;
+		};
+		ops.disconnect = [](void* ctx, ognet::ConnectionId id) {
+			if (coreOf(ctx).m_endpoint.has_value())
+			{
+				coreOf(ctx).m_endpoint->disconnect(id);
+			}
+		};
+		ops.noteDelivered = [](void* ctx, ognet::Lane lane, double recvSeconds, double nowSeconds) {
+			if (coreOf(ctx).m_window.has_value())
+			{
+				coreOf(ctx).m_window->noteDelivered(lane, recvSeconds, nowSeconds);
+			}
+		};
+		ops.config = [](const void* ctx) -> const ognet::EndpointConfig& { return static_cast<const EngineLaneDriverCore*>(ctx)->m_config; };
+		return ops;
 	}
 
 	static void onPolled(void* ctx, const ognet::EngineEvent& event)
@@ -697,6 +765,12 @@ private:
 	DriverStats m_stats;
 	uint64_t m_laneUnknownSends = 0;
 	std::optional<ognet::NetWindow> m_window;
+
+	ognet::EndpointConfig m_config{};
+	bool m_attaching = false;
+	ognet::ConnectionHandler m_forward{};
+	SimLaneEndpoint m_simEndpoint;
+
 	ognet::EngineLane* m_lane = nullptr;
 	std::optional<Endpoint> m_endpoint;
 };

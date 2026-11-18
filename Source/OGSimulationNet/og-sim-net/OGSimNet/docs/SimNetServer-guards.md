@@ -98,6 +98,31 @@ the consequence of ignoring it.
   same fold over a variable template of one simulatable is evaluated, and fails. This was measured: the inline form was the
   first version of this assert, and its poison arm (a game with a 5 B and a 12 B input) compiled.
 
+## G-10 — `addCharacter` refuses a live sim id or a live slot before it changes anything
+
+- **Site:** the `if (refusal != AddCharacterRefusal::None)` in `addCharacter`.
+- **Prohibition:** do not delete the refusal, do not move it after `m_roster.add`, the channel's creation or the Adds it sends,
+  and do not replace it with an `OG_CHECK`.
+- **Consequence:** the roster's own checks for a reused sim id and a held slot are `OG_CHECK`s. Where they are compiled out the
+  roster adds a second record, `std::map::emplace` keeps the first channel and destroys the new one, and the pointer the host
+  registers with NetSync dangles. Where they are live, a host's mistake stops the program instead of being refused. Moved after
+  `m_roster.add`, the refusal comes too late: the roster has already stopped the program, or added the second record. Moved
+  after the sends, every attached client would already hold an Add for a character the server then refuses.
+- **What breaks if it moves:** `SimNetServer.AnAddWithALiveSimIdOrALiveSlotIsRefusedAndChangesNothing` aborts in
+  `RosterAuthority::add`'s `OG_CHECK` (a sim id already used) at the first refused add.
+
+## G-11 — `addCharacter` stops on the roster's refusal before it builds or sends anything
+
+- **Site:** the `if (rosterRefusal != RosterAddRefusal::None)` right after `m_roster.add` in `addCharacter`.
+- **Prohibition:** do not delete this refusal, do not discard `m_roster.add`'s result, and do not move the channel's creation,
+  the stager or the Adds above it.
+- **Consequence:** a refused add leaves the roster without the character. Past this point the session would still create its
+  channel and stager and call `m_roster.addFor` for every attached connection, which finds no live entry: where `OG_CHECK` is
+  live that stops the program, and where it is compiled out it reads through a null pointer. With no connection attached the
+  host gets a channel for a character no client will ever be told about, and that the input check refuses as `UnknownSim`.
+- **What breaks if it moves:** `SimNetServer.AnAddTheRosterRefusesAsFullOrDuplicateOwnerSlotReturnsNullAndChangesNothing`:
+  the first refused add aborts in `RosterAuthority::addFor`'s `OG_CHECK` (no live entry has this sim id).
+
 ---
 
 ## §R Retired ids

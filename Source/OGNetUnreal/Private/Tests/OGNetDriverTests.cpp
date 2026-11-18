@@ -2,12 +2,19 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Engine/NetConnection.h"
 #include "Engine/NetDriver.h"
+#include "Engine/PendingNetGame.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
 #include "IPAddress.h"
 #include "Misc/AutomationTest.h"
+#include "Net/DataChannel.h"
 #include "OGNetInternetAddr.h"
+#include "OGNetUnreal/OGNetConnection.h"
 #include "OGNetUnreal/OGNetDriver.h"
 #include "SocketSubsystem.h"
+#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -16,7 +23,181 @@ bool AddressesEqual(const FInternetAddr& Left, const FInternetAddr& Right)
 {
 	return Left == Right;
 }
+
+constexpr float kHelloPumpDeltaSeconds = 0.02f;
+constexpr double kHelloUpWaitSeconds = 5.0;
+constexpr int32 kHelloMinimumPumps = 30;
+
+class FHelloCountingNotify final : public FNetworkNotify
+{
+public:
+	int32 Accepted = 0;
+	int32 Hellos = 0;
+	int32 OtherMessages = 0;
+
+	virtual EAcceptConnection::Type NotifyAcceptingConnection() override { return EAcceptConnection::Accept; }
+	virtual void NotifyAcceptedConnection(UNetConnection* Connection) override { ++Accepted; }
+	virtual bool NotifyAcceptingChannel(UChannel* Channel) override { return true; }
+	virtual void NotifyControlMessage(UNetConnection* Connection, uint8 MessageType, FInBunch& Bunch) override
+	{
+		if (MessageType == NMT_Hello)
+		{
+			++Hellos;
+			FNetControlMessage<NMT_Hello>::Discard(Bunch);
+			return;
+		}
+		++OtherMessages;
+		Bunch.SetAtEnd();
+	}
+};
+
+struct FHelloTestState
+{
+	FAutomationTestBase* Test = nullptr;
+	FHelloCountingNotify ServerNotify;
+	UOGNetDriver* Server = nullptr;
+	UOGNetDriver* Client = nullptr;
+	UPendingNetGame* Join = nullptr;
+	uint64 ConnectFrame = 0;
+	bool bReleased = false;
+	double HelloDeadlineSeconds = 0.0;
+};
+
+UOGNetConnection* ClientConnection(const FHelloTestState& State)
+{
+	return State.Client != nullptr ? Cast<UOGNetConnection>(State.Client->ServerConnection) : nullptr;
+}
+
+void PumpServer(FHelloTestState& State)
+{
+	State.Server->TickDispatch(kHelloPumpDeltaSeconds);
+}
+
+void PumpClient(FHelloTestState& State)
+{
+	State.Client->TickDispatch(kHelloPumpDeltaSeconds);
+	State.Client->TickFlush(kHelloPumpDeltaSeconds);
+}
+
+void DestroyHelloTestState(FHelloTestState& State)
+{
+	if (State.Join != nullptr)
+	{
+		State.Join->NetDriver = nullptr;
+		State.Join->RemoveFromRoot();
+		State.Join = nullptr;
+	}
+	for (UOGNetDriver** Slot : {&State.Client, &State.Server})
+	{
+		if (UOGNetDriver* Driver = *Slot)
+		{
+			Driver->SetWorld(nullptr);
+			Driver->Shutdown();
+			Driver->LowLevelDestroy();
+			Driver->RemoveFromRoot();
+			*Slot = nullptr;
+		}
+	}
+}
 } // namespace
+
+DEFINE_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(FOGNetHelloAfterTheConnectingFrameCommand, TSharedRef<FHelloTestState>, State);
+
+bool FOGNetHelloAfterTheConnectingFrameCommand::Update()
+{
+	FHelloTestState& S = *State;
+	if (S.Client == nullptr || S.Server == nullptr)
+	{
+		return true;
+	}
+	if (GFrameCounter <= S.ConnectFrame)
+	{
+		return false;
+	}
+	UOGNetConnection* Connection = ClientConnection(S);
+	if (!S.bReleased)
+	{
+		S.Test->TestEqual(TEXT("the server saw no hello before the frame that opened the connection ended"), S.ServerNotify.Hellos, 0);
+		PumpClient(S);
+		S.bReleased = true;
+		S.HelloDeadlineSeconds = FPlatformTime::Seconds() + kHelloUpWaitSeconds;
+		S.Test->TestTrue(TEXT("the first TickDispatch of the next frame sends UE's hello"), Connection != nullptr && Connection->OutTotalPackets >= 1);
+		S.Test->TestTrue(TEXT("the control channel opens with the hello"), Connection != nullptr && Connection->Channels[0] != nullptr);
+	}
+	while (S.ServerNotify.Hellos == 0 && FPlatformTime::Seconds() < S.HelloDeadlineSeconds)
+	{
+		PumpServer(S);
+		FPlatformProcess::Sleep(0.005f);
+	}
+	S.Test->TestEqual(TEXT("the server received exactly one hello"), S.ServerNotify.Hellos, 1);
+	S.Test->TestEqual(TEXT("the server received no other control message"), S.ServerNotify.OtherMessages, 0);
+	DestroyHelloTestState(S);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOGNetDriverHelloAfterTheConnectingFrameTest, "OGNet.Unreal.Driver.HelloAfterTheConnectingFrame",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FOGNetDriverHelloAfterTheConnectingFrameTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FHelloTestState> State = MakeShared<FHelloTestState>();
+	FHelloTestState& S = *State;
+	S.Test = this;
+
+	S.Server = NewObject<UOGNetDriver>(GetTransientPackage());
+	S.Server->AddToRoot();
+	S.Server->NetDriverName = FName(TEXT("OGNetHelloTestServer"));
+	FURL ListenURL;
+	ListenURL.Port = 0;
+	FString Error;
+	if (!TestTrue(TEXT("the server listens"), S.Server->InitListen(&S.ServerNotify, ListenURL, false, Error)))
+	{
+		AddError(Error);
+		DestroyHelloTestState(S);
+		return false;
+	}
+
+	FURL ConnectURL;
+	ConnectURL.Host = TEXT("127.0.0.1");
+	ConnectURL.Port = ListenURL.Port;
+	S.Join = NewObject<UPendingNetGame>(GetTransientPackage());
+	S.Join->AddToRoot();
+	S.Join->Initialize(ConnectURL);
+	S.Client = NewObject<UOGNetDriver>(GetTransientPackage());
+	S.Client->AddToRoot();
+	S.Client->NetDriverName = NAME_PendingNetDriver;
+	S.ConnectFrame = GFrameCounter;
+	S.Join->InitNetDriver(S.Client);
+
+	UOGNetConnection* Connection = ClientConnection(S);
+	if (!TestTrue(TEXT("the pending game connects through the client driver"), S.Join->NetDriver.Get() == S.Client && Connection != nullptr))
+	{
+		AddError(S.Join->ConnectionError);
+		DestroyHelloTestState(S);
+		return false;
+	}
+	TestTrue(TEXT("no connection error"), S.Join->ConnectionError.IsEmpty());
+	TestEqual(TEXT("UE packets sent inside InitConnect and BeginHandshake"), Connection->OutTotalPackets, 0);
+	TestTrue(TEXT("no control channel before the hello"), Connection->Channels[0] == nullptr);
+
+	const double UpDeadlineSeconds = FPlatformTime::Seconds() + kHelloUpWaitSeconds;
+	int32 Pumps = 0;
+	while ((Pumps < kHelloMinimumPumps || Connection->OGNetId == 0 || S.ServerNotify.Accepted == 0) && FPlatformTime::Seconds() < UpDeadlineSeconds)
+	{
+		PumpServer(S);
+		PumpClient(S);
+		++Pumps;
+		FPlatformProcess::Sleep(0.005f);
+	}
+	TestTrue(TEXT("og-net is up inside the frame that opened the connection"), Connection->OGNetId != 0 && S.ServerNotify.Accepted == 1);
+	TestEqual(TEXT("still the frame that opened the connection"), GFrameCounter, S.ConnectFrame);
+	TestTrue(TEXT("the client's elapsed time passed the keepalive interval"), S.Client->GetElapsedTime() > S.Client->KeepAliveTime);
+	TestEqual(TEXT("UE packets sent in the frame that opened the connection, og-net up"), Connection->OutTotalPackets, 0);
+	TestEqual(TEXT("hellos the server received in that frame"), S.ServerNotify.Hellos, 0);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FOGNetHelloAfterTheConnectingFrameCommand(State));
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOGNetDriverConfigMatchesIpNetDriverTest, "OGNet.Unreal.Driver.ConfigMatchesIpNetDriver",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)

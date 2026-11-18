@@ -119,16 +119,15 @@ using Endpoint = ognet::NetEndpoint<TestHost, Backend>;
 
 inline constexpr std::size_t kInboxSlots = 2048u;
 using Transport = ogsimnet::SimNetTransport<Endpoint, kInboxSlots>;
-using ServerChannel = ogsimnet::SimNetChannel<EqSim, Transport::ChannelTransport>;
-using ClientChannelTransport = ogsimnet::SimNetClientChannelTransport<Transport::ChannelTransport>;
-using ClientChannel = ogsimnet::SimNetChannel<EqSim, ClientChannelTransport>;
+using EqBundleTransport = ogsimnet::SimNetBundleTransport<Transport::ChannelTransport>;
+using EqChannel = ogsimnet::SessionChannel<EqSim, Transport::ChannelTransport>;
 } // namespace simNetEquivalence
 
 template <>
 struct SimulatableOwnerTraits<simNetEquivalence::EqSim>
 {
-	using PredictionOwnerType = simNetEquivalence::ClientChannel;
-	using AuthorityOwnerType = simNetEquivalence::ServerChannel;
+	using PredictionOwnerType = simNetEquivalence::EqChannel;
+	using AuthorityOwnerType = simNetEquivalence::EqChannel;
 };
 
 namespace simNetEquivalence
@@ -274,13 +273,12 @@ struct SimStack
 	SimStack(const SimStack&) = delete;
 	SimStack& operator=(const SimStack&) = delete;
 
-	void addAuthority(std::uint8_t simId, ServerChannel& channel)
+	void addAuthority(std::uint8_t simId, EqChannel& channel)
 	{
-		netSync.template registerAuthorityOwner<EqSim>(simId, channel, resolution);
-		storage.template add<EqSim>(simId, EqSim{});
+		registerSimulatable<EqSim>(storage, reconciliation, resolution, netSync, simId, EqSim{}, channel, channel);
 	}
 
-	void addPrediction(std::uint8_t simId, ClientChannel& channel, bool local)
+	void addPrediction(std::uint8_t simId, EqChannel& channel, bool local)
 	{
 		std::function<EqInput(const SimulationTimeStep&, const LocalInputCache<EqInput>&)> provider;
 		if (local)
@@ -526,10 +524,8 @@ private:
 using ClientSession = ogsimnet::SimNetClient<EqGame, ClientHost, ClientTee<Transport>>;
 using ServerSession = ogsimnet::SimNetServer<EqGame, ServerHost, ServerTee<Transport>>;
 
-static_assert(std::is_same_v<ClientSession::Channel, ClientChannel>,
-	"the client session's channel is the prediction owner the owner traits name, so one NetSync type serves both rigs");
-static_assert(std::is_same_v<ServerSession::Channel<EqSim>, ServerChannel>,
-	"the server session's channel is the authority owner the owner traits name, so one NetSync type serves both rigs");
+static_assert(std::is_same_v<ClientSession::Channel, EqChannel> && std::is_same_v<ServerSession::Channel<EqSim>, EqChannel>,
+	"both sessions' channels are the one owner type the owner traits name for both roles, so one NetSync type serves both rigs");
 
 struct NetPeer
 {
@@ -576,7 +572,7 @@ struct TransportClient
 	ClientHost host;
 	std::unique_ptr<ClientSession> session;
 	SimStack stack;
-	std::map<std::uint8_t, ClientChannel*> channels;
+	std::map<std::uint8_t, EqChannel*> channels;
 	std::uint32_t tick = 0u;
 };
 
@@ -595,9 +591,10 @@ struct TransportRig
 			join(index);
 		for (const CharacterSpec& spec : kCharacters)
 		{
-			ServerChannel& channel =
+			EqChannel* const channel =
 				server->addCharacter<EqSim>(spec.simId, spec.slot, serverIds[spec.client], spec.localIndex, spec.name);
-			serverStack.addAuthority(spec.simId, channel);
+			REQUIRE(channel != nullptr);
+			serverStack.addAuthority(spec.simId, *channel);
 		}
 		charactersAdded = true;
 		REQUIRE(setupUntil([&] {
@@ -636,7 +633,7 @@ struct TransportRig
 		client->session = std::make_unique<ClientSession>(client->host, *client->tee);
 		TransportClient& joined = *client;
 		client->host.added = [&joined](std::uint8_t simId) {
-			ClientChannel* const channel = joined.session->channel(simId);
+			EqChannel* const channel = joined.session->channel(simId);
 			REQUIRE(channel != nullptr);
 			const auto* entry = joined.session->roster().entryFor(simId);
 			REQUIRE(entry != nullptr);
@@ -775,8 +772,8 @@ struct ReferenceClient
 	Transport unsentTransport;
 	std::uint64_t emptyBundles = 0u;
 	SimStack stack;
-	std::map<std::uint8_t, std::unique_ptr<ClientChannel>> owned;
-	std::map<std::uint8_t, ClientChannel*> channels;
+	std::map<std::uint8_t, std::unique_ptr<EqChannel>> owned;
+	std::map<std::uint8_t, EqChannel*> channels;
 	std::vector<StreamItem> handed;
 	Outbound inbound;
 	std::uint32_t tick = 0u;
@@ -802,7 +799,8 @@ struct ReferenceRig
 		}
 		for (const CharacterSpec& spec : kCharacters)
 		{
-			auto channel = std::make_unique<ServerChannel>(unsentTransport.channelTransport(spec.simId), spec.simId, spec.name);
+			auto channel = std::make_unique<EqChannel>(EqBundleTransport(unsentTransport.channelTransport(spec.simId), serverEmptyBundles),
+				spec.simId, spec.name);
 			serverStack.addAuthority(spec.simId, *channel);
 			serverChannels.emplace(spec.simId, std::move(channel));
 			stagers.emplace(spec.simId,
@@ -813,8 +811,8 @@ struct ReferenceRig
 			for (std::size_t c = 0u; c < kClientCount; ++c)
 			{
 				ReferenceClient& client = *clients[c];
-				auto channel = std::make_unique<ClientChannel>(
-					ClientChannelTransport(client.unsentTransport.channelTransport(spec.simId), client.emptyBundles), spec.simId, spec.name);
+				auto channel = std::make_unique<EqChannel>(
+					EqBundleTransport(client.unsentTransport.channelTransport(spec.simId), client.emptyBundles), spec.simId, spec.name);
 				const std::uint8_t simId = spec.simId;
 				channel->setOnInputHandedCallback([&client, simId](const InputBundleBuffer& bundle) {
 					if (!bundle.payload().empty())
@@ -975,8 +973,9 @@ struct ReferenceRig
 	std::map<SimConnectionId, double> rtt;
 	Coordinator coordinator;
 	Transport unsentTransport;
+	std::uint64_t serverEmptyBundles = 0u;
 	SimStack serverStack;
-	std::map<std::uint8_t, std::unique_ptr<ServerChannel>> serverChannels;
+	std::map<std::uint8_t, std::unique_ptr<EqChannel>> serverChannels;
 	std::map<std::uint8_t, std::unique_ptr<RelayRingStager>> stagers;
 	std::array<std::unique_ptr<ReferenceClient>, kClientCount> clients;
 	std::vector<std::pair<SimConnectionId, std::vector<StreamItem>>> toServer;

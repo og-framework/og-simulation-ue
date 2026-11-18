@@ -55,6 +55,9 @@ subdirectories (FindInputFilesFromDirectoryRecursive, lines 2622-2630).
   exceptions on (UEBuildModuleCPP.cs, line 2316); the Editor target turns them on for every module (UEBuildTarget.cs, line
   5474). Measured: the Editor and `OGSimulationTests` builds compile `OGSimulationNetModule.cpp` with `/EHsc /GR-`.
 - **No optimization pin.** The module builds at its target's optimization level.
+- **`FPSemantics = FPSemanticsMode.Precise`** (og-input-latency task 20): og-sim-net includes og-simulation headers, so it
+  compiles with the floating-point mode of every module that compiles simulation code (`/fp:precise` on Win64;
+  og-simulation's `FloatingPointMode-rationale.md`). The module uses no precompiled header, so it needs no private one.
 - **C++20:** the module does not set CppStandard, and is not an engine module, so it keeps its target's standard
   (UEBuildModuleCPP.cs, lines 2385-2393). Measured: the Editor and `OGSimulationTests` builds compile `OGSimulationNetModule.cpp` and
   `SimNetSkeletonTest.cpp` with `/std:c++20`.

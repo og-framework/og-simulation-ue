@@ -353,7 +353,8 @@ seam script's list predates them: run it with the row above added, or it does no
 
 **Exempt by design: the input reception (task 26a).** `hasServerTierWiring`, `getReceptionCoordinator`,
 `getServerReceptionTick`, `noteDelayedInputComponent`, `deliverRemoteInput`, `relayRemoteInput`,
-`beginReceptionCoordinator`, `releaseDelayedInputsForStep` and `forgetReceptionOwner`, with their state
+`beginReceptionCoordinator`, `releaseDelayedInputsForStep`, `forgetReceptionOwner`, and since og-input-latency task P5-5
+`afterAuthorityBatch` (the reap) and `forEachAuthorityCorrectionTick` (the map's walk for the latency member), with their state
 (`m_receptionCoordinator`, `m_relayWriteProbe`, `m_delayedInputComponentsById`), are typed on the per-step release: erasing
 the game's input type there would put an indirect call on the step path (manager design §9, step 5). They stay in this
 class under M4, so they are not on the list above and the script does not check them. None of the functions above
@@ -415,8 +416,9 @@ unregistration hands each of them a component that is unbound, or a character th
   `onPostPhysicsStep` since task 27a, the owner's post-physics step before) fails its
   fatal check that every routed id still has a score entry: the unregistration's first statement removed it (the systems
   executor's unregister notify, which reaches the score system synchronously on the game thread);
-* the latency member's server loop reads each component's correction buffer; it skips an unbound component
-  (`UELatencyBudgetDiagnostics-guards.md` G-03), the only one of the three with a backstop.
+* the latency member's server loop reads each component's correction buffer, through the session's
+  `forEachAuthorityCorrectionTick` since og-input-latency task P5-5; that loop skips an unbound component (`⛔G-29`; the
+  latency member's own `UELatencyBudgetDiagnostics-guards.md` G-03 before), the only one of the three with a backstop.
 
 **What breaks if the tag moves.** Nothing mechanical checks the order: no test runs a component's teardown against a live
 session, and each reader fails only on the frame after an unregistration that left its entry behind.
@@ -588,12 +590,17 @@ marks stands between PROBE A and PROBE 6. ⛔ Do not hoist it above PROBE A. PRO
 server-only and correctly behind it.
 
 **The consequence.** Hoisted to the top of the function, the return stops the frame-health probe on every client, because a
-pure client never has a coordinator. The drain and the reap do not depend on it: `releaseDelayedInputsForStep` tests the
-coordinator itself, the tick-driver binding's `afterInlineBatch` reaps only through a non-null `getReceptionCoordinator()`,
-and a self-scheduled host tests it before its drain and reap (the brawler's Chaos host, `InjectInputs_External`).
+pure client never has a coordinator. The drain and the reap do not depend on it: `releaseDelayedInputsForStep` and the reap,
+`afterAuthorityBatch`, each test the coordinator themselves (the reap since og-input-latency task P5-5; until then the
+tick-driver binding's `afterInlineBatch` reaped only through a non-null `getReceptionCoordinator()`), and a self-scheduled
+host tests it before its drain and reap (the brawler's Chaos host, `InjectInputs_External`, through `hasServerTierWiring()`
+since P5-5).
 
 *R0, task 26b:* verified against the session (`releaseDelayedInputsForStep`'s first statement is its own test) and the
 brawler's two hosts (`BrawlerTickDriverGameUImpl.h`, `ChaosTickBackendUImpl.cpp`).
+
+*R0, og-input-latency task P5-5:* re-verified: `afterAuthorityBatch`'s one statement is the coordinator test with the reap
+under it; `afterInlineBatch` calls it, and `InjectInputs_External` calls the drain and it behind `hasServerTierWiring()`.
 
 *Moved from `OGBrawlerSimulationManager-guards.md` G-70 (the brawler's; re-sited on the session's coordinator by task 26a) by
 og-ue-simulationcomponentandmanagersplit task 26b, with the test it marks.*
@@ -909,6 +916,39 @@ whose prefix is `[DivergenceProbe` (`kSimulationLogRoutes`, plain level `HostLog
 `DivergenceProbe` line to `LogOGDivergenceProbe`. The brawler's `Config/DefaultEngine.ini` ships the category at
 `Warning`, so the predicate answers false there. og-simulation's `correctionVerdictMargin::enabled()` is false while
 no predicate is installed.
+
+---
+
+## G-29 — the correction-tick loop skips a component whose binding is not bound
+
+**Tag site:** `UESimulationSession.h`, directly above `if (!component->isNetSyncBound()) continue;` in
+`forEachAuthorityCorrectionTick`, the statement after the null check on the weak pointer.
+
+**The prohibition.** ⛔ Keep this skip, and keep it before the correction-buffer read. Do not fold it into a getter
+that returns some other buffer, and do not replace it by erasing the map entry from this loop: the loop is `const`, and
+its one caller is the latency member's server loop, a diagnostic that must never write the session's production state
+(`UELatencyBudgetDiagnostics-rationale.md` §4).
+
+**The consequence.** A game component's `const` `getSyncedCorrectionStateBuffer()` forwards to its
+`USimulatableNetSyncComponent` through the binding's sibling pointer, which the component's teardown clears. Without
+the skip, a component that is in the map, still valid as a weak pointer and already unbound would be dereferenced
+through a null pointer on the game thread of a Development server.
+
+**What breaks if the tag moves.** Nothing in any shape that runs today: the session erases the map entry in its
+unregistration (`⛔G-13`), which the component's teardown runs before it unbinds, and a component reaches the map only
+after it is bound. The skip keeps the read safe if a later change reorders those (`UELatencyBudgetDiagnostics-rationale.md`
+§4). It changes no log line: every component the loop reads today is bound.
+
+*R0, og-input-latency task P5-5:* verified: the binding's `const` getter (`UESimulatableOwnerBinding.h`) dereferences its
+sibling pointer with no check, and `isNetSyncBound()` tests that pointer; the actor binds the sibling in its
+`PostInitializeComponents` (the getter's `checkf` text), before the registration's `noteDelayedInputComponent` adds the
+map entry; `forgetReceptionOwner` erases it (`⛔G-13`). **Re-worded for the new site:** the moved text forbade erasing the
+entry "from this class", because the map is the session's production state, which the latency member reads through a const
+reference only. The loop is now the session's own `const` member, and the prohibition is the same.
+
+*Moved from `UELatencyBudgetDiagnostics-guards.md` G-03 (added by og-ue-simulationcomponentandmanagersplit task 21, a lead
+ruling of that task) by og-input-latency task P5-5, with the loop it marks: `forEachAuthorityCorrectionTick` is the latency
+member's server loop up to the per-id `Handed` stamp, which stays in the latency member's `tick_GameThread`.*
 
 ---
 

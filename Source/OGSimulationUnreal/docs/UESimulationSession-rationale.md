@@ -47,6 +47,8 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
 * **§14** is the executors and the engine contract (task 35): `IntegrationExec` and `SystemsExec` spelled with
   og-simulation's executors, the composition's systems list, the `PhysicsEngineTraits` assertion, and the rename of the
   backend's type and members to `PhysicsBackend`, `m_physicsBackend` and `m_physicsBackendWorlds`.
+* **§15** is og-input-latency task P5-5: the seams the switch to og-net re-points, the reap `afterAuthorityBatch`, the slot
+  doors `physicsSlotFor` and `recordAuthoritativeSlot`, and the correction-tick walk `forEachAuthorityCorrectionTick`.
 
 ---
 
@@ -733,6 +735,8 @@ path (manager design §9, step 5), so it stays in this class under M4, and the s
 | `deliverRemoteInput`, `relayRemoteInput` | the delivery sink and the relay sink; the relay sink holds PROBE 5's write |
 | `m_relayWriteProbe` | PROBE 5 (`⛔G-12`) |
 | `releaseDelayedInputsForStep` | the per-step release (the drain) |
+| `afterAuthorityBatch` | the reap: the coordinator's `reapConnections`, when there is a coordinator (og-input-latency task P5-5, §15) |
+| `forEachAuthorityCorrectionTick` | the walk of the delayed-input map for the latency member's server `Handed` stamps (`⛔G-29`; P5-5, §15) |
 | `forgetReceptionOwner` | the reap and the forget: the coordinator's `forgetOwner`, the map's erase (`⛔G-13`) and PROBE 5's `forgetOwner`, extracted from the owner's unregistration and called at their position (since task 28 the unregistration is the session's own, §12.3) |
 
 Every body moved statement for statement; the task's notes hold the token comparison. The spellings changed where the
@@ -744,9 +748,10 @@ category changed. The coordinator, PROBE 5 and the map keep the owner's relative
 
 **The callers reach the session.** The hosts call the release and the reap on the session they hold, as its friends: the
 tick-driver game binding's `releaseInputsForAuthorityTick` and `afterInlineBatch`, and a self-scheduled host's per-frame input
-hook (the brawler's Chaos host). The component binding's RPC tail finds the authority's session through its owner,
+hook (the brawler's Chaos host); since og-input-latency task P5-5 the reap is the session's `afterAuthorityBatch` (§15), so
+no host names the coordinator. The component binding's RPC tail finds the authority's session through its owner,
 `TraitsT::SessionOwner::instanceFor(true)`, then `session()`, for the coordinator, the reception tick and both sinks. The
-latency member reads the map directly. Until task 27a the owner's post-physics step handed the map to its game's score
+latency member reads the map through the session's `forEachAuthorityCorrectionTick` (directly until P5-5, §15). Until task 27a the owner's post-physics step handed the map to its game's score
 push, and the owner's `EndPlay` cleared the map and reset the coordinator; since task 27a `onPostPhysicsStep` hands the
 session to the game's hook, which reads the map through `getDelayedInputComponentsById`, and `endPlay` clears the map and
 resets the coordinator (`⛔G-21`, §10). The per-step release
@@ -768,7 +773,8 @@ RPC and its typed tail, `UESimulatableOwnerBinding::receiveRemoteMoveBundle`), w
 The tail forwards straight into `ServerReceptionCoordinator::noteRttSample` (once per bundle) and
 `ServerReceptionCoordinator::receiveInputBundle` (the whole per-slot loop). The session supplies three accessors (the
 coordinator, the server's reception tick and the route's registration) and the two sinks, and none of them carries netcode
-policy. A fourth accessor, `hasServerTierWiring`, has no caller in the tree.
+policy. A fourth accessor, `hasServerTierWiring`, had no caller in the tree until og-input-latency task P5-5; since then the
+brawler's Chaos host tests it before its drain and reap (§15).
 
 *R0, task 26a:* the moved text said the route is registered "from the RPC adapter". It is registered by the game
 component's own registration, once, on the authority (the binding's registration skeleton,
@@ -814,7 +820,9 @@ A frame's game-thread reception work is three pieces (og-simulationscheduler-wit
   `[ReleaseBatch] first=<tick> numSteps=<n>` line on `LogOGNet` at `Verbose` (the category and level of the coordinator's
   `[Release]` lines; its row is in `kOGAdapterLogRoutes`, `UESimulationLogRoutes-rationale.md` §6), and calls
   `ServerReceptionCoordinator::releaseDelayedInputs` with the per-id callback;
-* the reap, `ServerReceptionCoordinator::reapConnections`, which the host calls on the coordinator.
+* the reap, `afterAuthorityBatch(firstUpcomingSimTick)`, which tests the coordinator and calls
+  `ServerReceptionCoordinator::reapConnections` (since og-input-latency task P5-5, §15; the hosts called the reap on the
+  coordinator before).
 
 The drain hands over only the game-thread-safe upcoming sim tick and the per-id callback. Where each host calls the three
 pieces is the host's: the driver-scheduled host drains per authority step and reaps once per frame after the inline steps;
@@ -1760,3 +1768,43 @@ renamed together.
 og-simulation includes. *R0:* `SimulationIntegrationExecutor.h` already reached the plugin's two `.cpp` files that include
 this header through `SimulationManager.h` (task 34); the other two are new to them, with `SystemRoleAffinity.h`, which
 `SystemsExecutor.h` includes (an enum, no data).
+
+---
+
+## §15 The seams for the switch (og-input-latency task P5-5)
+
+og-input-latency's switch to og-net (its task P5-7, P5 design §3.4) changes what the reap, the slot and the server's
+`Handed` stamps run on. Task P5-5 gave the session four members that hold today's statements, so that the switch edits these
+bodies instead of every host and the latency member. P5-5 is refactor-only: each member holds the statements its callers ran
+before, and each caller calls it at the position of those statements. All four are private, and every caller is one of the
+session's friends (§4).
+
+| member | holds | callers |
+|---|---|---|
+| `afterAuthorityBatch(firstUpcomingSimTick)` | the reap: the coordinator's `reapConnections(firstUpcomingSimTick)`, when the session has a coordinator | the tick-driver game binding's `afterInlineBatch` (it tested `getReceptionCoordinator()` itself before); the brawler's Chaos host, `InjectInputs_External`, after its drain (it read `m_receptionCoordinator` directly before) |
+| `physicsSlotFor(owner, key)` | the character's replicated slot: `GetPhysicsSlot()` on `owner` as the traits' `Character` | the game binding's `callWithSlotRequest`, as the slot it hands `slotCall` |
+| `recordAuthoritativeSlot(owner, key, slot)` | the slot publish: `SetAuthoritativePhysicsSlot(slot)` on `owner` as the traits' `Character` | the setter `callWithSlotRequest` hands `slotCall` |
+| `forEachAuthorityCorrectionTick(function)` | the walk of `m_delayedInputComponentsById`: it skips a stale weak pointer and an unbound component (`⛔G-29`), reads the component's correction-buffer tick, skips tick 0, and calls `function(id, tick)` | the latency member's server branch of `tick_GameThread`, which keeps the per-id `Handed` stamp (`UELatencyBudgetDiagnostics-rationale.md` §12) |
+
+**No file but this header names `m_receptionCoordinator` since P5-5.** The Chaos host's test of it became
+`hasServerTierWiring()` and its reap `afterAuthorityBatch`. The tick-driver binding never named the member: it called
+`getReceptionCoordinator()`, which the component binding's RPC tail still calls (§9.7).
+
+**The slot doors.** Both take the owner as an `AActor&` and the host's slot key (`TickDriverBackendUImpl::slotKeyOf`), which
+neither reads yet; the parameter is for the switch, which records the authority's slot in the session by that key and
+answers a client from the roster. Each casts with `CastChecked` to `TraitsT::Character`, as `tryRegister` casts to it: the
+session is a class template, so the cast and the member calls are compiled where the door is instantiated, through the game
+binding's `callWithSlotRequest`, where the character is complete. The caller's `checkf` that the owner is that class runs
+first and keeps its message, so the cast cannot fail on any path that reaches it. The doors name two members of the game's
+character, `GetPhysicsSlot` and `SetAuthoritativePhysicsSlot`; the switch removes both reads.
+
+**The walk's include.** The correction-buffer read names `correctionStateBuffer::kTickOffset`, which does not depend on
+`TraitsT`, so this header includes `OGSimulation/CorrectionStateBufferCodec.h` itself. The latency member's header included
+it for the same read and no longer does.
+
+**The walk is compiled only where it is called.** It is a member template, and its one caller is compiled only while
+`OG_LATENCY_BUDGET_DIAGNOSTICS` is 1 (`UELatencyBudgetDiagnostics-rationale.md` §3), so a Shipping build instantiates no
+copy of it.
+
+**What did not change.** No log text, level, category or order. The header grew by 50 lines, most of them above `checkf`s,
+which moves only the `__LINE__` a failed check reports.

@@ -49,7 +49,7 @@ static_assert(simEnvelope::kHeaderBytes + 2u + CorrectionStateBuffer::kBufferByt
 	"(kMaxSimMessageBytes); a larger one would be refused as tooLarge on every client. Re-check before raising the buffer");
 static_assert(kMaxCorrectionCandidates == kRosterMaxEntries,
 	"kMaxCorrectionCandidates: one candidate per character, and the roster holds at most kRosterMaxEntries characters "
-	"(its add fails an OG_CHECK past that), so a frame's candidates always fit the fixed arrays");
+	"(its add refuses one more as Full), so a frame's candidates always fit the fixed arrays");
 
 template <class G>
 concept SimNetGame = requires { typename G::Simulatables; } && IsSimulatableList<typename G::Simulatables>;
@@ -133,7 +133,40 @@ struct SimNetServerStats
 	uint64_t floorsSent = 0u;
 	uint64_t rosterSent = 0u;
 	uint64_t quotaDisconnects = 0u;
+	uint64_t emptyBundles = 0u;
+	uint64_t addRefused = 0u;
 };
+
+enum class AddCharacterRefusal : uint8_t { None, SimIdLive, SlotLive };
+
+constexpr const char* addCharacterRefusalName(AddCharacterRefusal refusal)
+{
+	switch (refusal)
+	{
+	case AddCharacterRefusal::None:
+		return "None";
+	case AddCharacterRefusal::SimIdLive:
+		return "SimIdLive";
+	case AddCharacterRefusal::SlotLive:
+		return "SlotLive";
+	}
+	return "Unknown";
+}
+
+inline constexpr char kSimNetAddRefusedFormat[] = "[Warning][Roster.Refused] role=server simId=%u slot=%u reason=%s";
+inline constexpr size_t kSimNetAddRefusedLineBytes = 96u;
+
+static_assert(kSimNetAddRefusedLineBytes >= sizeof(kSimNetAddRefusedFormat) + 3u + 3u + sizeof("DuplicateOwnerSlot"),
+	"kSimNetAddRefusedLineBytes must hold the server's [Roster.Refused] line with a 3-digit sim id, a 3-digit slot and the "
+	"longest reason (the roster's DuplicateOwnerSlot; was SimIdLive before P5-23)");
+
+inline std::array<char, kSimNetAddRefusedLineBytes> formatAddRefused(uint8_t simId, uint8_t physicsSlot, const char* reason)
+{
+	std::array<char, kSimNetAddRefusedLineBytes> line{};
+	std::snprintf(line.data(), line.size(), kSimNetAddRefusedFormat, static_cast<unsigned>(simId), static_cast<unsigned>(physicsSlot),
+		reason);
+	return line;
+}
 
 inline constexpr char kSimNetServerWindowFormat[] =
 	"[Warning][SimNet.Window] role=server drains=%llu msgs=%llu maxDepth=%llu drops=%llu tooLarge=%llu badDecode=%llu "
@@ -187,6 +220,9 @@ inline std::array<char, kSimNetQuotaDisconnectLineBytes> formatQuotaDisconnect(c
 template <class SimT, class ShapeT>
 inline constexpr bool kSimHasShape = std::is_same_v<simEnvelope::ShapeFor<typename SimT::InputType, typename SimT::StateType>, ShapeT>;
 
+template <class ChannelT, class SimT, class InnerT>
+inline constexpr bool kIsSessionChannel = std::is_same_v<ChannelT, SessionChannel<SimT, InnerT>>;
+
 template <SimNetGame Game, SimNetServerHost HostT, SimNetServerTransport TransportT, CorrectionPolicy PolicyT = SendAllDirty,
 	class SimsT = typename Game::Simulatables>
 class SimNetServer;
@@ -206,7 +242,14 @@ public:
 	using ChannelTransport = decltype(std::declval<TransportT&>().channelTransport(uint8_t{}));
 
 	template <class SimT>
-	using Channel = SimNetChannel<SimT, ChannelTransport>;
+	using Channel = SessionChannel<SimT, ChannelTransport>;
+
+	static_assert((kIsSessionChannel<Channel<SimTs>, SimTs, ChannelTransport> && ...),
+		"SimNetServer: a character's channel is SessionChannel<SimT, ChannelTransport>, the type SimNetClient::Channel is for the "
+		"same transport, so one SimulatableOwnerTraits owner type serves both roles");
+	static_assert(SimNetDeliveryHookWellFormed<HostT>,
+		"SimNetServer: the host's noteDelivered member, if it has one, must be callable as noteDelivered(SimLane, double "
+		"recvSeconds) -> void; any other shape would never be called");
 
 	// ⛔G-09  docs/SimNetServer-guards.md
 	static_assert((kSimHasShape<SimTs, Shape> && ...),
@@ -258,19 +301,34 @@ public:
 	void afterBatch(int32_t serverTick) { m_coordinator.reapConnections(serverTick); }
 
 	template <class SimT>
-	Channel<SimT>& addCharacter(uint8_t simId, uint8_t physicsSlot, SimConnectionId ownerConn, uint8_t localIndex, std::string debugName)
+	Channel<SimT>* addCharacter(uint8_t simId, uint8_t physicsSlot, SimConnectionId ownerConn, uint8_t localIndex, std::string debugName)
 	{
 		static_assert((std::is_same_v<SimT, SimTs> || ...), "SimNetServer::addCharacter: SimT is not one of the game's simulatables");
+
+		const AddCharacterRefusal refusal = addRefusalFor(simId, physicsSlot);
+		// ⛔G-10  docs/SimNetServer-guards.md
+		if (refusal != AddCharacterRefusal::None)
+		{
+			refuseAdd(simId, physicsSlot, addCharacterRefusalName(refusal));
+			return nullptr;
+		}
 
 		RosterRecord record;
 		record.simId = simId;
 		record.physicsSlot = physicsSlot;
 		record.owner = ownerConn == kInvalidSimConnection ? std::nullopt : std::optional<SimConnectionId>(ownerConn);
 		record.localIndex = localIndex;
-		m_roster.add(record);
+		const RosterAddRefusal rosterRefusal = m_roster.add(record);
+		// ⛔G-11  docs/SimNetServer-guards.md
+		if (rosterRefusal != RosterAddRefusal::None)
+		{
+			refuseAdd(simId, physicsSlot, rosterAddRefusalName(rosterRefusal));
+			return nullptr;
+		}
 
-		auto channel = std::make_unique<Channel<SimT>>(m_transport.channelTransport(simId), simId, debugName);
-		Channel<SimT>& added = *channel;
+		auto channel = std::make_unique<Channel<SimT>>(
+			SimNetBundleTransport<ChannelTransport>(m_transport.channelTransport(simId), m_stats.emptyBundles), simId, debugName);
+		Channel<SimT>* const added = channel.get();
 		std::get<ChannelMap<SimT>>(m_channels).emplace(simId, std::move(channel));
 		m_characters.emplace(simId,
 			Character{ownerConn, std::make_unique<RelayRingStager>(std::move(debugName), [this](const char* line) { m_host.log(line); })});
@@ -471,9 +529,32 @@ private:
 		case InboundKind::Message:
 			++m_stats.messages;
 			++m_window.messages;
+			if constexpr (SimNetDeliveryHook<HostT>)
+				m_host.noteDelivered(record.lane, record.recvSeconds);
 			onMessage(record);
 			return;
 		}
+	}
+
+	AddCharacterRefusal addRefusalFor(uint8_t simId, uint8_t physicsSlot) const
+	{
+		if (m_characters.find(simId) != m_characters.end())
+			return AddCharacterRefusal::SimIdLive;
+		if (physicsSlot == kRosterNoSlot)
+			return AddCharacterRefusal::None;
+		for (const auto& entry : m_characters)
+		{
+			const RosterRecord* const live = m_roster.recordFor(entry.first);
+			if (live != nullptr && live->physicsSlot == physicsSlot)
+				return AddCharacterRefusal::SlotLive;
+		}
+		return AddCharacterRefusal::None;
+	}
+
+	void refuseAdd(uint8_t simId, uint8_t physicsSlot, const char* reason)
+	{
+		++m_stats.addRefused;
+		m_host.log(formatAddRefused(simId, physicsSlot, reason).data());
 	}
 
 	void onMessage(const InboundSimRecord& record)

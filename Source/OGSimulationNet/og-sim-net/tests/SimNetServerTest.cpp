@@ -23,6 +23,7 @@
 #include "OGSimulation/SimulatableList.h"
 #include "OGSimulation/SimulationComposite.h"
 #include "OGSimulation/SimulationFieldDescriptors.h"
+#include "OGSimulation/SimulationQueues.h"
 
 #include <array>
 #include <cstddef>
@@ -34,6 +35,7 @@
 #include <span>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -122,6 +124,16 @@ struct FakeHost
 };
 
 static_assert(ogsimnet::SimNetServerHost<FakeHost>);
+static_assert(!ogsimnet::SimNetDeliveryHook<FakeHost>);
+
+struct DeliveryHost : FakeHost
+{
+	std::vector<std::pair<SimLane, double>> deliveries;
+
+	void noteDelivered(SimLane lane, double recvSeconds) { deliveries.emplace_back(lane, recvSeconds); }
+};
+
+static_assert(ogsimnet::SimNetServerHost<DeliveryHost> && ogsimnet::SimNetDeliveryHook<DeliveryHost>);
 
 struct RecordingEndpoint
 {
@@ -233,8 +245,9 @@ struct Fixture
 	template <class SimT>
 	void addRecorded(std::uint8_t simId, std::uint8_t slot, SimConnectionId owner, std::uint8_t localIndex)
 	{
-		auto& channel = server->addCharacter<SimT>(simId, slot, owner, localIndex, "char" + std::to_string(simId));
-		channel.setOnRemoteMoveReceivedCallback([this, simId](std::uint32_t captureTick, const SrvInput& input) {
+		auto* const channel = server->addCharacter<SimT>(simId, slot, owner, localIndex, "char" + std::to_string(simId));
+		REQUIRE(channel != nullptr);
+		channel->setOnRemoteMoveReceivedCallback([this, simId](std::uint32_t captureTick, const SrvInput& input) {
 			delivered.push_back(Delivered{simId, captureTick, input.move});
 		});
 	}
@@ -669,6 +682,179 @@ TEST_CASE("SimNetServer.RemovingACharacterReportsItsStagerSendsTheRemoveAndForge
 
 	f.server->addCharacter<SimB>(11u, 0u, kConnA, 0u, "reuse");
 	CHECK(f.server->roster().liveCount() == 1u);
+}
+
+TEST_CASE("SimNetServer.AnAddWithALiveSimIdOrALiveSlotIsRefusedAndChangesNothing", "[NetTransport][SimNetServer]")
+{
+	constexpr SimConnectionId kConnC = 8u;
+	Fixture f;
+	f.connect(kConnA);
+	f.connect(kConnB);
+	f.server->dispatchFrame();
+	f.addRecorded<SimA>(kSimA0, 0u, kConnA, 0u);
+	f.server->flushFrame();
+	FakeServer::Channel<SimA>* const first = f.server->channel<SimA>(kSimA0);
+	REQUIRE(first != nullptr);
+	const RelayRingStager* const firstStager = f.server->stager(kSimA0);
+	const RosterMessage snapshotBefore = f.server->roster().snapshotFor(kConnC);
+	const std::uint16_t revisionBefore = f.server->roster().revision();
+	const std::size_t callsBefore = f.endpoint.calls.size();
+
+	CHECK(f.server->addCharacter<SimA>(kSimA0, 5u, kConnB, 0u, "again") == nullptr);
+	CHECK(f.server->addCharacter<SimB>(kSimA0, 6u, kConnB, 1u, "otherType") == nullptr);
+	CHECK(f.server->addCharacter<SimB>(kSimB1, 0u, kConnB, 0u, "slot") == nullptr);
+	CHECK(f.server->stats().addRefused == 3u);
+	CHECK(f.linesWith("[Roster.Refused]")
+		== std::vector<std::string>{"[Warning][Roster.Refused] role=server simId=3 slot=5 reason=SimIdLive",
+			"[Warning][Roster.Refused] role=server simId=3 slot=6 reason=SimIdLive",
+			"[Warning][Roster.Refused] role=server simId=4 slot=0 reason=SlotLive"});
+
+	CHECK(f.server->channel<SimA>(kSimA0) == first);
+	CHECK(first->simId() == kSimA0);
+	CHECK(first->debugName() == "char3");
+	CHECK(f.server->channel<SimB>(kSimA0) == nullptr);
+	CHECK(f.server->channel<SimB>(kSimB1) == nullptr);
+	CHECK(f.server->stager(kSimA0) == firstStager);
+	CHECK(f.server->stager(kSimB1) == nullptr);
+	CHECK(f.server->roster().revision() == revisionBefore);
+	CHECK(f.server->roster().liveCount() == 1u);
+	CHECK(f.server->roster().ownerOf(kSimA0) == std::optional<SimConnectionId>(kConnA));
+	f.server->flushFrame();
+	CHECK(f.endpoint.calls.size() == callsBefore);
+
+	f.connect(kConnC);
+	f.server->dispatchFrame();
+	f.server->flushFrame();
+	std::array<std::byte, kMaxSimMessageBytes> expected{};
+	const size_t expectedSize = simEnvelope::writeRoster(expected, snapshotBefore.view());
+	const std::vector<RecordingEndpoint::Call> controlCalls = f.endpoint.on(ognet::Lane::Control);
+	REQUIRE(!controlCalls.empty());
+	CHECK(controlCalls.back().id == kConnC);
+	CHECK(controlCalls.back().bytes == toU8(std::span<const std::byte>(expected.data(), expectedSize)));
+
+	f.host.tick = 100;
+	f.push(kConnA, inputSet({{kSimA0, {{110u, 1}}}}));
+	f.push(kConnB, inputSet({{kSimA0, {{111u, 2}}}}));
+	f.server->dispatchFrame();
+	CHECK(f.server->coordinator().claimCount() == 1u);
+	CHECK(f.server->stats().refusedNotOwner == 1u);
+
+	CHECK(f.server->addCharacter<SimA>(kSimOther, kRosterNoSlot, kInvalidSimConnection, kRosterNotLocal, "noSlot1") != nullptr);
+	CHECK(f.server->addCharacter<SimA>(kSimUnknown, kRosterNoSlot, kInvalidSimConnection, kRosterNotLocal, "noSlot2") != nullptr);
+	f.server->removeCharacter(kSimA0, RosterRemoveReason::Left);
+	CHECK(f.server->addCharacter<SimB>(kSimB1, 0u, kConnB, 0u, "slotAgain") != nullptr);
+	CHECK(f.server->stats().addRefused == 3u);
+	CHECK(f.server->roster().liveCount() == 3u);
+}
+
+TEST_CASE("SimNetServer.AnAddTheRosterRefusesAsFullOrDuplicateOwnerSlotReturnsNullAndChangesNothing", "[NetTransport][SimNetServer]")
+{
+	constexpr SimConnectionId kConnC = 8u;
+	Fixture f;
+	f.connect(kConnA);
+	f.connect(kConnB);
+	f.server->dispatchFrame();
+	f.addRecorded<SimA>(1u, 0u, kConnA, 0u);
+	f.server->flushFrame();
+	const std::uint16_t revisionBefore = f.server->roster().revision();
+	std::size_t callsBefore = f.endpoint.calls.size();
+
+	CHECK(f.server->addCharacter<SimB>(2u, 1u, kConnA, 0u, "dup") == nullptr);
+	CHECK(f.server->stats().addRefused == 1u);
+	CHECK(f.server->channel<SimB>(2u) == nullptr);
+	CHECK(f.server->stager(2u) == nullptr);
+	CHECK(f.server->roster().revision() == revisionBefore);
+	CHECK(f.server->roster().liveCount() == 1u);
+	f.server->flushFrame();
+	CHECK(f.endpoint.calls.size() == callsBefore);
+
+	for (std::uint8_t simId = 10u; simId <= 16u; ++simId)
+		f.addRecorded<SimA>(simId, static_cast<std::uint8_t>(simId - 9u), kInvalidSimConnection, kRosterNotLocal);
+	REQUIRE(f.server->roster().liveCount() == 8u);
+	f.server->flushFrame();
+	const RosterMessage snapshotBefore = f.server->roster().snapshotFor(kConnC);
+	const std::uint16_t revisionFull = f.server->roster().revision();
+	callsBefore = f.endpoint.calls.size();
+
+	CHECK(f.server->addCharacter<SimA>(20u, kRosterNoSlot, kConnB, 0u, "full") == nullptr);
+	CHECK(f.server->stats().addRefused == 2u);
+	CHECK(f.linesWith("[Roster.Refused]")
+		== std::vector<std::string>{"[Warning][Roster.Refused] role=server simId=2 slot=1 reason=DuplicateOwnerSlot",
+			"[Warning][Roster.Refused] role=server simId=20 slot=255 reason=Full"});
+	CHECK(f.server->channel<SimA>(20u) == nullptr);
+	CHECK(f.server->stager(20u) == nullptr);
+	CHECK(f.server->roster().revision() == revisionFull);
+	CHECK(f.server->roster().liveCount() == 8u);
+	f.server->flushFrame();
+	CHECK(f.endpoint.calls.size() == callsBefore);
+
+	f.connect(kConnC);
+	f.server->dispatchFrame();
+	f.server->flushFrame();
+	std::array<std::byte, kMaxSimMessageBytes> expected{};
+	const size_t expectedSize = simEnvelope::writeRoster(expected, snapshotBefore.view());
+	const std::vector<RecordingEndpoint::Call> controlCalls = f.endpoint.on(ognet::Lane::Control);
+	REQUIRE(!controlCalls.empty());
+	CHECK(controlCalls.back().id == kConnC);
+	CHECK(controlCalls.back().bytes == toU8(std::span<const std::byte>(expected.data(), expectedSize)));
+
+	f.server->removeCharacter(16u, RosterRemoveReason::Despawned);
+	CHECK(f.server->addCharacter<SimA>(20u, kRosterNoSlot, kConnB, 0u, "notSpent") != nullptr);
+	CHECK(f.server->addCharacter<SimB>(2u, 7u, kConnA, 1u, "fullAgain") == nullptr);
+	CHECK(f.server->stats().addRefused == 3u);
+	CHECK(f.linesWith("[Roster.Refused]").back() == "[Warning][Roster.Refused] role=server simId=2 slot=7 reason=Full");
+	CHECK(f.server->roster().ownerOf(20u) == std::optional<SimConnectionId>(kConnB));
+	CHECK(f.server->roster().revision() == static_cast<std::uint16_t>(revisionFull + 2u));
+}
+
+TEST_CASE("SimNetServer.ItsChannelIsTheSessionChannelTypeAndAnEmptyBundleIsCounted", "[NetTransport][SimNetServer]")
+{
+	STATIC_CHECK(std::is_same_v<FakeServer::ChannelTransport, FakeTransport::ChannelTransport>);
+	STATIC_CHECK(std::is_same_v<FakeServer::Channel<SimA>, SessionChannel<SimA, FakeTransport::ChannelTransport>>);
+	STATIC_CHECK(std::is_same_v<FakeServer::Channel<SimB>, SimNetChannel<SimB, SimNetBundleTransport<FakeTransport::ChannelTransport>>>);
+
+	Fixture f;
+	f.addRecorded<SimA>(kSimA0, 0u, kConnA, 0u);
+	PendingInputQueue<SrvInput> queue;
+	f.server->channel<SimA>(kSimA0)->sendLocalInputToAuthority(queue, 10u, 3u);
+	CHECK(f.server->stats().emptyBundles == 1u);
+	queue.enqueue(10u, SrvInput{4, 4u});
+	f.server->channel<SimA>(kSimA0)->sendLocalInputToAuthority(queue, 10u, 3u);
+	CHECK(f.server->stats().emptyBundles == 1u);
+}
+
+TEST_CASE("SimNetServer.AHostWithNoteDeliveredSeesOneCallPerMessageRecordAndNoneForEvents", "[NetTransport][SimNetServer]")
+{
+	TimeConfig config = testTimeConfig();
+	RecordingEndpoint endpoint;
+	DeliveryHost host;
+	auto transport = std::make_unique<FakeTransport>();
+	transport->installHandlers(endpoint);
+	transport->markEndpointStarted();
+	SimNetServer<MockGame, DeliveryHost, FakeTransport> server(host, *transport, config, size_t{4096});
+	transport->inbox().pushEvent(InboundKind::Connected, kConnA, ogsimnet::kNoReceiveSeconds);
+	transport->inbox().pushEvent(InboundKind::Connected, kConnB, ogsimnet::kNoReceiveSeconds);
+	server.dispatchFrame();
+	CHECK(host.deliveries.empty());
+	REQUIRE(server.addCharacter<SimA>(kSimA0, 0u, kConnA, 0u, "a") != nullptr);
+
+	host.tick = 100;
+	std::vector<std::byte> bad = inputSet({{kSimA0, {{101u, 1}}}});
+	bad[0] = std::byte{0x7E};
+	REQUIRE(transport->inbox().pushMessage(kConnA, SimLane::SimInput, 1.25, inputSet({{kSimA0, {{101u, 1}}}})));
+	REQUIRE(transport->inbox().pushMessage(kConnB, SimLane::SimInput, 1.5, inputSet({{kSimA0, {{102u, 2}}}})));
+	REQUIRE(transport->inbox().pushMessage(kConnA, SimLane::SimInput, 1.75, bad));
+	REQUIRE(transport->inbox().pushMessage(kConnA, SimLane::Control, 2.0, inputSet({{kSimA0, {{103u, 3}}}})));
+	transport->inbox().pushEvent(InboundKind::Disconnected, kConnB, ogsimnet::kNoReceiveSeconds);
+	server.dispatchFrame();
+
+	CHECK(host.deliveries
+		== std::vector<std::pair<SimLane, double>>{{SimLane::SimInput, 1.25}, {SimLane::SimInput, 1.5}, {SimLane::SimInput, 1.75},
+			{SimLane::Control, 2.0}});
+	CHECK(server.stats().messages == 4u);
+	CHECK(server.stats().badDecode == 2u);
+	CHECK(server.stats().refusedNotOwner == 1u);
+	CHECK(server.coordinator().claimCount() == 1u);
 }
 
 TEST_CASE("SimNetServer.TheWindowLineReportsEveryTenSecondsOfHostTime", "[NetTransport][SimNetServer]")
@@ -1152,4 +1338,15 @@ TEST_CASE("SimNetServer.Death.RemovingAnUnknownCharacterFiresTheCheck", "[.][OGS
 	Fixture f;
 	f.server->removeCharacter(kSimA0, RosterRemoveReason::Left);
 	FAIL("SimNetServer::removeCharacter of a sim id with no character did NOT fire its OG_CHECK");
+}
+
+TEST_CASE("SimNetServer.Death.ARemovedSimIdIsNotRefusedAsLiveAndReachesTheRostersNeverReusedCheck", "[.][OGSimDeath]")
+{
+	Fixture f;
+	f.addRecorded<SimA>(kSimA0, 0u, kConnA, 0u);
+	f.server->removeCharacter(kSimA0, RosterRemoveReason::Left);
+	const auto* const again = f.server->addCharacter<SimA>(kSimA0, 1u, kConnA, 0u, "again");
+	CHECK(f.server->stats().addRefused == 0u);
+	FAIL((again == nullptr ? "SimNetServer::addCharacter refused a removed sim id as live"
+						   : "RosterAuthority::add's never-reused OG_CHECK did NOT fire for a removed sim id"));
 }

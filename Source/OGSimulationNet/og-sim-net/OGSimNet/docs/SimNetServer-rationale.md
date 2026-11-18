@@ -20,8 +20,8 @@ that govern its lines are in `SimNetServer-guards.md`; the host services it call
   coordinator address is a `SimNetConnectionHandle` taken from it, so a connection id that og-net reuses after a disconnect
   reads dead under its old handle.
 - **The roster authority** (`RosterAuthority`, `SimNetRoster.h`).
-- **One `SimNetChannel` per character**, kept per simulatable type and found by sim id, each holding the transport's
-  per-character adapter (`channelTransport(simId)`).
+- **One channel per character** (`Channel<SimT>`, §2), kept per simulatable type and found by sim id, each holding the
+  transport's per-character adapter (`channelTransport(simId)`) inside a `SimNetBundleTransport`.
 - **One `RelayRingStager` per character**, named with the character's debug name and logging through the host.
 - **The per-connection send state:** the connections that have their Snapshot, in attach order; the last tier each was sent;
   the tick of the last correction each was sent per character.
@@ -43,6 +43,16 @@ registration.
   `stats`), `flushFrame()` and `channelTransport(simId)`. `SimNetTransport` satisfies it; the tests use it over a recording
   endpoint and over og-net's `VirtualNetwork`.
 - **`PolicyT`** is the correction policy (§10), `SendAllDirty` by default.
+- **`Channel<SimT>` is `SessionChannel<SimT, ChannelTransport>`** (`SimNetChannel.h`), where `ChannelTransport` is the type
+  the transport's `channelTransport(simId)` returns. `SimNetClient::Channel` is the same alias for the client's transport, so
+  over one transport type the two sessions' channels are one type. A game's `SimulatableOwnerTraits` can then name that one
+  type as both the prediction and the authority owner, and the host registers a server character the way the engine path does
+  today: through `registerSimulatable`'s authority overload, with the channel as both owners. That registration also creates
+  the remote-input store and binds the relay and correction callbacks on the authority, as the engine path does. A
+  `static_assert` checks the alias for every simulatable; it folds over the variable template `kIsSessionChannel`, the form
+  G-09 requires for the shape fold.
+- **`HostT`'s optional `noteDelivered`** (§3): a `static_assert` refuses a host member of that name that the session could
+  not call as `noteDelivered(SimLane, double)` (`SimNetDeliveryHookWellFormed`, `SimNetHost.h`).
 - **One envelope shape for every simulatable.** An input set is walked with one bundle stride before any sim id in it is
   looked up (`simEnvelope::forEachInputBundle`), so every simulatable of the game must have the same input and state sizes. A
   `static_assert` checks it, through the variable template `kSimHasShape` (G-09 says why it is not written inline). A game
@@ -58,6 +68,13 @@ registration.
 `drain()` hands every record in the inbox to the session in FIFO order and returns how many it handled. `dispatchFrame()` is
 the same drain, under the name of the frame point it is bound to in the frame-locked mode. The inbox's own single-consumer
 guard holds; the session adds no thread check.
+
+**The delivery hook.** When the host has `noteDelivered(SimLane, double recvSeconds)` (`SimNetDeliveryHook`), the session
+calls it once for every `Message` record it drains, with the record's lane and og-net's receive time, before it decodes the
+message. It is called for every message the inbox handed over, whatever the session then does with it: a malformed set, a
+refused bundle and a message on the wrong lane are all delivered messages. It is never called for a `Connected` or
+`Disconnected` record. A host without the member compiles unchanged and is never called; P5's Unreal host is to use it for
+the sim lanes' rows of its `[OGNet.Window]` line.
 
 - **One order, three rings.** The transport gives Control and the connection events rings of their own in the inbox
   (`SimNetTransport-rationale.md` §10, §11). The inbox hands records out in the order they were pushed across all three
@@ -202,7 +219,25 @@ connections only.
 
 - **`addCharacter<SimT>(simId, physicsSlot, ownerConn, localIndex, debugName)`** adds the roster record (`ownerConn` =
   `kInvalidSimConnection` for an authority-local character), creates the channel and the stager, sends the Add to every
-  attached connection in its own view, and returns the channel for the host to register with NetSync.
+  attached connection in its own view, and returns a pointer to the channel for the host to register with NetSync.
+- **It fails closed** (G-10). Before anything else it refuses an add whose sim id already has a character (`SimIdLive`), or
+  whose physics slot is held by a live entry (`SlotLive`; `kRosterNoSlot` never collides). A refusal returns `nullptr`,
+  leaves the roster, the channels, the stagers and the sends as they were, counts `addRefused` and logs
+  `[Warning][Roster.Refused] role=server simId= slot= reason=SimIdLive|SlotLive` through the host. The roster checks the
+  same two things with `OG_CHECK`s; where those are compiled out, the old path added a second roster record, `emplace` kept
+  the first channel and destroyed the new one, and the reference it returned dangled.
+- **The roster's own refusals** (G-11, from task P5-23). `RosterAuthority::add` returns `Full` when no roster slot is free
+  (`kRosterMaxEntries` characters, a pending Remove included) and `DuplicateOwnerSlot` when the owner and local index are a live
+  entry's (`SimNetRoster-rationale.md` §4). `addCharacter` turns either into the same `nullptr`, the same `addRefused` count and
+  the same line, `[Warning][Roster.Refused] role=server simId= slot= reason=Full|DuplicateOwnerSlot`, before it creates the
+  channel or the stager or sends anything. The roster changed nothing, so nothing is undone. The `slot=` field is the one the
+  host passed, `255` for `kRosterNoSlot`.
+- **What it does not refuse.** A sim id that was removed is not live, so the session passes it on; the roster then refuses it
+  with its own `OG_CHECK`, because an authority never reuses a sim id (`SimNetRoster-rationale.md`). A removed character's
+  physics slot is free again. The roster's other preconditions (a slot or local index out of range, an owner of
+  `kInvalidSimConnection`, an owner with no local index) stay its `OG_CHECK`s; admission and the host keep them out.
+- The client's own `[Roster.Refused] reason=` line (`SimNetRoster.h`'s formatter, a refused roster stream) shares the tag; the
+  server's carries `role=server` and the leading `[Warning]`.
 - **`removeCharacter(simId, reason)`**: the stager's `finalReport` (`[RelayFlush] teardown`), then the roster's `remove` and
   `removeFor` in one statement (G-03), then the Remove to every attached connection, then the coordinator's `forgetOwner(simId)`
   (the engine path's unregister does the same, through `UESimulationSession::forgetReceptionOwner`), then the channel, the
@@ -234,7 +269,8 @@ Every 10 s of the host's `nowSeconds`, checked at the end of `flushFrame`:
   a dedicated server runs its net categories at Warning, so a lower line would not exist where it is needed.
 - `SimNetServerStats` (`stats()`) holds the session's own counters since construction: the line's `drains`, `msgs`
   (`messages`), `badDecode`, `refusedNotOwner`, `unknownSim`, `statesSent`, `relaysSent`, `overBudget` and `quotaDisconnects`,
-  plus the clocks, tiers, floors and roster messages sent. `maxDepth` is kept per window only, and the inbox's counters are
+  plus the clocks, tiers, floors and roster messages sent, the refused adds (`addRefused`, §11) and the empty bundles its
+  channels dropped (`emptyBundles`, `SimNetChannel-rationale.md` §10). The last two are not on the line. `maxDepth` is kept per window only, and the inbox's counters are
   the transport's (`inbox().stats()`).
 
 ## §13 Returns after checks
@@ -255,7 +291,18 @@ standalone build with `NDEBUG`), and keep those builds from writing or reading o
   included; the reap at the next dwell boundary; removal; the window line; the over-budget count; each receiver's candidate
   age, with only attached connections asked; and, over `VirtualNetwork`, the Snapshot and floor before deltas, the relay to
   all but the owner, corrections once per write to every connection, and the clock once per changed tick.
-- Three hidden `[.][OGSimDeath]` cases, one per `OG_CHECK`.
+- `addCharacter`'s refusal: a live sim id (of either simulatable type) and a live slot are refused, counted and logged, and
+  the first channel, its stager, the roster's revision and a new connection's Snapshot are unchanged; two characters with no
+  slot are both added; a removed character's slot is free again.
+- The roster's refusals through `addCharacter`: a second live owner and local index, then a ninth character, each return
+  `nullptr`, count, log its line (`reason=DuplicateOwnerSlot`, `reason=Full` with `slot=255`), create no channel or stager,
+  send nothing and leave the roster's revision and a new connection's Snapshot unchanged; after a removal the refused sim id is
+  added.
+- The channel is the session channel type, and an empty bundle is counted in `emptyBundles`; a host with `noteDelivered`
+  sees one call per message record (a malformed set, a refused bundle and a message on the wrong lane included) with its lane
+  and receive time, and none for connection events.
+- Four hidden `[.][OGSimDeath]` cases: one per `OG_CHECK` (three), and one that re-adds a removed sim id and reaches the
+  roster's never-reused check.
 
 `SimNetIsolationTest.cpp` (`[NetTransport][SimNetIsolation]`) checks the window line's inbox fields on a real transport: the
 quota refusals and the Control high-water mark, a quota disconnect, and, over two windows, a refused `Connected` and the event

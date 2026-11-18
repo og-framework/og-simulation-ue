@@ -44,6 +44,7 @@
 #include <span>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -232,6 +233,16 @@ struct ClientHost
 };
 
 static_assert(SimNetClientHost<ClientHost>);
+static_assert(!SimNetDeliveryHook<ClientHost>);
+
+struct DeliveryClientHost : ClientHost
+{
+	std::vector<std::pair<SimLane, double>> deliveries;
+
+	void noteDelivered(SimLane lane, double recvSeconds) { deliveries.emplace_back(lane, recvSeconds); }
+};
+
+static_assert(SimNetClientHost<DeliveryClientHost> && SimNetDeliveryHook<DeliveryClientHost>);
 
 struct ServerHost
 {
@@ -289,6 +300,8 @@ using ScriptChannel = ScriptClient::Channel;
 
 static_assert(std::is_same_v<ScriptClient::SimT, CliSim>);
 static_assert(ClientSimTransport<ScriptClient::ChannelTransport>);
+static_assert(std::is_same_v<ScriptClient::ChannelTransport, ScriptTransport::ChannelTransport>);
+static_assert(std::is_same_v<ScriptChannel, SessionChannel<CliSim, ScriptTransport::ChannelTransport>>);
 static_assert(PredictionSyncedBufferOwnerConcept<ScriptChannel, CliState, CliInput>,
 	"the client session's channel is NetSync's prediction owner of the game's simulatable");
 static_assert(simEnvelope::ShapeFor<RateInput, CliState>::kInputBytes == 39u, "RateInput has the brawler input's 39 B");
@@ -920,6 +933,44 @@ TEST_CASE("SimNetClient.AFrameSendsOneHeldSetAndDropsEmptyBundles", "[NetTranspo
 	CHECK(immediate.endpoint.on(ognet::Lane::SimInput).size() == 1u);
 }
 
+TEST_CASE("SimNetClient.AHostWithNoteDeliveredSeesOneCallPerMessageRecordAndNoneForEvents", "[NetTransport][SimNetClient]")
+{
+	RecordingEndpoint endpoint;
+	DeliveryClientHost host;
+	auto transport = std::make_unique<ScriptTransport>();
+	transport->installHandlers(endpoint);
+	transport->markEndpointStarted();
+	SimNetClient<CliGame, DeliveryClientHost, ScriptTransport> client(host, *transport);
+	auto push = [&](SimLane lane, const MessageBytes& bytes, double recvSeconds) {
+		REQUIRE(transport->inbox().pushMessage(kServerConn, lane, recvSeconds, bytes));
+	};
+
+	transport->inbox().pushEvent(InboundKind::Connected, kServerConn, kNoReceiveSeconds);
+	client.dispatchFrame();
+	CHECK(host.deliveries.empty());
+
+	push(SimLane::Control, snapshotMsg(1u, {remoteEntry(kSimA, 0u)}), 3.0);
+	push(SimLane::SimRelay, ringMsg(kSimA, 10u, 12u), 3.25);
+	push(SimLane::SimState, correctionMsg(kSimA, 12u), 3.5);
+	push(SimLane::SimClock, clockMsg(40u), 3.75);
+	push(SimLane::SimState, clockMsg(41u), 4.0);
+	push(SimLane::Control, addMsg(3u, remoteEntry(kSimB, 1u)), 4.25);
+	push(SimLane::SimState, correctionMsg(kSimA, 13u), 4.5);
+	transport->inbox().pushEvent(InboundKind::Disconnected, kServerConn, kNoReceiveSeconds);
+	client.dispatchFrame();
+
+	CHECK(host.deliveries
+		== std::vector<std::pair<SimLane, double>>{{SimLane::Control, 3.0}, {SimLane::SimRelay, 3.25}, {SimLane::SimState, 3.5},
+			{SimLane::SimClock, 3.75}, {SimLane::SimState, 4.0}, {SimLane::Control, 4.25}, {SimLane::SimState, 4.5}});
+	CHECK(client.stats().messages == 7u);
+	CHECK(client.stats().badDecode == 1u);
+	CHECK(client.stats().correctionsStored == 1u);
+	CHECK(client.refused());
+	CHECK(client.stats().ignoredWhileRefused == 1u);
+	CHECK(client.stats().connects == 1u);
+	CHECK(client.stats().disconnects == 1u);
+}
+
 TEST_CASE("SimNetClient.TheWindowLineReportsEveryTenSecondsOfHostTime", "[NetTransport][SimNetClient]")
 {
 	Script s;
@@ -1478,6 +1529,15 @@ RateResult measureInputRate(double framesPerSecond, std::uint32_t depth, SendCad
 	return result;
 }
 } // namespace
+
+TEST_CASE("SimNetClient.TheClientAndServerChannelsAreOneTypeForOneTransport", "[NetTransport][SimNetClient]")
+{
+	STATIC_CHECK(std::is_same_v<PlainRig::Client::Channel, PlainRig::Server::Channel<CliSim>>);
+	STATIC_CHECK(std::is_same_v<PlainRig::Client::Channel, SessionChannel<CliSim, PlainRig::Transport::ChannelTransport>>);
+	STATIC_CHECK(std::is_same_v<RateRig::Client::Channel, RateRig::Server::Channel<RateSim>>);
+	STATIC_CHECK(PredictionSyncedBufferOwnerConcept<PlainRig::Client::Channel, CliState, CliInput>);
+	STATIC_CHECK(AuthoritySyncedBufferOwnerConcept<PlainRig::Server::Channel<CliSim>, CliState, CliInput>);
+}
 
 TEST_CASE("SimNetClient.FourLocalPlayersSendTwoOrFourSimInputMessagesPerSendAndTheCapBoundsWhatArrives", "[NetTransport][SimNetClient]")
 {

@@ -5,6 +5,7 @@
 
 #include "AddressInfoTypes.h"
 #include "Async/Async.h"
+#include "Engine/PendingNetGame.h"
 #include "Engine/Player.h"
 #include "Engine/World.h"
 #include "IPAddress.h"
@@ -16,6 +17,7 @@
 #include "OGNetUnrealHost.h"
 #include "SocketSubsystem.h"
 #include "UObject/Package.h"
+#include "UObject/UObjectIterator.h"
 
 #include "OGNet/Backend/BsdDatagramBackend.h"
 #include "OGNet/Backend/EmulatorProfile.h"
@@ -24,6 +26,7 @@
 #include "OGNet/NetTypes.h"
 #include "OGNetUnreal/Core/EngineLaneDriverCore.h"
 #include "OGNetUnreal/Core/EngineLaneSettings.h"
+#include "OGNetUnreal/Core/SimLaneEndpoint.h"
 #include "OGNetUnreal/Core/SwitchableBackend.h"
 
 #include <cstddef>
@@ -38,6 +41,9 @@ constexpr std::size_t kEngineLaneMaxConnections = 16;
 constexpr double kStopDrainSeconds = 0.2;
 constexpr double kForeignTrafficWarningSeconds = 60.0;
 constexpr uint64 kDefaultEmulatorSeed = 1;
+
+FOGNetSimLanesFactory GSimLanesFactory = nullptr;
+bool GSimLanesInitBaseSeen = false;
 
 static_assert(kEngineLaneMaxConnections >= 8 && kEngineLaneMaxConnections <= ognet::kMaxEndpointConnections,
 	"the engine lane's endpoint holds at least the session's 8 players and no more than og-net allows. Was design 4.3's "
@@ -84,6 +90,23 @@ double EngineTimeoutMultiplier(const UNetDriver& Driver)
 uint32 NonNegative(int32 Value)
 {
 	return Value > 0 ? static_cast<uint32>(Value) : 0u;
+}
+
+void SimLanesBeforeStart(void* Ctx, ognetunreal::SimLaneEndpoint& SimEndpoint)
+{
+	static_cast<IOGNetSimLanes*>(Ctx)->beforeStart(SimEndpoint);
+}
+
+UPendingNetGame* PendingNetGameFor(const UNetDriver& Driver, const FNetworkNotify* Notify)
+{
+	for (TObjectIterator<UPendingNetGame> It; It; ++It)
+	{
+		if (It->NetDriver.Get() == &Driver && static_cast<const FNetworkNotify*>(*It) == Notify)
+		{
+			return *It;
+		}
+	}
+	return nullptr;
 }
 
 #if DO_ENABLE_NET_TEST
@@ -154,6 +177,10 @@ struct FOGNetEndpointHost
 	bool bForeignWarned = false;
 	uint64 ConnectionlessSendsDropped = 0;
 	uint64 DeliveriesWithoutConnection = 0;
+
+	TWeakObjectPtr<UPendingNetGame> HeldJoin;
+	uint64 HeldJoinFrame = 0;
+	bool bJoinHeld = false;
 
 	double Now() const
 	{
@@ -279,6 +306,36 @@ struct FOGNetEndpointHost
 		Driver.Endpoint->Core.connect(*Address, DeadlineSeconds);
 	}
 
+	static void ReleaseHeldJoin(UOGNetDriver& Driver)
+	{
+		FOGNetEndpointHost& Self = *Driver.Endpoint;
+		UPendingNetGame* Join = Self.HeldJoin.Get();
+		UNetConnection* Connection = Driver.ServerConnection;
+		if (Join == nullptr || Join->NetDriver.Get() != &Driver || Connection == nullptr || Connection->GetConnectionState() != USOCK_Pending)
+		{
+			Self.bJoinHeld = false;
+			Self.HeldJoin.Reset();
+			return;
+		}
+		// ⛔G-03  docs/OGNetDriver-guards.md
+		if (Self.Core.serverConnection() == ognet::kInvalidConnection || GFrameCounter <= Self.HeldJoinFrame)
+		{
+			Connection->LastSendTime = Driver.GetElapsedTime();
+			return;
+		}
+		checkf(Connection->Channels[0] == nullptr && Connection->OutTotalPackets == 0,
+			TEXT("OGNetDriver: the held join found the control channel open or %d packets sent before UE's hello: the engine's own hello "
+				 "left inside the frame that opened the connection. Was task P4-13's 'the client's first send is UE's hello, on the first "
+				 "TickDispatch after og-net is up and outside InitConnect's frame'"),
+			Connection->OutTotalPackets);
+		Self.bJoinHeld = false;
+		Self.HeldJoin.Reset();
+		Driver.CreateInitialClientChannels();
+		UE_LOG(LogOGNetTransport, Log, TEXT("[OGNet.Driver] hello released frame=%llu heldFrame=%llu id=%u"), GFrameCounter, Self.HeldJoinFrame,
+			Self.Core.serverConnection());
+		Join->SendInitialJoin();
+	}
+
 	void ReportRetries()
 	{
 		const uint64 Retries = Core.stats().retries;
@@ -306,6 +363,17 @@ struct FOGNetEndpointHost
 static_assert(sizeof(FOGNetEndpointHost::ReceiveBuffer) == ognet::kEngineEventBytes,
 	"the receive buffer holds any engine event the lane delivers. Was P4-4's 'a 1,232 B member buffer'");
 
+namespace
+{
+void DestroySimLanesAfterEndpoint(const TUniquePtr<FOGNetEndpointHost>& Endpoint, TUniquePtr<IOGNetSimLanes>& SimLanes)
+{
+	checkf(!Endpoint.IsValid(),
+		TEXT("OGNetDriver: the sim lanes are destroyed after the endpoint, whose destruction joins og-net's thread: until then that "
+			 "thread may call into the lanes' handlers. Was design P5 K1's 'lanes destroyed after og-net's thread joined'"));
+	SimLanes.Reset();
+}
+} // namespace
+
 UOGNetDriver::UOGNetDriver() = default;
 
 UOGNetDriver::UOGNetDriver(FVTableHelper& Helper) : Super(Helper) {}
@@ -317,6 +385,7 @@ UOGNetDriver::~UOGNetDriver()
 		Endpoint->Core.stop(Endpoint->Now(), 0.0);
 	}
 	Endpoint.Reset();
+	DestroySimLanesAfterEndpoint(Endpoint, SimLanes);
 }
 
 bool UOGNetDriver::IsAvailable() const
@@ -326,6 +395,7 @@ bool UOGNetDriver::IsAvailable() const
 
 bool UOGNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, const FURL& URL, bool bReuseAddressAndPort, FString& Error)
 {
+	GSimLanesInitBaseSeen = true;
 	if (!Super::InitBase(bInitAsClient, InNotify, URL, bReuseAddressAndPort, Error))
 	{
 		return false;
@@ -424,13 +494,21 @@ bool UOGNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, const 
 		.closed = &FOGNetEndpointHost::OnClosed,
 		.serverConnectionUp = &FOGNetEndpointHost::OnServerConnectionUp,
 		.connectEnded = &FOGNetEndpointHost::OnConnectEnded};
-	if (!Self.Core.start(Self.Host, Self.Backend, Config, ognetunreal::IoMode::OwnThread, Callbacks))
+	TUniquePtr<IOGNetSimLanes> Lanes;
+	if (GSimLanesFactory != nullptr)
+	{
+		Lanes = GSimLanesFactory(*this, !bInitAsClient);
+	}
+	const ognetunreal::SimLaneAttach Attach{.ctx = Lanes.Get(), .beforeStart = &SimLanesBeforeStart};
+	if (!Self.Core.start(Self.Host, Self.Backend, Config, ognetunreal::IoMode::OwnThread, Callbacks, Lanes.IsValid() ? &Attach : nullptr))
 	{
 		Error = FString::Printf(TEXT("OGNetDriver: og-net could not start the %s endpoint on UDP port %d"), RoleName(Self.Role), Config.bind.port);
 		UE_LOG(LogOGNetTransport, Error, TEXT("[OGNet.Driver] %s"), *Error);
 		Endpoint.Reset();
+		DestroySimLanesAfterEndpoint(Endpoint, Lanes);
 		return false;
 	}
+	SimLanes = MoveTemp(Lanes);
 
 	const std::optional<ognet::Address> Bound = Self.Core.localAddress();
 	const int32 BoundPort = Bound.has_value() ? Bound->port : 0;
@@ -442,6 +520,10 @@ bool UOGNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, const 
 		TEXT("[OGNet.Driver] start role=%s mode=ownThread handler=off port=%d maxPacket=%d overhead=%d budget=%u idle=%g emulator=%s"),
 		RoleName(Self.Role), BoundPort, ognetunreal::kEngineMaxPacketBytes, ognetunreal::kEnginePacketOverheadBytes, Config.budget.bytesPerSecond,
 		Config.timings.idleTimeoutSeconds, EmulatorName);
+	if (SimLanes.IsValid())
+	{
+		SimLanes->afterStart();
+	}
 	return true;
 }
 
@@ -456,9 +538,19 @@ bool UOGNetDriver::InitConnect(FNetworkNotify* InNotify, const FURL& ConnectURL,
 	ServerConnection = NewObject<UOGNetConnection>(GetTransientPackage(), NetConnectionClass);
 	ServerConnection->InitLocalConnection(this, nullptr, ConnectURL, USOCK_Pending);
 	UE_LOG(LogNet, Log, TEXT("Game client on port %i, rate %i"), ConnectURL.Port, ServerConnection->CurrentNetSpeed);
-	CreateInitialClientChannels();
 
 	FOGNetEndpointHost& Self = *Endpoint;
+	if (UPendingNetGame* Join = PendingNetGameFor(*this, InNotify))
+	{
+		Self.HeldJoin = Join;
+		Self.HeldJoinFrame = GFrameCounter;
+		Self.bJoinHeld = true;
+		UE_LOG(LogOGNetTransport, Log, TEXT("[OGNet.Driver] hello held frame=%llu"), Self.HeldJoinFrame);
+	}
+	else
+	{
+		CreateInitialClientChannels();
+	}
 	const double DeadlineSeconds = Self.Now() + InitialConnectTimeout * Self.TimeoutMultiplier;
 	const uint16 Port = static_cast<uint16>(FMath::Clamp(ConnectURL.Port, 0, 65535));
 	const FTCHARToUTF8 Host(*ConnectURL.Host);
@@ -521,8 +613,30 @@ void UOGNetDriver::TickDispatch(float DeltaTime)
 	if (Self.Role == ognet::Role::Client)
 	{
 		Self.ReportRetries();
+		if (Self.bJoinHeld)
+		{
+			FOGNetEndpointHost::ReleaseHeldJoin(*this);
+		}
 	}
 	Self.ReportForeignTraffic(NowSeconds);
+}
+
+void UOGNetDriver::PostTickDispatch()
+{
+	Super::PostTickDispatch();
+	if (SimLanes.IsValid())
+	{
+		SimLanes->afterDispatch();
+	}
+}
+
+void UOGNetDriver::TickFlush(float DeltaSeconds)
+{
+	Super::TickFlush(DeltaSeconds);
+	if (SimLanes.IsValid())
+	{
+		SimLanes->onTickFlush();
+	}
 }
 
 void UOGNetDriver::LowLevelSend(TSharedPtr<const FInternetAddr> Address, void* Data, int32 CountBits, FOutPacketTraits& Traits)
@@ -544,11 +658,19 @@ void UOGNetDriver::LowLevelDestroy()
 	}
 	FOGNetEndpointHost& Self = *Endpoint;
 	const ognet::Role Role = Self.Role;
+	if (SimLanes.IsValid())
+	{
+		checkf(!Self.Core.isStopped(),
+			TEXT("OGNetDriver: the sim lanes' beforeStop runs before the core stops, while og-net still delivers and sends. Was design "
+				 "P5 3.1's 'lanes.beforeStop (unbind) -> core.stop'"));
+		SimLanes->beforeStop();
+	}
 	Self.Core.stop(Self.Now(), kStopDrainSeconds);
 	const ognetunreal::DriverStats Stats = Self.Core.stats();
 	const uint64 ConnectionlessSendsDropped = Self.ConnectionlessSendsDropped;
 	const uint64 DeliveriesWithoutConnection = Self.DeliveriesWithoutConnection;
 	Endpoint.Reset();
+	DestroySimLanesAfterEndpoint(Endpoint, SimLanes);
 	UE_LOG(LogOGNetTransport, Log,
 		TEXT("[OGNet.Driver] stop role=%s accepted=%llu rejected=%llu retries=%llu sendsRefused=%llu preConnectBuffered=%llu "
 			 "preConnectDropped=%llu ignoredDatagrams=%llu unknownDatagrams=%llu closesDrained=%llu closesTimedOut=%llu handlerQueueDropped=%llu "
@@ -602,4 +724,31 @@ void UOGNetDriver::engineClosed(UOGNetConnection& Connection)
 		Id, bClosedByOGNet ? DisconnectReasonName(Reason) : "engine", bLive ? TEXT("live") : TEXT("gone"), EngineLane.messagesSent,
 		EngineLane.messagesReceived, CoreStats.sendsRefused, CoreStats.preConnectDropped, EngineLane.queueDropsAge, EngineLane.queueDelayP99Micros);
 	Self.Core.engineClosed(Id, Self.Now());
+}
+
+void UOGNetDriver::SetSimLanesFactory(FOGNetSimLanesFactory Factory)
+{
+	checkf(IsInGameThread(), TEXT("UOGNetDriver::SetSimLanesFactory off the game thread: InitBase reads the factory on the game thread"));
+	checkf(GSimLanesFactory == nullptr,
+		TEXT("UOGNetDriver::SetSimLanesFactory called twice: the game registers one factory, once. Was task P5-3's 'a second set is a checkf'"));
+	checkf(!GSimLanesInitBaseSeen,
+		TEXT("UOGNetDriver::SetSimLanesFactory after a driver's InitBase: that driver runs without sim lanes. Was task P5-3's 'before the "
+			 "first InitBase'"));
+	GSimLanesFactory = Factory;
+}
+
+IOGNetSimLanes* UOGNetDriver::GetSimLanes() const
+{
+	return SimLanes.Get();
+}
+
+UOGNetConnection* UOGNetDriver::FindConnection(uint32 OGNetId) const
+{
+	checkf(IsInGameThread(), TEXT("UOGNetDriver::FindConnection off the game thread: the og-net id to connection map is the game thread's"));
+	if (!Endpoint.IsValid())
+	{
+		return nullptr;
+	}
+	const TWeakObjectPtr<UOGNetConnection>* Found = Endpoint->Connections.Find(OGNetId);
+	return Found != nullptr ? Found->Get() : nullptr;
 }

@@ -98,10 +98,21 @@ the entries before it). The first failing check names the refusal.
 
 - **Records.** `RosterRecord` is `{simId, physicsSlot, owner, localIndex}`. `owner` is the owning connection, or none for an
   authority-local character (a listen host's own player). The owner is never sent; it decides each recipient's view.
-- **`add(record)`** registers a character and goes up one revision. Its `OG_CHECK`s refuse, at the server: sim id 0; a sim id
-  used before in this authority's lifetime; an invalid slot or local index; an owner of `kInvalidSimConnection`; an owner with
-  no local index; a slot another entry holds; an owner and local index another live entry has; and a ninth character
-  (`kRosterMaxEntries`, the world's slot count; the host's admission must refuse a join before it reaches registration).
+- **`add(record)`** registers a character, goes up one revision and returns `RosterAddRefusal::None`. Its `OG_CHECK`s refuse,
+  at the server: sim id 0; a sim id used before in this authority's lifetime; an invalid slot or local index; an owner of
+  `kInvalidSimConnection`; an owner with no local index; and a slot another entry holds.
+- **Two cases are refusals, not checks** (task P5-23, guard G-02), so that they fail closed where `OG_CHECK` is compiled out
+  as well as where it is live:
+  - **`DuplicateOwnerSlot`**: the record's owner and local index are those of a live entry. A record with no owner (an
+    authority-local character) is never one, whatever its local index; an entry whose Remove is pending is no longer live, so
+    its owner and local index are free at once.
+  - **`Full`**: no roster slot is free. There are `kRosterMaxEntries` of them (the world's slot count), and an entry whose
+    Remove is pending still holds one until `removeFor`. The host's admission is to refuse a join before it reaches
+    registration; this is the backstop.
+  - When both hold, the result is `DuplicateOwnerSlot`: the live entries are compared first.
+  - **A refused add changes nothing:** the revision, the views (so every Snapshot's bytes), the input check and the sim ids
+    used are as before, so the refused sim id may be added later, and an attached client sees no revision gap. The names are
+    `rosterAddRefusalName`; the server session logs them (`SimNetServer-rationale.md` §11).
 - **`remove(simId, reason)`** goes up one revision and marks the entry *Remove pending*. The entry leaves every view and the input
   check at once, but its slot stays held.
 - **`removeFor(simId)`** returns the Remove message, which is the same for every recipient, and frees the slot. This is the
@@ -176,6 +187,11 @@ A client that receives anything else refuses it and disconnects, so a mistake he
 - the views of 3 connections with 2 local players each, a stranger's view, and per-recipient Adds;
 - a Snapshot, an Add and a Remove leave the mirror equal to the authority's `viewFor` that recipient;
 - the input check, the revisions, slot reuse after `removeFor`, and a second Snapshot's callbacks;
+- `add`'s two refusals (`Full` past eight characters, with or without an owner, and while a Remove is pending;
+  `DuplicateOwnerSlot`, which also wins when both hold), each leaving the revision, the live count, the input check and the
+  Snapshot bytes unchanged; after them a mirror still applies the next Remove and Add with no gap, the refused sim id is added
+  later, and an owner's other local index, another owner's same index, an ownerless record and a freed index are accepted.
+  These cases hold with `OG_CHECK` live (the UBT test build) and compiled out (a standalone build with `NDEBUG`);
 - callbacks that read the mirror see the state after the message, and a cleared callback is not called;
 - the tag texts;
 - hidden `[.][OGSimDeath]` cases, one per `OG_CHECK` of the header: each calls the header so that exactly that check fires, and

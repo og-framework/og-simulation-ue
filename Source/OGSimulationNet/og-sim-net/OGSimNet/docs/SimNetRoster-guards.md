@@ -14,7 +14,8 @@ spent forever. A retired id may be **named** in prose; it may never again appear
 the consequence of ignoring it.
 
 **Provenance.** Written with the header on 2026-11-15. The roster is new code, so no entry was carried from an older comment.
-Every other rule of the header is enforced by a `static_assert` or an `OG_CHECK`, whose messages name what they check.
+Every other rule of the header is enforced by a `static_assert` or an `OG_CHECK`, whose messages name what they check, or
+(from og-input-latency task P5-23, G-02) by a refusal that `RosterAuthority::add` returns.
 
 ---
 
@@ -34,6 +35,27 @@ this per-recipient choice is the only place the wire says whose character it is.
 **What breaks if it moves.** `snapshotFor` and `addFor` both build their entries through this function, and `viewFor` is the
 view tests and sessions compare a mirror against. A second copy of the rule elsewhere would let the Snapshot and the Add of one
 character disagree for the same recipient.
+
+---
+
+## G-02 — `add` refuses a full roster or a live (owner, localIndex) before it changes anything
+
+**Tag site:** `SimNetRoster.h`, in `RosterAuthority::add`, immediately above `if (refusal != RosterAddRefusal::None)`.
+
+**The prohibition.** Do not delete this return, do not replace it (or the `Full` and `DuplicateOwnerSlot` assignments above it)
+with an `OG_CHECK`, and do not move it below `m_everAdded.set`, `++m_revision` or the write through `freeSlot`.
+
+**Consequence.** These two refusals were `OG_CHECK`s until task P5-23. Where `OG_CHECK` is compiled out (Shipping, and the
+standalone build with `NDEBUG`), a ninth character wrote through a null `freeSlot`, and a second live `(owner, localIndex)` was
+added silently, so one local player of a connection owned two sim ids. Where the checks are live, a host's mistake stopped the
+program instead of being refused. Below the writes, a refused add would spend the sim id (a later add of it then fails the
+never-reused check) and raise the revision with no message to carry it, so every attached client refuses the next Add or
+Remove as a `RevisionGap`.
+
+**What breaks if it moves.** `SimNetRoster.AnAddPastCapacityIsRefusedAsFullAndChangesNothing` and
+`SimNetRoster.ASecondLiveOwnerAndLocalIndexIsRefusedAndChangesNothing` fail: with checks compiled out the first crashes in the
+null write and the second sees `None` and an extra live entry; with checks live both fail in the `OG_CHECK`.
+`SimNetServer::addCharacter` returns `nullptr` on these refusals (`SimNetServer-guards.md` G-11).
 
 ---
 

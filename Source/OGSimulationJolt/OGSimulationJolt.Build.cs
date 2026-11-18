@@ -8,6 +8,8 @@ public class OGSimulationJolt : ModuleRules
 	public OGSimulationJolt(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		FPSemantics = FPSemanticsMode.Precise;
+		PrivatePCHHeaderFile = EngineDirectory + "/Source/Runtime/Core/Public/CoreSharedPCH.h";
 		bUseUnity = false;
 		IWYUSupport = IWYUSupport.None;
 		bEnableExceptions = false;
@@ -20,6 +22,7 @@ public class OGSimulationJolt : ModuleRules
 		PublicIncludePaths.Add(Path.Combine(LibraryRoot, "ThirdParty", "JoltPhysics"));
 
 		PublicDefinitions.Add("JPH_OBJECT_LAYER_BITS=16");
+		PublicDefinitions.Add("JPH_CROSS_PLATFORM_DETERMINISTIC");
 
 		if (Target.Platform == UnrealTargetPlatform.Win64 ||
 		    Target.Platform == UnrealTargetPlatform.Linux)

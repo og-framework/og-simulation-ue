@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # `SimNetChannel.h` — rationale
 
-The narrative behind `ogsimnet::SimNetChannel<SimT, TransportT>`, the per-character owner adapter. The header keeps
-its licence, its docs pointer, its code and four tags; everything that explains it lives here. Prohibitions are in
+The narrative behind `ogsimnet::SimNetChannel<SimT, TransportT>`, the per-character owner adapter, and the two names
+built on it for the sessions, `SimNetBundleTransport` and `SessionChannel` (§10). The header keeps its licence, its docs
+pointer, its code and five tags; everything that explains it lives here. Prohibitions are in
 `SimNetChannel-guards.md`.
 
 **If this file and `SimNetChannel.h` disagree, the header is authoritative and this file is stale.** Fix this file; do
@@ -122,7 +123,7 @@ unreliable send, and step 5 as its Handed stamps.
 - **An empty bundle is still handed over.** With a depth of 0, or no pending entry at or below `currentTick`, the
   bundle holds no bytes, and the transport still gets a 0-byte span, as the Unreal owner still sends its empty bundle.
   (The Unreal server drops an empty bundle on receipt.) Whether an empty bundle goes on the wire is the transport's
-  call.
+  call; the sessions' channels drop it in `SimNetBundleTransport` (§10).
 - **A duplicate capture tick in one bundle** is the codec's business: `appendSlot` checks it. `forEachRecent` never
   yields one, because the queue holds distinct ticks.
 - **The bundle is a member** (1,058 B of capacity, `InputBundleBuffer::kMaxWireBytes`), so a send allocates nothing.
@@ -203,6 +204,27 @@ failed where `SimNetChannel-guards.md` says: G-02 (the inbound correction writte
 both dirty checks on a received correction; G-03 (a replay on set) puts `[RelayProbe.Ingest] id=9 newest=99 new=3` at
 the head of the channel trace (65 lines against 64); G-04 (the clamp before the narrowing) fails the brawler byte pin
 at depths 256 and 259, on both send ticks that have entries.
+
+## §10 `SimNetBundleTransport` and `SessionChannel`
+
+```
+template <ClientSimTransport InnerT> class SimNetBundleTransport
+template <class SimT, class InnerT> using SessionChannel = SimNetChannel<SimT, SimNetBundleTransport<InnerT>>
+```
+
+- **`SimNetBundleTransport<InnerT>`** is the transport both sessions give their channels. It wraps the session transport's
+  per-character adapter (`InnerT`, what `channelTransport(simId)` returns) and is itself a `ClientSimTransport`. It drops a
+  0-byte bundle and counts it in a counter it holds by reference, the owning session's `emptyBundles` (G-05); every other
+  bundle, and `endInputSends()`, go to the adapter unchanged.
+- **`SessionChannel<SimT, InnerT>`** is the channel type both sessions use: `SimNetServer::Channel<SimT>` and
+  `SimNetClient::Channel` are this alias for their transport's adapter type. Over one transport type (`SimNetTransport` serves
+  both roles) the server's and the client's channels are therefore one type, which a game's `SimulatableOwnerTraits` can name
+  as both owners, as the Unreal owner is today. Each session `static_assert`s its alias.
+- **Why the drop is not in `SimNetChannel` itself:** the channel mirrors the Unreal owner, which hands over its empty
+  bundle (§5), and its tests pin that; whether an empty bundle reaches the wire is a transport decision, and the sessions make
+  it in one place.
+- The wrapper was the client session's own (`SimNetClient.h`) until og-input-latency task P5-1 made it role-neutral so that
+  the server's channels are the same type.
 
 ## Provenance
 

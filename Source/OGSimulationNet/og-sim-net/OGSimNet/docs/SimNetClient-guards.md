@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: SimNetClientChannelTransport -- a RETIRED token -- og-input-latency task P5-1 renamed it SimNetBundleTransport and moved it to SimNetChannel.h; retired G-05 names it as it stood -->
+<!-- lint-external-ref: SimNetClientChannelTransport::sendInputBundle -- a RETIRED member -- the site of retired G-05, kept as it stood; the live site is SimNetBundleTransport::sendInputBundle in SimNetChannel.h -->
 # `SimNetClient.h` — guards
 
 Every prohibition that governs a line of `SimNetClient.h`. Each entry has an **opaque, stable id**. In the header a single
@@ -61,17 +63,6 @@ the consequence of ignoring it.
 - **What breaks if it moves:** `SimNetClient.ARevisionGapDisconnectsWithAReasonAndTheSessionFailsClosed` fails: the ring and
   the correction sent after the gap are delivered (`{ r3@12, c3@12, c3@13 }`), and `ignoredWhileRefused` stays 0.
 
-## G-05 — an empty bundle never reaches the transport
-
-- **Site:** the `if (bundle.empty())` in `SimNetClientChannelTransport::sendInputBundle`.
-- **Prohibition:** do not delete the check, and do not forward the empty span to the wrapped transport.
-- **Consequence:** a channel hands over a 0-byte bundle when it has no slot to send (depth 0, or nothing pending at or below
-  the tick). An input set cannot frame a 0-byte entry: a transport that appended one would make the server refuse the whole
-  set, which drops every other local player's bundle in it. `SimNetTransport` refuses the span itself, but counts it as a
-  malformed bundle (`inputBundlesRefused`), which hides real refusals.
-- **What breaks if it moves:** `SimNetClient.AFrameSendsOneHeldSetAndDropsEmptyBundles` fails: `emptyBundles` 0 and
-  `inputBundlesRefused` 1.
-
 ## G-06 — `flushFrame` ends the open input set before the transport flushes
 
 - **Site:** the `m_transport.endInputSends()` in `flushFrame`.
@@ -108,4 +99,11 @@ the consequence of ignoring it.
 
 ## §R Retired ids
 
-None.
+### G-05 — RETIRED by og-input-latency task P5-1 (2026-11-17): moved to `SimNetChannel-guards.md` G-05
+
+The empty-bundle drop left `SimNetClient.h` with its class: `SimNetClientChannelTransport` became the role-neutral
+`SimNetBundleTransport` in `SimNetChannel.h`, which both sessions' channels hold. The prohibition is unchanged and lives in
+`SimNetChannel-guards.md` as G-05. The entry as it stood here:
+
+- **Site:** the `if (bundle.empty())` in `SimNetClientChannelTransport::sendInputBundle`.
+- **Prohibition:** do not delete the check, and do not forward the empty span to the wrapped transport.

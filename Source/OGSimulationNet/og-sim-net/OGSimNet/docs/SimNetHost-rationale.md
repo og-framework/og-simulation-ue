@@ -51,7 +51,27 @@ header.
 
 `SimNetStream` is the session's own two-value enum, so the header names no type of og-simulation's latency probe.
 
-## §4 Tests
+## §4 The optional delivery hook, `noteDelivered`
+
+| service | meaning |
+|---|---|
+| `noteDelivered(lane, recvSeconds)` | optional, on either host: one message record was drained, on `lane`, received by og-net at `recvSeconds`. Called once per `Message` record, before the session decodes it, and never for a connection event |
+
+- **`SimNetDeliveryHook<H>`** is true when a host has it, with exactly that call shape and a `void` result. Each session calls it
+  under `if constexpr`, so a host without it compiles unchanged and pays nothing.
+- **An optional member fails silently when it is misspelled**, so the header also checks the other direction.
+  `SimNetHostHasNoDeliveryMember<H>` is true when `H` has no member named `noteDelivered` of any kind or access: it derives a
+  probe from `H` and a struct with one `int noteDelivered`, and takes `&Probe<H>::noteDelivered`, which is ambiguous, and so
+  ill-formed, exactly when `H` has such a member too. `SimNetDeliveryHookWellFormed<H>` is "has the hook, or has no member of
+  that name", and each session `static_assert`s it for its host. So a host whose `noteDelivered` takes other arguments (for
+  example og-net's endpoint shape, which also takes the current time), returns a value, or is private, does not compile
+  instead of never being called.
+- The probe derives from `H`, so a host class must not be `final`.
+- **Self-check:** reference hosts with the hook satisfy their role's concept and the hook; the plain reference hosts are well
+  formed without it; a host with a three-argument `noteDelivered`, and one with a private `noteDelivered`, are not well formed.
+
+## §5 Tests
 
 The reference shapes are the header's self-check. `SimNetServerTest.cpp` instantiates the server session with a fake host
-that records every stamp and line.
+that records every stamp and line, and with a host that records `noteDelivered`; `SimNetClientTest.cpp` does the same for the
+client session.

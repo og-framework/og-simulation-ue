@@ -17,7 +17,6 @@
 
 #if OG_LATENCY_BUDGET_DIAGNOSTICS
 #include "OGSimulation/CompilerControl.h"
-#include "OGSimulation/CorrectionStateBufferCodec.h"
 #include "OGSimulation/SimulationInputResolution.h"
 #include "OGSimulation/PCTimeManagement/ClientPredictionClock.h"
 #include "Engine/World.h"
@@ -75,6 +74,7 @@ public:
 	void forgetCharacter(unsigned int id);
 
 	void stamp(latencyBudget::Stream stream, unsigned int lane, uint32 tick, latencyBudget::Point point);
+	void stampAt(latencyBudget::Stream stream, unsigned int lane, uint32 tick, latencyBudget::Point point, double seconds);
 	void stampCorrectionReceived(unsigned int lane, uint32 correctionTick);
 	void noteWireSample(double roundTripSeconds);
 	void post_Internal(const latencyBudget::Event& event);
@@ -124,11 +124,11 @@ private:
 
 	static_assert(std::is_const_v<std::remove_reference_t<decltype(m_owner)>>,
 		"UELatencyBudgetDiagnostics reads its session's production state (m_manager, m_storage, m_inputResolution and "
-		"the client clock, and m_delayedInputComponentsById) through a CONST reference "
-		"only. It is the session's and the owner's friend, so a mutable reference here would be a write door from a "
-		"diagnostic into every private member of both. Added by og-tickdriver task 18; moved to OGSimulationUnreal by "
-		"task 19a; its owner became the session in og-ue-simulationcomponentandmanagersplit task 24a, and the delayed-input "
-		"map the session's own in task 26a.");
+		"the client clock, and the delayed-input map through the session's const forEachAuthorityCorrectionTick) through "
+		"a CONST reference only. It is the session's friend, so a mutable reference here would be a write door from a "
+		"diagnostic into every private member of the session. Added by og-tickdriver task 18; moved to OGSimulationUnreal by "
+		"task 19a; its owner became the session in og-ue-simulationcomponentandmanagersplit task 24a, the delayed-input "
+		"map the session's own in task 26a, and its loop the session's in og-input-latency task P5-5.");
 
 	// ⛔G-01  docs/UELatencyBudgetDiagnostics-guards.md
 	std::unique_ptr<latencyBudget::LatencyBudgetProbe> m_probe;
@@ -149,6 +149,7 @@ private:
 	void forgetCharacter(unsigned int) {}
 
 	void stamp(latencyBudget::Stream, unsigned int, uint32, latencyBudget::Point) {}
+	void stampAt(latencyBudget::Stream, unsigned int, uint32, latencyBudget::Point, double) {}
 	void stampCorrectionReceived(unsigned int, uint32) {}
 	void noteWireSample(double) {}
 	void post_Internal(const latencyBudget::Event&) {}
@@ -253,6 +254,17 @@ void UELatencyBudgetDiagnostics<TraitsT>::stamp(
 		TEXT("the physics thread posts through post_Internal's mailbox instead."));
 	if (m_probe)
 		m_probe->stamp(stream, lane, tick, point, FPlatformTime::Seconds());
+}
+
+template <typename TraitsT>
+void UELatencyBudgetDiagnostics<TraitsT>::stampAt(
+	latencyBudget::Stream stream, unsigned int lane, uint32 tick, latencyBudget::Point point, double seconds)
+{
+	checkf(IsInGameThread(),
+		TEXT("UELatencyBudgetDiagnostics::stampAt is the GAME-THREAD door to the latency probe for a stamp at a time ")
+		TEXT("the caller measured; the physics thread posts through post_Internal's mailbox instead."));
+	if (m_probe)
+		m_probe->stamp(stream, lane, tick, point, seconds);
 }
 
 template <typename TraitsT>
@@ -433,26 +445,16 @@ void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread(BackendDiagnosticsT ba
 
 	if (!isClient)
 	{
-		for (const auto& entry : m_owner.m_delayedInputComponentsById)
-		{
-			const typename TraitsT::Component* component = entry.second.Get();
-			if (component == nullptr)
-				continue;
-			// ⛔G-03  docs/UELatencyBudgetDiagnostics-guards.md
-			if (!component->isNetSyncBound())
-				continue;
-			const uint32 correctionTick =
-				component->getSyncedCorrectionStateBuffer().template readFromBuffer<uint32>(
-					correctionStateBuffer::kTickOffset);
-			if (correctionTick == 0u)
-				continue;
-			uint32& lastHanded = m_lastHandedCorrectionTick[entry.first];
-			if (lastHanded == correctionTick)
-				continue;
-			lastHanded = correctionTick;
-			m_probe->stamp(latencyBudget::Stream::State, entry.first, correctionTick,
-				latencyBudget::Point::Handed, nowSeconds);
-		}
+		m_owner.forEachAuthorityCorrectionTick(
+			[this, nowSeconds](unsigned int id, uint32 correctionTick)
+			{
+				uint32& lastHanded = m_lastHandedCorrectionTick[id];
+				if (lastHanded == correctionTick)
+					return;
+				lastHanded = correctionTick;
+				m_probe->stamp(latencyBudget::Stream::State, id, correctionTick,
+					latencyBudget::Point::Handed, nowSeconds);
+			});
 	}
 
 	m_probe->stampNewestPending(latencyBudget::Stream::State,

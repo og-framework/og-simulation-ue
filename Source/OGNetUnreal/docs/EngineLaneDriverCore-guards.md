@@ -67,3 +67,18 @@ callbacks from the same batch, into an engine that has already torn the driver d
 
 **What breaks if it moves.** `EngineLaneDriver.ADeliverThatStopsTheCoreRunsNoFurtherCallback` fails: 4 callbacks after the stop,
 not 0 (P4-3's arm E).
+
+## G-05 — the connection handler forwards every event, unfiltered
+
+**Tag site:** `EngineLaneDriverCore.h`, the line above `if (self.m_forward.fn != nullptr)` in `onConnectionEvent`.
+
+**The prohibition.** Do not add a condition on the event's kind or id to this `if`: every connection event goes to the forward
+target, and the core's own id-0 filter comes after it.
+
+**The consequence.** The sim transport behind the forward never sees the events the condition drops, and neither does the session
+that drains its inbox. Without `Connected`, og-sim-net's server never attaches the connection, so it never sends it the roster or
+the relay floor (`SimNetServer.h`, `attach`). Without `Disconnected`, the server keeps the gone connection attached, and the
+transport never frees its connection slot (`SimNetTransport.h`, `onDisconnected`), so a later connection can find every slot taken.
+
+**What breaks if it moves.** `EngineLaneDriver.EveryConnectionEventIsForwardedAndConnectedPrecedesItsConnectionsFirstMessage` fails
+(P5-3's arm (b): forwarding only `Disconnected`).

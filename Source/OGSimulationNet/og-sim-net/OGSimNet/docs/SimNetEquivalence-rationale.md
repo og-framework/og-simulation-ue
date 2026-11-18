@@ -41,9 +41,10 @@ guards file (they state no prohibition).
   `MockSimulatablesForNetworkTests.h`. Those mocks (`MockSimA`, `MockSimB`) declare only an `Input` alias, with no state type
   and no state accessors, so `SimulationNetSync` cannot register them. The client session also accepts a game with exactly
   one simulatable type (`kSimulatableCount`).
-- **One owner-traits specialization serves both rigs.** `SimulatableOwnerTraits` for `EqSim` names the client channel type
-  as the prediction owner and the server channel type as the authority owner. The rig's `static_assert`s check that these
-  are the sessions' own `Channel` types, so the reference's channels and the sessions' channels are the same types.
+- **One owner-traits specialization serves both rigs.** `SimulatableOwnerTraits` for `EqSim` names one channel type,
+  `SessionChannel<EqSim, Transport::ChannelTransport>` (`EqChannel`), as both the prediction and the authority owner. A
+  `static_assert` checks that both sessions' `Channel` types are that type, so the reference's channels and the sessions'
+  channels are one type in both roles.
 
 ## §3 One frame
 
@@ -72,8 +73,9 @@ one datagram (at most 8 passes). A send made in a frame therefore reaches the ot
 passes and is drained at that peer's next `dispatchFrame`.
 
 **Setup** runs before frame 0 in 1 ms passes of dispatch and flush with no hooks: the two clients connect and attach, the
-server adds the three characters (`addCharacter`, then the server's NetSync registers each channel as an authority owner),
-and each client registers its NetSync prediction owner when the roster Add arrives. Every trace and line buffer is then
+server adds the three characters (`addCharacter`, then the server's NetSync registers each channel through
+`registerSimulatable`'s authority overload, with the channel as both the prediction and the authority owner, as the Unreal
+server registers its characters), and each client registers its NetSync prediction owner when the roster Add arrives. Every trace and line buffer is then
 cleared, so frame 0 starts with no traffic in flight.
 
 ## §4 The reference
@@ -93,8 +95,9 @@ replication sends at the engine's flush and applies at the next receive.
   each channel built, taken from the channel's `setOnInputHandedCallback` callback. An empty bundle is dropped, as the client
   session drops it before the set. The bundles reach the server's next dispatch in client order, A then B, the order in
   which the transport rig's clients flush.
-- **The reference's channels** are the sessions' channel types. Their transports are `SimNetTransport` objects that are
-  never installed and have no server connection, so nothing in them reaches a wire.
+- **The reference's channels** are the sessions' channel type, each with a `SimNetBundleTransport` over the adapter of a
+  `SimNetTransport` that is never installed and has no server connection, so nothing in them reaches a wire. The reference's
+  server registers them as the transport rig's server does, through the authority overload with the channel as both owners.
 - **The reference uses the transport rig's og-net connection ids**, so its handles and every line that prints a connection
   carry the same values.
 - **The stagers' setup flushes are replayed.** Every `RelayRingStager` flush counts toward its report window
@@ -152,6 +155,8 @@ replication sends at the engine's flush and applies at the next receive.
   The emulators lost 15 (A) and 9 (B) up, and 6 down each. The clock and corrections lose exactly the down losses (6 per
   client). A ring is lost on a down loss and also when its owner's input set was lost upstream, since the server then
   stages nothing for it that frame: the rings to B of A's characters are short by A's 15 up losses plus B's 6 down losses.
+  The same counts were measured again after the server's characters were registered through the authority overload with
+  one channel type for both owners (og-input-latency task P5-1), and the lossless arm stayed equal for all 600 frames.
 - **This is the known deviation** of og-net against replication: a lost correction is replaced at that character's next
   rotation turn (every 3 frames at N = 3, K = 1), and a lost ring's entries are gone unless `relayResendEntries` is above 0.
   The arm records its size; whether it is acceptable is decided on the engine captures.

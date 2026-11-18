@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/NetDriver.h"
+#include "OGNetUnreal/OGNetSimLanes.h"
 #include "Templates/UniquePtr.h"
 // ⛔G-01  docs/OGNetDriver-guards.md
 
@@ -30,6 +31,8 @@ public:
 	virtual bool InitConnect(FNetworkNotify* InNotify, const FURL& ConnectURL, FString& Error) override;
 	virtual bool InitListen(FNetworkNotify* InNotify, FURL& LocalURL, bool bReuseAddressAndPort, FString& Error) override;
 	virtual void TickDispatch(float DeltaTime) override;
+	virtual void PostTickDispatch() override;
+	virtual void TickFlush(float DeltaSeconds) override;
 	virtual void LowLevelSend(TSharedPtr<const FInternetAddr> Address, void* Data, int32 CountBits, FOutPacketTraits& Traits) override;
 	virtual void LowLevelDestroy() override;
 	virtual ISocketSubsystem* GetSocketSubsystem() override;
@@ -38,8 +41,13 @@ public:
 	void sendEngine(uint32 Id, const uint8* Data, int32 Bytes);
 	void engineClosed(UOGNetConnection& Connection);
 
+	static void SetSimLanesFactory(FOGNetSimLanesFactory Factory);
+	IOGNetSimLanes* GetSimLanes() const;
+	UOGNetConnection* FindConnection(uint32 OGNetId) const;
+
 private:
 	friend struct FOGNetEndpointHost;
 
+	TUniquePtr<IOGNetSimLanes> SimLanes;
 	TUniquePtr<FOGNetEndpointHost> Endpoint;
 };

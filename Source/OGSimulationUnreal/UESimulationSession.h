@@ -10,6 +10,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "OGSimulation/BodyId.h"
 #include "OGSimulation/CompilerControl.h"
+#include "OGSimulation/CorrectionStateBufferCodec.h"
 #include "OGSimulation/SimulationComparison.h"
 #include "OGSimulation/SimulationLog.h"
 #include "PhysicsEngine/PhysicsSettings.h"
@@ -361,7 +362,16 @@ private:
 
 	void releaseDelayedInputsForStep(int32 firstTick, int32 numSteps);
 
+	void afterAuthorityBatch(int32 firstUpcomingSimTick);
+
 	void forgetReceptionOwner(unsigned int id);
+
+	std::optional<uint32> physicsSlotFor(AActor& owner, uint64 key) const;
+
+	void recordAuthoritativeSlot(AActor& owner, uint64 key, uint32 slot);
+
+	template <typename FunctionT>
+	void forEachAuthorityCorrectionTick(FunctionT&& function) const;
 
 	static void bindCorrectionFieldDiffGate()
 	{
@@ -1287,6 +1297,46 @@ void UESimulationSession<TraitsT>::releaseDelayedInputsForStep(int32 firstTick, 
 
     m_receptionCoordinator->template releaseDelayedInputs<Simulatable>(
         firstTick, numSteps, deliver);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::afterAuthorityBatch(int32 firstUpcomingSimTick)
+{
+    if (m_receptionCoordinator.has_value())
+        m_receptionCoordinator->reapConnections(firstUpcomingSimTick);
+}
+
+template <typename TraitsT>
+std::optional<uint32> UESimulationSession<TraitsT>::physicsSlotFor(AActor& owner, [[maybe_unused]] uint64 key) const
+{
+    return CastChecked<typename TraitsT::Character>(&owner)->GetPhysicsSlot();
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::recordAuthoritativeSlot(AActor& owner, [[maybe_unused]] uint64 key, uint32 slot)
+{
+    CastChecked<typename TraitsT::Character>(&owner)->SetAuthoritativePhysicsSlot(slot);
+}
+
+template <typename TraitsT>
+template <typename FunctionT>
+void UESimulationSession<TraitsT>::forEachAuthorityCorrectionTick(FunctionT&& function) const
+{
+    for (const auto& entry : m_delayedInputComponentsById)
+    {
+        const typename TraitsT::Component* component = entry.second.Get();
+        if (component == nullptr)
+            continue;
+        // ⛔G-29  docs/UESimulationSession-guards.md
+        if (!component->isNetSyncBound())
+            continue;
+        const uint32 correctionTick =
+            component->getSyncedCorrectionStateBuffer().template readFromBuffer<uint32>(
+                correctionStateBuffer::kTickOffset);
+        if (correctionTick == 0u)
+            continue;
+        function(entry.first, correctionTick);
+    }
 }
 
 template <typename TraitsT>

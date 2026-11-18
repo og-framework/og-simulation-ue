@@ -61,6 +61,8 @@ enum class RosterRefusal : uint8_t
 
 enum class RosterInputVerdict : uint8_t { Accepted, UnknownSim, NotOwner };
 
+enum class RosterAddRefusal : uint8_t { None, Full, DuplicateOwnerSlot };
+
 static_assert(kRosterWireVersion == simEnvelope::roster::kWireVersion
 		&& kRosterHeaderBytes == simEnvelope::roster::kHeaderBytes
 		&& kRosterHeaderBytes == simEnvelope::roster::kSnapshotCountOffset
@@ -135,6 +137,17 @@ constexpr const char* rosterInputVerdictName(RosterInputVerdict verdict)
 	case RosterInputVerdict::Accepted: return "Accepted";
 	case RosterInputVerdict::UnknownSim: return "UnknownSim";
 	case RosterInputVerdict::NotOwner: return "NotOwner";
+	}
+	return "Unknown";
+}
+
+constexpr const char* rosterAddRefusalName(RosterAddRefusal refusal)
+{
+	switch (refusal)
+	{
+	case RosterAddRefusal::None: return "None";
+	case RosterAddRefusal::Full: return "Full";
+	case RosterAddRefusal::DuplicateOwnerSlot: return "DuplicateOwnerSlot";
 	}
 	return "Unknown";
 }
@@ -364,7 +377,7 @@ struct RosterRecord
 class RosterAuthority
 {
 public:
-	void add(const RosterRecord& record)
+	RosterAddRefusal add(const RosterRecord& record)
 	{
 		OG_CHECK(record.simId != 0u, "RosterAuthority::add: sim id 0 is None and is never sent");
 		OG_CHECK(!m_everAdded.test(record.simId),
@@ -381,6 +394,7 @@ public:
 			"RosterAuthority::add: a character owned by a connection needs that connection's local index (0..7)");
 
 		Slot* freeSlot = nullptr;
+		RosterAddRefusal refusal = RosterAddRefusal::None;
 		for (Slot& slot : m_slots)
 		{
 			if (slot.state == SlotState::Free)
@@ -395,18 +409,20 @@ public:
 				"RosterAuthority::add: this physics slot's previous Remove is not queued yet (removeFor); a slot is "
 				"reusable only after its Remove was queued, or its Add could reach a client before that Remove");
 			OG_CHECK(!sameSlot, "RosterAuthority::add: a live entry already holds this physics slot");
-			OG_CHECK(!(slot.state == SlotState::Live && record.owner && slot.record.owner == record.owner
-						 && slot.record.localIndex == record.localIndex),
-				"RosterAuthority::add: (owner, localIndex) already names a live entry; each local player of a connection "
-				"owns one sim id");
+			if (slot.state == SlotState::Live && record.owner && slot.record.owner == record.owner
+				&& slot.record.localIndex == record.localIndex)
+				refusal = RosterAddRefusal::DuplicateOwnerSlot;
 		}
-		OG_CHECK(freeSlot != nullptr,
-			"RosterAuthority::add: more characters than kMaxSimulatableSlots; admission must refuse the join before "
-			"registration");
+		if (refusal == RosterAddRefusal::None && freeSlot == nullptr)
+			refusal = RosterAddRefusal::Full;
+		// ⛔G-02  docs/SimNetRoster-guards.md
+		if (refusal != RosterAddRefusal::None)
+			return refusal;
 
 		m_everAdded.set(record.simId);
 		++m_revision;
 		*freeSlot = Slot{SlotState::Live, record, m_revision, 0u, RosterRemoveReason::Left};
+		return RosterAddRefusal::None;
 	}
 
 	void remove(uint8_t simId, RosterRemoveReason reason)

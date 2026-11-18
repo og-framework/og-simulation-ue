@@ -7,7 +7,7 @@ header. The Unreal driver (UOGNetDriver, task P4-4) holds one core and turns its
 tested here, over og-net's virtual network, without an engine session. This file is the docs pointer of `EngineLaneDriverCore.h`
 and of its test, `EngineLaneDriverCoreTest.cpp`. Prohibitions are in `EngineLaneDriverCore-guards.md`.
 
-The header holds the licence, the docs pointer, code, four guard tags and these compile-time checks:
+The header holds the licence, the docs pointer, code, five guard tags and these compile-time checks:
 
 - `kPreConnectSlotBytes` equals `ognet::EngineLane::maxPacketBytes()` (1,189 B): a pre-connect slot holds exactly one packet the
   lane would take (§4);
@@ -31,8 +31,12 @@ The header holds the licence, the docs pointer, code, four guard tags and these 
   The engine lane fixes its poll thread at the first `poll` (`EngineLane-rationale.md` §3), so `tick` must always come from
   the same thread.
 - **The one exception is the connection handler,** which og-net calls on its servicing thread: og-net's own thread in
-  `IoMode::OwnThread`, or the thread that calls `serviceUntil` in `IoMode::HostServiced`. It touches nothing but the handler
-  queue (§5), under `m_handlerMutex`.
+  `IoMode::OwnThread`, or the thread that calls `serviceUntil` in `IoMode::HostServiced` (`EndpointCore.cpp`,
+  `EndpointCore::raise`). It calls the sim lanes' forward target (§12), then touches nothing but the handler queue (§5), under
+  `m_handlerMutex`.
+- **The sim endpoint (§12)** is the other door. Its `send`, `broadcastExcept` and `disconnect` are og-net's own, which take any
+  thread; its `noteDelivered` adds to the window's atomic residence counters (`NetWindow.cpp`, `NetWindow::noteDelivered`); its two
+  handler setters run only inside `start`, from the attach.
 - **No allocation after `start`.** The record table, the pre-connect buffer and the batch are allocated by `start`; `tick` and
   `send` only index into them.
 - **Teardown.** The destructor resets the endpoint first. `ognet::EndpointCore`'s destructor calls `stop`, which in own-thread mode
@@ -44,7 +48,7 @@ The header holds the licence, the docs pointer, code, four guard tags and these 
 
 | member | what it does |
 |---|---|
-| `start(host, backend, config, mode, callbacks)` | builds the endpoint, sets the connection handler, enables the engine lane (`engineLane()` before `start`, as og-net requires), starts it, and in `OwnThread` mode calls `startOwnThread()`. When og-net's `start` fails it returns false and nothing is left started: the endpoint is destroyed. A second `start` and a missing callback are `OGNET_CHECK`s. |
+| `start(host, backend, config, mode, callbacks, attach = nullptr)` | builds the endpoint, sets the connection handler, enables the engine lane (`engineLane()` before `start`, as og-net requires), runs the attach's `beforeStart` with the sim endpoint (§12), starts it, and in `OwnThread` mode calls `startOwnThread()`. When og-net's `start` fails it returns false and nothing is left started: the endpoint is destroyed and the forward target cleared. A second `start`, a missing callback and an attach without `beforeStart` are `OGNET_CHECK`s. |
 | `connect(address, engineDeadlineSeconds)` | client only: remembers both and issues og-net's connect. The deadline is the engine's own: the time its pending connection gives up (§5). |
 | `send(id, bytes)` | §3's verdicts. |
 | `tick(nowSeconds, clientConnectionPending)` | in order: the handler queue (§5), the ring (§6), the drained closes (§7), the `[OGNet.Window]` close (§11). `clientConnectionPending` is whether the engine still waits for its server connection. |
@@ -104,6 +108,11 @@ The callbacks are plain function pointers with one context (`DriverCallbacks`): 
   PendingNetGame.cpp, lines 112-125), which is before og-net's handshake has ended; and the engine lane refuses an id it does not
   know (`EngineLane-rationale.md` §1). So the core keeps such packets: 32 slots (`kPreConnectSlots`) of up to 1,189 B, in arrival
   order.
+- **On a join, `UOGNetDriver` now sends nothing before up.** It holds its pending game's hello until og-net is up and the frame
+  that opened the connection has ended (`OGNetDriver-rationale.md` §14), so on that path the buffer stays empty (P4-13's
+  automation test logs `preConnectBuffered=0` on the client's `stop` line). The buffer is the core's contract for any engine send
+  before up, and it still serves a connection opened for a notify that is not a pending net game, where the driver keeps the
+  engine's own order.
 - **When the server connection comes up** (the client's `Connected` from the ring), the core records the id, sends the whole buffer
   through the lane oldest first, and only then calls `serverConnectionUp(id)`. A packet sent from inside that callback is then
   already behind the buffered ones on the wire.
@@ -233,8 +242,11 @@ gate requires a `[OGNet.Window]` line from every og-net process (task P4-9).
 - **What it does not see.** The ring carries no address, so a connection line prints the address og-net publishes for the
   connection (`NetWindow-rationale.md` §4), which follows a roam without an `AddressChanged` event. A connection that came and
   went before the ring could hold its `Connected` is elided by the lane (`EngineLane-rationale.md` §4) and has no connection
-  line; the Endpoint line still counts its traffic. The handler queue's events (§5) are not forwarded: they all carry id 0,
-  which the window ignores.
+  line; the Endpoint line still counts its traffic. The handler queue's events (§5) are not noted in the window: they all carry
+  id 0, which the window ignores.
+- **The sim lanes' residence** is noted from outside: the sim endpoint's `noteDelivered` (§12) adds one delivered sim message to the
+  same window, so a capture reads the sim lanes' `[OGNet.Window.Rx]` lines beside the Engine lane's. The core does not see sim
+  messages itself: og-net hands them to the sim lanes' handlers on its own thread.
 - **Closed** at the end of every `tick` while the core runs: `closeIfDue(now, endpoint, sink, {engine})`. The first `tick`
   starts the first window. `engine` is a copy of `engineLaneStats()`, read on every tick (a lock and a copy), because the extras
   are passed before the window knows whether it is due. After `stop` no window is closed, so the last partial window is not
@@ -253,3 +265,42 @@ Tests (§10's rig):
 |---|---|
 | `EngineLaneDriver.EachSideWritesOneNetWindowBlockPerWindowThroughItsHostLogFedByTheEnginePoll` | 25 s, Engine datagrams both ways for 15 s: each side writes 2 windows, each with its one `[OGNet.Window]` line (`seconds=10.00`, `Connected`; the client's `peer=` is the server's address), its Engine lane line and one Endpoint line with the `engine.` fields; the Rx residence samples equal the datagrams delivered; every window line is at `Info` |
 | `EngineLaneDriver.TheWindowsEngineResidenceIsHowLongADatagramWaitedForThePollAndAClosedConnectionIsPrintedOnce` | the server stops ticking while the client sends 10 datagrams, then ticks 24 ms later: all 10 residences fall in the 16–32 ms bucket (`residenceP99Us=32000`); the client's `engineClosed` closes the connection, and each side prints it once, `state=Disconnected`, then two Endpoint lines and no further connection line |
+
+## §12 The sim lanes: the attach, the sim endpoint and the forward
+
+og-net takes lane handlers and its one connection handler before the endpoint starts only (`EndpointCore.cpp`,
+`EndpointCore::setLaneHandler` and `EndpointCore::setConnectionHandler`, each an `OGNET_CHECK`), and the core starts the endpoint
+inside `start`. So the sim side (og-sim-net's `SimNetTransport`, in a host such as the Unreal driver's sim lanes,
+`OGNetSimLanes-rationale.md`) can only install its handlers from inside `start`. Task P5-3, design P5 K1.
+
+- **The attach.** `start` takes an optional `const SimLaneAttach*`: a context and `beforeStart(ctx, SimLaneEndpoint&)`. In order:
+  the core sets its own connection handler, takes the engine lane, calls `beforeStart` with its sim endpoint, then starts the
+  endpoint. Without an attach, `start` is exactly P4-3's.
+- **The sim endpoint** (`SimLaneEndpoint-rationale.md`) is a member, built in the constructor over the core's endpoint:
+  - `send`, `broadcastExcept`, `disconnect`: og-net's, and nothing once the endpoint is gone (a failed start);
+  - `setLaneHandler`: og-net's, and only inside `beforeStart` (an `OGNET_CHECK`); the Engine lane is refused by the endpoint itself;
+  - `setConnectionHandler`: stores the **forward target**, only inside `beforeStart` (an `OGNET_CHECK`). og-net has one connection
+    handler, and the core's must stay installed for §5;
+  - `noteDelivered`: into the window (§11), once it exists;
+  - `config()`: the config `start` was given, set before the attach runs.
+- **The forward.** The core's connection handler first passes **every** event, any kind and any id, to the forward target, and only
+  then applies its own filter (id-0 `Disconnected` into the handler queue, §5). The sim transport needs the real connections' events
+  (its per-connection slots and its inbox's `Connected`/`Disconnected`), which the core's own filter drops; and it needs them in
+  order with the lane messages, which og-net raises on the same servicing thread: a connection's `Connected` before its first
+  message. Guard G-05. The forward runs on og-net's servicing thread (§1), so the target must take that thread (P2-7 F3:
+  `SimNetTransport::onConnectionEvent` only pushes into its inbox).
+- **Lifetime.** The forward target and the lane handlers' contexts must outlive og-net's servicing thread. In `OwnThread` mode the
+  thread is joined when the endpoint is destroyed (§1), so the host destroys whatever owns them after the core
+  (`OGNetDriver-rationale.md` §13).
+
+Tests (`SimLaneSeamTest.cpp`, `[OGNet][EngineLaneDriver]`, §10's rig with the attach added):
+
+| Case | What |
+|---|---|
+| `EngineLaneDriver.ARecordingAttachInstallsTheFiveSimLaneHandlersBeforeStartAndEachLaneDeliversWithItsReceiveTime` | both sides install handlers on Control, SimClock, SimInput, SimRelay and SimState in `beforeStart`; the client sends on Control, SimClock and SimInput, the server on Control, SimClock, SimRelay and SimState (each lane in its og-net direction); each arrives once, byte-exact, with a `recvSeconds` after the send; no engine `deliver` |
+| `EngineLaneDriver.EveryConnectionEventIsForwardedAndConnectedPrecedesItsConnectionsFirstMessage` | a message sent at the client's up: each side's handler sees exactly `Connected`, the message, `Disconnected` for its connection |
+| `EngineLaneDriver.AFailedConnectsIdZeroDisconnectedIsForwardedAndStillEndsTheEngineConnectOnce` | the id-0 `Disconnected(ConnectFailed)` is forwarded, and §5 still ends the connect once |
+| `EngineLaneDriver.OnItsOwnThreadTheForwardRunsOnOGNetsThreadBeforeTheConnectionsFirstMessage` | real threads: the forward's thread is not the test's, and is the thread that delivers the lane message |
+| `EngineLaneDriver.AnAttachedSimNetTransportReceivesEachSimLaneIntoItsInboxWithConnectedFirst` | a `SimNetTransport<SimLaneEndpoint, 128>` sized from `config()` and installed through the attach: each side's inbox drains its `Connected` first, then one message per lane; the server's sends go through the transport's frame hold |
+| `EngineLaneDriver.NoteDeliveredOnTheSimEndpointWritesTheSimLaneRxLineOfTheCoresWindow` | seven `noteDelivered(SimInput, now - 20 ms, now)` give one `[OGNet.Window.Rx] role=Server lane=SimInput` line with 7 samples, `residenceP99Us=32000` |
+| the nine `EngineLaneDriver.WithAndWithoutAnAttach.*` cases | P4-3's nine scenarios (§4 to §8 and §10's emulator and steady cases), each run without an attach and with a recording one; with it, the forward also sees the scenario's connection events |
