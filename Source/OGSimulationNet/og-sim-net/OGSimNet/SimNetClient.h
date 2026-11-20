@@ -3,6 +3,7 @@
 // docs/SimNetClient-rationale.md · docs/SimNetClient-guards.md
 
 #include "OGSimNet/SimNetChannel.h"
+#include "OGSimNet/SimNetClock.h"
 #include "OGSimNet/SimNetHost.h"
 #include "OGSimNet/SimNetRoster.h"
 #include "OGSimNet/SimNetServer.h"
@@ -14,15 +15,18 @@
 #include "OGSimulation/Network/SimPayloadBuffers.h"
 #include "OGSimulation/Network/SimTransport.h"
 #include "OGSimulation/OGAssert.h"
+#include "OGSimulation/PCTimeManagement/TimeConfig.h"
 #include "OGSimulation/SimulatableList.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -44,6 +48,34 @@ concept SimNetClientTransport = requires(T& transport, uint8_t simId, SimConnect
 	{ transport.setServerConnection(conn) } -> std::same_as<void>;
 	{ transport.serverConnection() } -> std::same_as<SimConnectionId>;
 };
+
+template <class T>
+concept SimNetConfiguredTransport = requires(const T& transport)
+{
+	{ transport.config().immediate } -> std::convertible_to<bool>;
+};
+
+template <class T>
+concept SimNetInputWindowTransport = requires(T& transport)
+{
+	{ transport.beginInputSends() } -> std::same_as<void>;
+	{ transport.endInputSends() } -> std::same_as<void>;
+};
+
+template <class T>
+concept SimNetInputSender = requires(T& sender, uint32_t tick, uint32_t redundancyDepthTicks, int32_t redundancyFrames)
+{
+	sender.sendLocalInputToAuthorityAll(tick, redundancyDepthTicks, redundancyFrames);
+};
+
+template <class T>
+bool simNetTransportIsImmediate(const T& transport)
+{
+	if constexpr (SimNetConfiguredTransport<T>)
+		return transport.config().immediate;
+	else
+		return false;
+}
 
 template <class List>
 inline constexpr size_t kSimulatableCount = 0u;
@@ -88,6 +120,8 @@ struct SimNetClientStats
 	uint64_t mismatchIgnored = 0u;
 	uint64_t clocksDelivered = 0u;
 	uint64_t clocksCoalesced = 0u;
+	uint64_t clockSamples = 0u;
+	uint64_t clockSamplesUnheard = 0u;
 	uint64_t floorsReceived = 0u;
 	uint64_t tiersReceived = 0u;
 	uint64_t emptyBundles = 0u;
@@ -101,6 +135,13 @@ inline constexpr size_t kReceiveCorrectionStateLineBytes = 64u;
 
 static_assert(kReceiveCorrectionStateLineBytes >= sizeof(kReceiveCorrectionStateFormat) + 3u + 10u,
 	"kReceiveCorrectionStateLineBytes must hold the [ReceiveCorrectionState] line with a 3-digit sim id and a 10-digit tick");
+
+inline constexpr char kSimNetLifecycleRefusedFormat[] = "[Warning][SimNet.Lifecycle] role=client simId=%u refused=%s";
+inline constexpr size_t kSimNetLifecycleRefusedLineBytes = 80u;
+
+static_assert(kSimNetLifecycleRefusedLineBytes >= sizeof(kSimNetLifecycleRefusedFormat) + 3u + sizeof("registered"),
+	"kSimNetLifecycleRefusedLineBytes must hold the client's [SimNet.Lifecycle] line with a 3-digit sim id and the longest "
+	"reason (registered)");
 
 inline constexpr char kSimNetClientWindowFormat[] =
 	"[Warning][SimNet.Window] role=client drains=%llu msgs=%llu maxDepth=%llu drops=%llu tooLarge=%llu badDecode=%llu "
@@ -126,6 +167,9 @@ public:
 	using Shape = simEnvelope::ShapeFor<typename SimT::InputType, typename SimT::StateType>;
 	using ChannelTransport = decltype(std::declval<TransportT&>().channelTransport(uint8_t{}));
 	using Channel = SessionChannel<SimT, ChannelTransport>;
+	using InputProvider = std::function<typename SimT::InputType(
+		const SimulationTimeStep&, const LocalInputCache<typename SimT::InputType>&)>;
+	using LifecycleParts = SimNetLifecycleParts<Sims>;
 
 	static_assert(kIsSessionChannel<Channel, SimT, ChannelTransport>,
 		"SimNetClient: a character's channel is SessionChannel<SimT, ChannelTransport>, the type SimNetServer::Channel<SimT> is "
@@ -134,8 +178,18 @@ public:
 	static_assert(SimNetDeliveryHookWellFormed<HostT>,
 		"SimNetClient: the host's noteDelivered member, if it has one, must be callable as noteDelivered(SimLane, double "
 		"recvSeconds) -> void; any other shape would never be called");
+	static_assert(SimNetLifecycleUnregisteringHookWellFormed<HostT>,
+		"SimNetClient: the host's onLifecycleUnregistering member, if it has one, must be callable as "
+		"onLifecycleUnregistering(uint8_t simId) -> void; any other shape would never be called, and a queue-registered "
+		"character's removal would leave the game's systems pointing at freed storage");
+	static_assert(SimNetClockSampleHookWellFormed<HostT>,
+		"SimNetClient: the host's onClockSample member, if it has one, must be callable as onClockSample(const "
+		"SimNetClockSample&) -> void; any other shape would never be called, and the clock would stay on the engine ping");
 
-	SimNetClient(HostT& host, TransportT& transport) : m_host(host), m_transport(transport)
+	SimNetClient(HostT& host, TransportT& transport)
+		: m_host(host)
+		, m_transport(transport)
+		, m_immediate(simNetTransportIsImmediate(transport))
 	{
 		m_mirror.setAddedCallback([this](const RosterEntry& entry) { onRosterAdded(entry); });
 		m_mirror.setRemovedCallback([this](const RosterEntry& entry) { onRosterRemoved(entry); });
@@ -148,6 +202,9 @@ public:
 
 	size_t drain()
 	{
+		applyListenerRequest();
+		// ⛔G-11  docs/SimNetClient-guards.md
+		m_lifecycle.applyPending();
 		const size_t handled = m_transport.inbox().drain([this](const InboundSimRecord& record) { onRecord(record); });
 		deliverNewestClock();
 		++m_stats.drains;
@@ -156,30 +213,100 @@ public:
 		return handled;
 	}
 
-	void dispatchFrame() { drain(); }
+	void dispatchFrame()
+	{
+		OG_CHECK(!m_immediate,
+			"SimNetClient::dispatchFrame: an immediate session (SimNetConfig::immediate) is drained by drain() at the start of "
+			"each step, on the step's thread; draining it at the frame point would run every consumer the drain reaches (inject, "
+			"relay ingest, estimator feed, tier delay, roster) on the game thread again");
+		drain();
+	}
 
-	void endInputSends() { m_transport.endInputSends(); }
+	bool immediate() const { return m_immediate; }
+
+	template <SimNetInputSender SenderT>
+	void afterCaptureTick_Step(SenderT& sender, uint32_t tick, const TimeConfig& timeConfig)
+		requires SimNetInputWindowTransport<TransportT>
+	{
+		OG_CHECK(m_immediate,
+			"SimNetClient::afterCaptureTick_Step: a frame-locked session sends once per frame, from the host's game-thread send "
+			"(SimulationManager::onPostSimulationGameThread) and flushFrame; the step-thread send at capture is immediate mode's "
+			"(SimNetConfig::immediate)");
+		m_transport.beginInputSends();
+		sender.sendLocalInputToAuthorityAll(
+			tick, static_cast<uint32_t>(timeConfig.redundancyDepthTicks), timeConfig.redundancyFrames);
+		m_transport.endInputSends();
+	}
+
+	void endInputSends()
+	{
+		OG_CHECK(!m_immediate,
+			"SimNetClient::endInputSends: an immediate session ends its input set in afterCaptureTick_Step, on the step's thread, "
+			"right after that tick's sends; the game thread's send (onPostSimulationGameThread) is refused in immediate mode");
+		m_transport.endInputSends();
+	}
 
 	void flushFrame()
 	{
-		// ⛔G-06  docs/SimNetClient-guards.md
-		m_transport.endInputSends();
+		if (!m_immediate)
+		{
+			// ⛔G-06  docs/SimNetClient-guards.md
+			m_transport.endInputSends();
+		}
 		m_transport.flushFrame();
 		maybeEmitWindow();
 	}
 
 	void bindListener()
 	{
-		if (m_listenerBound)
+		// ⛔G-10  docs/SimNetClient-guards.md
+		if (m_immediate)
+		{
+			m_listenerRequest.store(ListenerRequest::Bind, std::memory_order_release);
 			return;
-		m_listenerBound = true;
-		if (m_floor)
-			m_host.onRelayFloor(*m_floor, true);
-		if (m_tier)
-			m_host.onConnectionTier(m_tier->oldTier, m_tier->newTier, true);
+		}
+		applyBind();
 	}
 
-	void unbindListener() { m_listenerBound = false; }
+	void unbindListener()
+	{
+		if (m_immediate)
+		{
+			m_listenerRequest.store(ListenerRequest::Unbind, std::memory_order_release);
+			return;
+		}
+		m_listenerBound = false;
+	}
+
+	void bindLifecycle(SimulationObjectStorage<SimT>& storage, SimulationReconciliation<SimT>& reconciliation,
+		SimulationInputResolution<SimT>& inputResolution, SimulationNetSync<SimT>& netSync)
+	{
+		OG_CHECK(!m_lifecycleParts.bound(),
+			"SimNetClient::bindLifecycle: a session applies its queued registrations to one simulation, bound once before the "
+			"first registerCharacter; a second bind would re-point registrations already applied to the first");
+		m_lifecycleParts = LifecycleParts{&storage, &reconciliation, &inputResolution, &netSync};
+	}
+
+	template <SimNetLifecycleHook<Channel> AppliedFn = SimNetNoLifecycleHook>
+	void registerCharacter(uint8_t simId, SimT&& simulatable, InputProvider provider, AppliedFn applied = AppliedFn{})
+	{
+		OG_CHECK(m_lifecycleParts.bound(),
+			"SimNetClient::registerCharacter: bindLifecycle first; the drain applies the registration through "
+			"registerSimulatable on the bound storage, reconciliation, input resolution and net sync");
+		m_lifecycle.enqueue([this, simId, simulatable = std::move(simulatable), provider = std::move(provider),
+								applied = std::move(applied)]() mutable {
+			applyRegister(simId, std::move(simulatable), std::move(provider), applied);
+		});
+	}
+
+	template <SimNetLifecycleHook<Channel> AppliedFn = SimNetNoLifecycleHook>
+	void unregisterCharacter(uint8_t simId, AppliedFn applied = AppliedFn{})
+	{
+		m_lifecycle.enqueue([this, simId, applied = std::move(applied)]() mutable { applyUnregister(simId, applied); });
+	}
+
+	bool lifecycleRegistered(uint8_t simId) const { return m_lifecycleRegistered.test(simId); }
+	const SimNetLifecycleStats& lifecycleStats() const { return m_lifecycleStats; }
 
 	Channel* channel(uint8_t simId)
 	{
@@ -202,6 +329,45 @@ public:
 	const SimNetClientStats& stats() const { return m_stats; }
 
 private:
+	enum class ListenerRequest : uint8_t
+	{
+		None,
+		Bind,
+		Unbind,
+	};
+
+	static_assert(std::atomic<ListenerRequest>::is_always_lock_free,
+		"SimNetClient: an immediate session's listener request crosses from the binding thread to the drain as one lock-free "
+		"atomic");
+
+	void applyBind()
+	{
+		if (m_listenerBound)
+			return;
+		m_listenerBound = true;
+		if (m_floor)
+			m_host.onRelayFloor(*m_floor, true);
+		if (m_tier)
+			m_host.onConnectionTier(m_tier->oldTier, m_tier->newTier, true);
+	}
+
+	void applyListenerRequest()
+	{
+		if (!m_immediate)
+			return;
+		switch (m_listenerRequest.exchange(ListenerRequest::None, std::memory_order_acquire))
+		{
+		case ListenerRequest::None:
+			return;
+		case ListenerRequest::Bind:
+			applyBind();
+			return;
+		case ListenerRequest::Unbind:
+			m_listenerBound = false;
+			return;
+		}
+	}
+
 	struct WindowCounters
 	{
 		uint64_t drains = 0u;
@@ -289,6 +455,11 @@ private:
 			++m_stats.ignoredWhileRefused;
 			return;
 		}
+		if (const std::optional<SimNetClockSample> sample = simNetClock::readSample(record))
+		{
+			onClockSample(*sample);
+			return;
+		}
 		const DecodedSimMessage message = simEnvelope::decode<Shape>(record.lane, SimDirection::ServerToClient, record.payload());
 		if (message.refusal != DecodeRefusal::None)
 		{
@@ -374,6 +545,10 @@ private:
 	void onRosterRemoved(const RosterEntry& entry)
 	{
 		const uint8_t simId = entry.simId;
+		// ⛔G-12  docs/SimNetClient-guards.md
+		if (unregisterLifecycle(simId))
+			++m_lifecycleStats.removalUnregisters;
+		m_lifecycleRetired.reset(simId);
 		m_host.onRosterRemoved(simId);
 		m_staleFilter.forget(simId);
 		m_channels.erase(simId);
@@ -382,7 +557,7 @@ private:
 
 	void onRing(const InboundSimRecord& record, const DecodedSimMessage& message)
 	{
-		Channel* const target = channel(message.simId);
+		Channel* const target = arrivalChannel(message.simId);
 		if (target == nullptr)
 		{
 			holdRing(message.simId, message.body);
@@ -433,7 +608,7 @@ private:
 			m_host.onWireMismatch(message.corrVersion, correctionStateBuffer::kWireFormatVersion);
 			return;
 		}
-		Channel* const target = channel(message.simId);
+		Channel* const target = arrivalChannel(message.simId);
 		if (target == nullptr)
 		{
 			countUnknownSim();
@@ -465,6 +640,15 @@ private:
 		m_pendingClock = tick;
 	}
 
+	void onClockSample(const SimNetClockSample& sample)
+	{
+		++m_stats.clockSamples;
+		if constexpr (SimNetClockSampleHook<HostT>)
+			m_host.onClockSample(sample);
+		else
+			++m_stats.clockSamplesUnheard;
+	}
+
 	void deliverNewestClock()
 	{
 		const std::optional<uint32_t> tick = std::exchange(m_pendingClock, std::nullopt);
@@ -489,6 +673,73 @@ private:
 		m_tier = SimNetConnectionTierLatch{oldTier, tier};
 		if (m_listenerBound)
 			m_host.onConnectionTier(oldTier, tier, false);
+	}
+
+	Channel* arrivalChannel(uint8_t simId) { return m_lifecycleRetired.test(simId) ? nullptr : channel(simId); }
+
+	void refuseRegister(uint8_t simId, const char* reason)
+	{
+		++m_lifecycleStats.registersRefused;
+		std::array<char, kSimNetLifecycleRefusedLineBytes> line{};
+		std::snprintf(line.data(), line.size(), kSimNetLifecycleRefusedFormat, static_cast<unsigned>(simId), reason);
+		m_host.log(line.data());
+	}
+
+	template <class AppliedFn>
+	void applyRegister(uint8_t simId, SimT&& simulatable, InputProvider provider, AppliedFn& applied)
+	{
+		static_assert(std::is_same_v<PredictionOwnerFor<SimT>, Channel>,
+			"SimNetClient::registerCharacter: the game's SimulatableOwnerTraits must name the session's Channel as the prediction "
+			"owner, because the drain registers the channel the roster created as the character's owner");
+		Channel* const target = channel(simId);
+		if (target == nullptr || m_lifecycleRegistered.test(simId))
+		{
+			refuseRegister(simId, target == nullptr ? "noChannel" : "registered");
+			applied(static_cast<Channel*>(nullptr));
+			return;
+		}
+		const LifecycleParts& parts = m_lifecycleParts;
+		::registerSimulatable<SimT>(*parts.storage, *parts.reconciliation, *parts.inputResolution, *parts.netSync, simId,
+			std::move(simulatable), *target, std::move(provider));
+		m_lifecycleRegistered.set(simId);
+		m_lifecycleRetired.reset(simId);
+		m_unregisterLifecycle = &unregisterAs;
+		++m_lifecycleStats.registersApplied;
+		applied(target);
+	}
+
+	template <class AppliedFn>
+	void applyUnregister(uint8_t simId, AppliedFn& applied)
+	{
+		Channel* const target = channel(simId);
+		if (!unregisterLifecycle(simId))
+		{
+			++m_lifecycleStats.unregistersIgnored;
+			applied(static_cast<Channel*>(nullptr));
+			return;
+		}
+		m_lifecycleRetired.set(simId);
+		++m_lifecycleStats.unregistersApplied;
+		applied(target);
+	}
+
+	static void unregisterAs(SimNetClient& session, uint8_t simId)
+	{
+		const LifecycleParts& parts = session.m_lifecycleParts;
+		::unregisterSimulatable<SimT>(
+			*parts.storage, *parts.reconciliation, *parts.inputResolution, *parts.netSync, simId, session.channel(simId), nullptr);
+	}
+
+	bool unregisterLifecycle(uint8_t simId)
+	{
+		if (!m_lifecycleRegistered.test(simId))
+			return false;
+		m_lifecycleRegistered.reset(simId);
+		// ⛔G-13  docs/SimNetClient-guards.md
+		if constexpr (SimNetLifecycleUnregisteringHook<HostT>)
+			m_host.onLifecycleUnregistering(simId);
+		m_unregisterLifecycle(*this, simId);
+		return true;
 	}
 
 	void countBadDecode()
@@ -552,6 +803,8 @@ private:
 
 	HostT& m_host;
 	TransportT& m_transport;
+	const bool m_immediate;
+	std::atomic<ListenerRequest> m_listenerRequest{ListenerRequest::None};
 
 	RosterMirror m_mirror;
 	std::map<uint8_t, std::unique_ptr<Channel>> m_channels;
@@ -578,6 +831,13 @@ private:
 	uint64_t m_windowDuplicateBase = 0u;
 	uint64_t m_windowQuotaRefusedBase = 0u;
 	uint64_t m_windowEventsRefusedBase = 0u;
+
+	LifecycleParts m_lifecycleParts;
+	std::bitset<256> m_lifecycleRegistered;
+	std::bitset<256> m_lifecycleRetired;
+	void (*m_unregisterLifecycle)(SimNetClient&, uint8_t) = nullptr;
+	SimNetLifecycleStats m_lifecycleStats;
+	DeferredLifecycleQueue m_lifecycle;
 };
 
 namespace simNetClientSelfCheck
@@ -587,6 +847,12 @@ using ReferenceClientTransport = simNetTransportSelfCheck::ReferenceTransport;
 static_assert(SimNetClientTransport<ReferenceClientTransport>,
 	"SimNetTransport is the client session's transport: inbox, flush, the set's end, the per-character adapter and the "
 	"server connection. Was SimNetClient-rationale.md §3");
+static_assert(SimNetConfiguredTransport<ReferenceClientTransport>,
+	"SimNetTransport exposes config(), so a session over it takes SimNetConfig::immediate from its transport; a transport "
+	"without config() runs a frame-locked session (SimNetClient-rationale.md §16)");
+static_assert(SimNetInputWindowTransport<ReferenceClientTransport>,
+	"SimNetTransport opens an immediate input set for the calling thread (beginInputSends) and ends it (endInputSends), so a "
+	"session over it can send at capture from the step's thread (afterCaptureTick_Step, SimNetClient-rationale.md §17)");
 static_assert(ClientSimTransport<SimNetBundleTransport<ReferenceClientTransport::ChannelTransport>>,
 	"SimNetBundleTransport is a channel's ClientSimTransport: it wraps the transport's per-character adapter. Was "
 	"SimNetClient-rationale.md §11, for SimNetClientChannelTransport");

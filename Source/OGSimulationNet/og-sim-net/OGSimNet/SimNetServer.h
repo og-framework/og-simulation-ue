@@ -9,6 +9,7 @@
 #include "OGSimNet/SimNetHost.h"
 #include "OGSimNet/SimNetRoster.h"
 #include "OGSimulation/CorrectionStateBufferCodec.h"
+#include "OGSimulation/DeferredLifecycleQueue.h"
 #include "OGSimulation/InputRedundancyBundleCodec.h"
 #include "OGSimulation/Network/RelayRingStager.h"
 #include "OGSimulation/Network/ServerReceptionCoordinator.h"
@@ -20,6 +21,10 @@
 #include "OGSimulation/PCTimeManagement/TimeConfig.h"
 #include "OGSimulation/RelayedInputRingCodec.h"
 #include "OGSimulation/SimulatableList.h"
+#include "OGSimulation/SimulationInputResolution.h"
+#include "OGSimulation/SimulationNetSync.h"
+#include "OGSimulation/SimulationObjectStorage.h"
+#include "OGSimulation/SimulationReconciliation.h"
 
 #include <algorithm>
 #include <array>
@@ -168,6 +173,21 @@ inline std::array<char, kSimNetAddRefusedLineBytes> formatAddRefused(uint8_t sim
 	return line;
 }
 
+inline constexpr char kSimNetServerLifecycleRefusedFormat[] = "[Warning][SimNet.Lifecycle] role=server simId=%u refused=%s";
+inline constexpr size_t kSimNetServerLifecycleRefusedLineBytes = 96u;
+
+static_assert(kSimNetServerLifecycleRefusedLineBytes >= sizeof(kSimNetServerLifecycleRefusedFormat) + 3u + sizeof("DuplicateOwnerSlot"),
+	"kSimNetServerLifecycleRefusedLineBytes must hold the server's [SimNet.Lifecycle] line with a 3-digit sim id and the longest "
+	"add refusal (the roster's DuplicateOwnerSlot)");
+
+inline std::array<char, kSimNetServerLifecycleRefusedLineBytes> formatServerLifecycleRefused(uint8_t simId, const char* reason)
+{
+	std::array<char, kSimNetServerLifecycleRefusedLineBytes> line{};
+	std::snprintf(line.data(), line.size(), kSimNetServerLifecycleRefusedFormat, static_cast<unsigned>(simId),
+		reason != nullptr ? reason : "Unknown");
+	return line;
+}
+
 inline constexpr char kSimNetServerWindowFormat[] =
 	"[Warning][SimNet.Window] role=server drains=%llu msgs=%llu maxDepth=%llu drops=%llu tooLarge=%llu badDecode=%llu "
 	"refusedNotOwner=%llu unknownSim=%llu statesSent=%llu relaysSent=%llu overBudget=%llu quotaRefused=%llu controlHighWater=%llu "
@@ -217,6 +237,40 @@ inline std::array<char, kSimNetQuotaDisconnectLineBytes> formatQuotaDisconnect(c
 	return line;
 }
 
+template <class SimsT>
+struct SimNetLifecycleParts;
+
+template <class... SimTs>
+struct SimNetLifecycleParts<SimulatableList<SimTs...>>
+{
+	SimulationObjectStorage<SimTs...>* storage = nullptr;
+	SimulationReconciliation<SimTs...>* reconciliation = nullptr;
+	SimulationInputResolution<SimTs...>* inputResolution = nullptr;
+	SimulationNetSync<SimTs...>* netSync = nullptr;
+
+	bool bound() const { return storage != nullptr; }
+};
+
+struct SimNetNoLifecycleHook
+{
+	template <class ChannelT>
+	void operator()(ChannelT*) const
+	{
+	}
+};
+
+template <class F, class ChannelT>
+concept SimNetLifecycleHook = std::move_constructible<F> && std::invocable<F&, ChannelT*>;
+
+struct SimNetLifecycleStats
+{
+	uint64_t registersApplied = 0u;
+	uint64_t registersRefused = 0u;
+	uint64_t unregistersApplied = 0u;
+	uint64_t unregistersIgnored = 0u;
+	uint64_t removalUnregisters = 0u;
+};
+
 template <class SimT, class ShapeT>
 inline constexpr bool kSimHasShape = std::is_same_v<simEnvelope::ShapeFor<typename SimT::InputType, typename SimT::StateType>, ShapeT>;
 
@@ -250,6 +304,10 @@ public:
 	static_assert(SimNetDeliveryHookWellFormed<HostT>,
 		"SimNetServer: the host's noteDelivered member, if it has one, must be callable as noteDelivered(SimLane, double "
 		"recvSeconds) -> void; any other shape would never be called");
+	static_assert(SimNetLifecycleUnregisteringHookWellFormed<HostT>,
+		"SimNetServer: the host's onLifecycleUnregistering member, if it has one, must be callable as "
+		"onLifecycleUnregistering(uint8_t simId) -> void; any other shape would never be called, and a queue-registered "
+		"character's removal would leave the game's systems pointing at freed storage");
 
 	// ⛔G-09  docs/SimNetServer-guards.md
 	static_assert((kSimHasShape<SimTs, Shape> && ...),
@@ -263,6 +321,7 @@ public:
 	SimNetServer(HostT& host, TransportT& transport, const TimeConfig& config, size_t correctionBudgetBytes, PolicyT policy = PolicyT{})
 		: m_host(host)
 		, m_transport(transport)
+		, m_immediate(transportIsImmediate(transport))
 		, m_config(config)
 		, m_coordinator(config)
 		, m_correctionBudgetBytes(correctionBudgetBytes)
@@ -278,6 +337,8 @@ public:
 
 	size_t drain()
 	{
+		// ⛔G-12  docs/SimNetServer-guards.md
+		m_lifecycle.applyPending();
 		const size_t handled = m_transport.inbox().drain([this](const InboundSimRecord& record) { onRecord(record); });
 		++m_stats.drains;
 		++m_window.drains;
@@ -285,10 +346,21 @@ public:
 		return handled;
 	}
 
-	void dispatchFrame() { drain(); }
+	void dispatchFrame()
+	{
+		OG_CHECK(!m_immediate,
+			"SimNetServer::dispatchFrame: an immediate session (SimNetConfig::immediate) is drained by drain() in the tick "
+			"driver's beforePump, on the authority's owner thread (the runner once the authority loop is on); the frame point's "
+			"drain is frame-locked mode's");
+		drain();
+	}
 
 	void flushFrame()
 	{
+		OG_CHECK(!m_immediate,
+			"SimNetServer::flushFrame: an immediate session sends at once: each accepted bundle's relay in the drain, the "
+			"corrections, the clock and the window in afterInlineBatch. A frame flush would send from the frame's thread, and the "
+			"server's endpoint is serviced by the runner alone (mode B)");
 		flushRelays();
 		flushCorrections();
 		flushClock();
@@ -296,9 +368,22 @@ public:
 		maybeEmitWindow();
 	}
 
+	bool immediate() const { return m_immediate; }
+
 	void releaseForStep(int32_t firstTick, int32_t numSteps) { (releaseFor<SimTs>(firstTick, numSteps), ...); }
 
 	void afterBatch(int32_t serverTick) { m_coordinator.reapConnections(serverTick); }
+
+	void afterInlineBatch(int32_t serverTick)
+	{
+		OG_CHECK(m_immediate,
+			"SimNetServer::afterInlineBatch: a frame-locked session sends its corrections and clock at flushFrame and reaps at "
+			"afterBatch; the send after each batch is immediate mode's (SimNetConfig::immediate)");
+		flushCorrections();
+		flushClock();
+		afterBatch(serverTick);
+		maybeEmitWindow();
+	}
 
 	template <class SimT>
 	Channel<SimT>* addCharacter(uint8_t simId, uint8_t physicsSlot, SimConnectionId ownerConn, uint8_t localIndex, std::string debugName)
@@ -345,6 +430,9 @@ public:
 		// ⛔G-07  docs/SimNetServer-guards.md
 		if (found == m_characters.end())
 			return;
+		// ⛔G-13  docs/SimNetServer-guards.md
+		if (unregisterLifecycle(simId))
+			++m_lifecycleStats.removalUnregisters;
 		found->second.stager->finalReport();
 
 		const RosterMessage message = takeRemove(simId, reason);
@@ -357,6 +445,39 @@ public:
 		for (auto& [receiver, sent] : m_lastSentCorrectionTick)
 			sent.erase(simId);
 	}
+
+	void bindLifecycle(SimulationObjectStorage<SimTs...>& storage, SimulationReconciliation<SimTs...>& reconciliation,
+		SimulationInputResolution<SimTs...>& inputResolution, SimulationNetSync<SimTs...>& netSync)
+	{
+		OG_CHECK(!m_lifecycleParts.bound(),
+			"SimNetServer::bindLifecycle: a session applies its queued registrations to one simulation, bound once before the "
+			"first registerCharacter; a second bind would re-point registrations already applied to the first");
+		m_lifecycleParts = LifecycleParts{&storage, &reconciliation, &inputResolution, &netSync};
+	}
+
+	template <class SimT, SimNetLifecycleHook<Channel<SimT>> AppliedFn = SimNetNoLifecycleHook>
+	void registerCharacter(uint8_t simId, uint8_t physicsSlot, SimConnectionId ownerConn, uint8_t localIndex, std::string debugName,
+		std::type_identity_t<SimT>&& simulatable, AppliedFn applied = AppliedFn{})
+	{
+		static_assert((std::is_same_v<SimT, SimTs> || ...), "SimNetServer::registerCharacter: SimT is not one of the game's simulatables");
+		OG_CHECK(m_lifecycleParts.bound(),
+			"SimNetServer::registerCharacter: bindLifecycle first; the drain applies the registration through "
+			"registerSimulatable on the bound storage, reconciliation, input resolution and net sync");
+		m_lifecycle.enqueue([this, simId, physicsSlot, ownerConn, localIndex, debugName = std::move(debugName),
+								simulatable = std::move(simulatable), applied = std::move(applied)]() mutable {
+			applyRegister<SimT>(simId, physicsSlot, ownerConn, localIndex, std::move(debugName), std::move(simulatable), applied);
+		});
+	}
+
+	template <class SimT, SimNetLifecycleHook<Channel<SimT>> AppliedFn = SimNetNoLifecycleHook>
+	void unregisterCharacter(uint8_t simId, RosterRemoveReason reason, AppliedFn applied = AppliedFn{})
+	{
+		static_assert((std::is_same_v<SimT, SimTs> || ...), "SimNetServer::unregisterCharacter: SimT is not one of the game's simulatables");
+		m_lifecycle.enqueue([this, simId, reason, applied = std::move(applied)]() mutable { applyUnregister<SimT>(simId, reason, applied); });
+	}
+
+	bool lifecycleRegistered(uint8_t simId) const { return m_lifecycleUnregister[simId] != nullptr; }
+	const SimNetLifecycleStats& lifecycleStats() const { return m_lifecycleStats; }
 
 	void publishClock(uint32_t tick) { m_clockTick = tick; }
 
@@ -457,6 +578,67 @@ private:
 	};
 
 	using MessageBytes = std::array<std::byte, kMaxSimMessageBytes>;
+	using LifecycleParts = SimNetLifecycleParts<SimulatableList<SimTs...>>;
+	using LifecycleUnregister = void (*)(SimNetServer&, uint8_t);
+
+	template <class SimT>
+	static void unregisterAs(SimNetServer& session, uint8_t simId)
+	{
+		Channel<SimT>* const owner = session.template channel<SimT>(simId);
+		const LifecycleParts& parts = session.m_lifecycleParts;
+		::unregisterSimulatable<SimT>(
+			*parts.storage, *parts.reconciliation, *parts.inputResolution, *parts.netSync, simId, owner, owner);
+	}
+
+	bool unregisterLifecycle(uint8_t simId)
+	{
+		const LifecycleUnregister unregister = std::exchange(m_lifecycleUnregister[simId], nullptr);
+		if (unregister == nullptr)
+			return false;
+		// ⛔G-14  docs/SimNetServer-guards.md
+		if constexpr (SimNetLifecycleUnregisteringHook<HostT>)
+			m_host.onLifecycleUnregistering(simId);
+		unregister(*this, simId);
+		return true;
+	}
+
+	template <class SimT, class AppliedFn>
+	void applyRegister(uint8_t simId, uint8_t physicsSlot, SimConnectionId ownerConn, uint8_t localIndex, std::string debugName,
+		SimT&& simulatable, AppliedFn& applied)
+	{
+		static_assert(std::is_same_v<PredictionOwnerFor<SimT>, Channel<SimT>> && std::is_same_v<AuthorityOwnerFor<SimT>, Channel<SimT>>,
+			"SimNetServer::registerCharacter: the game's SimulatableOwnerTraits must name the session's Channel<SimT> as both "
+			"owners, because the drain registers the channel it just created as the prediction and the authority owner");
+		Channel<SimT>* const added = addCharacter<SimT>(simId, physicsSlot, ownerConn, localIndex, std::move(debugName));
+		if (added == nullptr)
+		{
+			++m_lifecycleStats.registersRefused;
+			m_host.log(formatServerLifecycleRefused(simId, m_lastAddRefusal).data());
+			applied(static_cast<Channel<SimT>*>(nullptr));
+			return;
+		}
+		const LifecycleParts& parts = m_lifecycleParts;
+		::registerSimulatable<SimT>(*parts.storage, *parts.reconciliation, *parts.inputResolution, *parts.netSync, simId,
+			std::move(simulatable), *added, *added);
+		m_lifecycleUnregister[simId] = &unregisterAs<SimT>;
+		++m_lifecycleStats.registersApplied;
+		applied(added);
+	}
+
+	template <class SimT, class AppliedFn>
+	void applyUnregister(uint8_t simId, RosterRemoveReason reason, AppliedFn& applied)
+	{
+		Channel<SimT>* const target = channel<SimT>(simId);
+		if (target == nullptr || !unregisterLifecycle(simId))
+		{
+			++m_lifecycleStats.unregistersIgnored;
+			applied(static_cast<Channel<SimT>*>(nullptr));
+			return;
+		}
+		++m_lifecycleStats.unregistersApplied;
+		applied(target);
+		removeCharacter(simId, reason);
+	}
 
 	static std::optional<uint8_t> simIdOf(unsigned int id)
 	{
@@ -554,7 +736,18 @@ private:
 	void refuseAdd(uint8_t simId, uint8_t physicsSlot, const char* reason)
 	{
 		++m_stats.addRefused;
+		m_lastAddRefusal = reason;
 		m_host.log(formatAddRefused(simId, physicsSlot, reason).data());
+	}
+
+	static bool transportIsImmediate(const TransportT& transport)
+	{
+		if constexpr (requires(const TransportT& configured) {
+						  { configured.config().immediate } -> std::convertible_to<bool>;
+					  })
+			return transport.config().immediate;
+		else
+			return false;
 	}
 
 	void onMessage(const InboundSimRecord& record)
@@ -602,6 +795,8 @@ private:
 		m_coordinator.noteRttSample(handle, simId, m_host.receptionTick(), m_host.rttMs(record.conn), *this);
 		const uint8_t localIndex = m_roster.localIndexOf(simId).value_or(kRosterNotLocal);
 		m_coordinator.template receiveInputBundle<SimT>(simId, handle, localIndex, m_bundle, *this, *this);
+		if (m_immediate)
+			flushRelays(simId);
 	}
 
 	void refuseInput(SimConnectionId conn, uint8_t simId, RosterInputVerdict verdict)
@@ -678,12 +873,12 @@ private:
 		++(kind == SimMessageKind::RelayFloor ? m_stats.floorsSent : m_stats.tiersSent);
 	}
 
-	void flushRelays()
+	void flushRelays(std::optional<uint8_t> onlySimId = std::nullopt)
 	{
 		const uint8_t resendEntries = static_cast<uint8_t>(latencyKnobs::clampRelayResendEntries(m_config.relayResendEntries));
 		for (auto& [simId, character] : m_characters)
 		{
-			if (character.stager->flush(resendEntries) == 0u)
+			if ((onlySimId && *onlySimId != simId) || character.stager->flush(resendEntries) == 0u)
 				continue;
 			const RelayRingBuffer& ring = character.stager->published();
 			MessageBytes out{};
@@ -828,6 +1023,7 @@ private:
 
 	HostT& m_host;
 	TransportT& m_transport;
+	const bool m_immediate;
 	const TimeConfig& m_config;
 	Coordinator m_coordinator;
 	size_t m_correctionBudgetBytes;
@@ -848,11 +1044,17 @@ private:
 	std::optional<uint8_t> m_floor;
 
 	SimNetServerStats m_stats;
+	const char* m_lastAddRefusal = nullptr;
 	WindowCounters m_window;
 	std::optional<double> m_windowStartSeconds;
 	uint64_t m_windowDropsBase = 0u;
 	uint64_t m_windowTooLargeBase = 0u;
 	uint64_t m_windowQuotaRefusedBase = 0u;
 	uint64_t m_windowEventsRefusedBase = 0u;
+
+	LifecycleParts m_lifecycleParts;
+	std::array<LifecycleUnregister, 256> m_lifecycleUnregister{};
+	SimNetLifecycleStats m_lifecycleStats;
+	DeferredLifecycleQueue m_lifecycle;
 };
 } // namespace ogsimnet

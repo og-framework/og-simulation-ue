@@ -44,6 +44,7 @@ public:
 	static void SetSimLanesFactory(FOGNetSimLanesFactory Factory);
 	IOGNetSimLanes* GetSimLanes() const;
 	UOGNetConnection* FindConnection(uint32 OGNetId) const;
+	double GetSmoothedRttSeconds(uint32 OGNetId) const;
 
 private:
 	friend struct FOGNetEndpointHost;

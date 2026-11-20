@@ -34,6 +34,8 @@ two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` →
 * **§11** is og-input-latency task 6: the late-heal hop `H6L`, where its three stamps come from, and why a resimulation's
   use is read from the observation ring.
 * **§12** is og-input-latency task P5-5: the server's correction-tick walk moved into the session, and the `stampAt` door.
+* **§13** is og-input-latency task P5-17: an immediate client's step-thread doors.
+* **§14** is og-input-latency task P5-20: the authority runner's doors on a loop-on server.
 
 ---
 
@@ -350,8 +352,9 @@ their tick?** No, on either backend, verified 2026-11-11:
 * **Jolt.** `SimulationStepDriver::runClientTick` (`SimulationStepDriver.h:120-167`) calls `resimulateIfRequested`
   (`:129`) before `beforeSimulate` (`:133`); the replay loop there (`:221-236`) calls `onGameSimulation`, the world step and
   `onPostGameSimulation` per replayed tick and never calls a step hook. `beforePhysics` (`:150`), which reaches
-  `onStepStarted` (`TickDriverStepHooks.h:142-146`) and so `stampAfterStep_Internal`
-  (`BrawlerTickDriverGameUImpl.h:62`), runs once per physics step, for the prediction tick only.
+  `onStepStarted` (`TickDriverStepHooks.h:151-155`) and so `stampAfterStep_Internal`
+  (`BrawlerTickDriverGameUImpl.h:77`), runs once per physics step, for the prediction tick only. (Line numbers
+  re-checked 2026-11-19, og-input-latency task P5-33.)
 * **Chaos.** `OnPreSimulate_Internal` calls `stampLatencyAfterStep_Internal` only `if (!isResimulating)`
   (`ChaosTickBackendUImpl.cpp:266-267`).
 
@@ -413,3 +416,62 @@ are too. The switch makes the walk iterate the server's channels, and this class
 no-op with the gate at 0. The switch's host stamps use it for og-net's `NetReceived` point at the receive time og-net
 reports (P5 design §3.3). Since og-input-latency task P5-7 the hosts call it (`UESimNetHost-rationale.md` §4), and the hop
 masks include the og-net hops (§6).
+
+## §13 An immediate client's step-thread doors (og-input-latency task P5-17)
+
+With `[OGNetcode] SimTrafficImmediate=1` a client drains og-sim-net and sends its inputs on the step's thread
+(`UESimulationSession-rationale.md` §18), so three stamp sites that were game-thread sites move onto it. Each one posts what the
+game-thread door stamped, in the same order and with the same times, through the mailbox (§6's second path):
+
+| door | posts | was (frame-locked, still used there) |
+|---|---|---|
+| `stampClientReceived_Internal(stream, lane, tick, recv)` | `ClientReceived` at now; for the State stream, the heal-by-correction (below); then `NetReceived` at `recv` | the host's `stamp` + `stampAt` (Input), `stampCorrectionReceived` + `stampAt` (State) |
+| `noteWireSample_Internal(rtt)` | a `Sample` of `Hop::Wire`, half the round trip | `noteWireSample` |
+| `stampHandedAndLeft_Internal(lane, captureTick)` | `Handed` and `LeftProcess`, both at now | the channel's handed callback's `stamp(Handed)`, then `onPostTickFlush`'s `LeftProcess` |
+
+- **The heal-by-correction rides the mailbox as its own item.** The probe's `stampHealedByCorrection` walks the probe's slots,
+  which only the game thread may touch, and `latencyBudget::Event` (og-sim) has no kind for it. So the mailbox carries a
+  `PostedEvent`, an `Event` plus the heal's delay ticks and a flag, and `tick_GameThread` calls `stampHealedByCorrection` for a
+  flagged item and `apply` for the rest. The delay (`dA`, the newest relayed capture's) is read on the step, from the relay
+  store, which in immediate mode the same drain writes. One queue keeps the order: the heal is applied after the
+  `ClientReceived` stamps that came before it and before the ones after it, as it was on the game thread. A frame-locked
+  client's items are never flagged, so its probe sees the events it saw before.
+- **`LeftProcess` is the send.** An immediate transport hands each input set to the og-net endpoint at once
+  (`SimNetTransport-rationale.md` §12), so the input leaves the process where it is handed, on the step, not at the frame's
+  `TickFlush`. `H3` then reads about 0 on an immediate client; `onPostTickFlush` still runs and finds those slots already
+  stamped.
+- **The single producer.** On an immediate client every producer of the mailbox is the step's thread: these three, the
+  capture wrapper and the step hooks. The world session's teardown drain runs on the game thread, but only after the steps
+  have stopped (`UESimulationSession-rationale.md` §18.6), so producers never overlap.
+- **The gate.** With `OG_LATENCY_BUDGET_DIAGNOSTICS` at 0 the three doors are empty, like the rest.
+
+## §14 The authority runner's doors (og-input-latency task P5-20)
+
+With `og.Sim.AuthorityLoop=1` a dedicated server steps, drains og-sim-net and sends on the runner, through an immediate
+transport (`UESimulationSession-rationale.md` §19), so the server's game-thread stamp sites move onto it. Each door posts through
+the mailbox (§6's second path):
+
+| door | posts | was (the loop off, still used there) |
+|---|---|---|
+| `stampServerReceived_Internal(lane, captureTick, recv)` | `ServerReceived` at now, then `NetReceived` at `recv` (Input) | the server host's `stamp` + `stampAt` (`UESimNetHost.h`) |
+| `stampHandedAndLeft_Internal(lane, captureTick)` (§13's door) | `Handed` and `LeftProcess`, both at now (Input) | the server host's `stamp(Handed)`, then `onPostTickFlush`'s `LeftProcess` |
+| `stampCorrectionHanded_Internal(lane, correctionTick, handed)` | `Handed` and `LeftProcess`, both at `handed` (State), once per new correction tick of the lane | `tick_GameThread`'s walk of the session's correction ticks at its own now, then `onPostTickFlush`'s `LeftProcess` |
+
+- **Who calls them.** The first two are the lanes' server host (`UESimNetLanes-rationale.md` §12), which og-sim-net calls on
+  the runner once the session has called `serveFromRunner()`. The third is the session's `stampCorrectionsHanded_Runner`, after
+  og-sim-net's `afterInlineBatch` has flushed the batch's corrections; it reads each character's correction tick from
+  og-sim-net's own channel, the runner's object, with the session's `correctionTickOf`, the read `forEachAuthorityCorrectionTick`
+  also uses.
+- **`LeftProcess` is the hand-over.** An immediate transport hands each relay and each correction to the og-net endpoint at once
+  (`SimNetTransport-rationale.md` §7), as an immediate client hands its inputs (§13), so the server's `H3` (Input) and `H3c` (State) read about
+  0 on the loop, and `H5` (State, `StepEnd` → `Handed`) ends at the runner's hand-over instead of the game thread's next latency
+  tick. `onPostTickFlush` still runs and finds those slots stamped.
+- **`tick_GameThread` skips its walk on the loop** (`!isClient && !m_owner.m_authorityLoop`): the walk reads every channel's
+  correction buffer, which the runner writes, and the session's channel map, which the game thread writes, so neither thread
+  could do it alone. The runner's walk reads storage ids and og-sim-net's channels, both the runner's.
+- **The dedup map is the runner's.** `m_lastHandedCorrectionTick_Runner` is the twin of `m_lastHandedCorrectionTick`, written
+  only on the runner; `forgetCharacter` (the game thread) never touches it (G-05). Without the forget a new character that
+  reuses a sim id starts from the old one's last tick, which costs at most one `Handed` stamp, the one whose tick equals it.
+- **The single producer.** On a loop-on server every producer of the mailbox is the runner: these three doors, the capture
+  wrapper (a dedicated server captures no input) and the step hooks. The game thread only drains.
+- **The gate.** With `OG_LATENCY_BUDGET_DIAGNOSTICS` at 0 the doors are empty, like the rest.

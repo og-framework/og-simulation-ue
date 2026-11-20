@@ -125,6 +125,47 @@ the consequence of ignoring it.
 
 ---
 
+## G-12 — the drain applies the lifecycle queue before it reads any record
+
+- **Site:** the `m_lifecycle.applyPending();` at the top of `drain()`.
+- **Prohibition:** do not move the apply after the inbox's drain, and do not apply the queue from anywhere but `drain()`.
+- **Consequence:** the records of one drain are then handled against the roster of the drain before: a bundle that arrives
+  after the host unregistered its character is accepted for a character that is leaving the simulation, and a bundle for a
+  character registered in the same drain is refused as an unknown sim id. Applied from another member, the facades run on that
+  caller's thread, which is not the drain's once the authority loop drains on its runner (og-input-latency P2-19).
+- **What breaks if it moves:** `SimNetLifecycleQueue.TheServerAppliesQueuedRegistrationsAtTheTopOfItsDrain` fails at
+  `CHECK( rig.server->stats().unknownSim == 1u )` with `0 == 1`.
+
+---
+
+## G-13 — `removeCharacter` unregisters a queue-registered character before it destroys the channel
+
+- **Site:** the `if (unregisterLifecycle(simId))` in `removeCharacter`.
+- **Prohibition:** do not delete it, and do not move it below the channel's erase.
+- **Consequence:** the channel is the character's prediction and authority owner in NetSync: the authority writer map holds a
+  pointer to it and the remote-move callback is bound on it. Without the unregister the channel is destroyed while NetSync
+  still holds it, so the next correction send walks a destroyed owner, and the storage and the resolver keep a character the
+  roster no longer lists.
+- **What breaks if it moves:** `SimNetLifecycleQueue.TheServerAppliesQueuedRegistrationsAtTheTopOfItsDrain`, its section
+  "removeCharacter of a queue-registered character unregisters it before the channel goes", fails at
+  `CHECK( rig.fullyGone(kRemote) )` and `removalUnregisters == 1u`.
+
+---
+
+## G-14 — the host hears of a queue-registered character's unregister before the facade runs
+
+- **Site:** the `if constexpr (SimNetLifecycleUnregisteringHook<HostT>)` in `unregisterLifecycle`.
+- **Prohibition:** do not delete the call, and do not move it below `unregister(*this, simId)`.
+- **Consequence:** the host's game systems hold pointers into the character's storage, and the host's answer (the systems
+  executor's unregister notify) needs the character still in storage. Below the facade the entry is destroyed; without the
+  call a `removeCharacter` or a queued unregister of a queue-registered character leaves the systems pointing at freed storage.
+  The authority loop registers every server character through the queue (og-input-latency P5-19), so this is every leave there.
+- **What breaks if it moves:** `SimNetLifecycleUnregisteringHook.TheServerHookRunsBeforeTheFacadeWhileTheCharacterIsInStorage`,
+  sections "removeCharacter of a queue-registered character" and "a queued unregister", fail at
+  `REQUIRE( rig.host.calls.size() == 1u )` (deleted) or `CHECK( rig.host.calls[0].inStorage )` (moved below the facade).
+
+---
+
 ## §R Retired ids
 
 None.

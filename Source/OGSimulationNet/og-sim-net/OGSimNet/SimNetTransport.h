@@ -21,6 +21,7 @@
 #include <cstring>
 #include <memory>
 #include <span>
+#include <thread>
 #include <type_traits>
 
 namespace ogsimnet
@@ -163,7 +164,13 @@ struct SimNetTransportStats
 	uint64_t noSlotConnects = 0u;
 	uint64_t unannouncedConnects = 0u;
 	uint64_t unannouncedRefused = 0u;
+	uint64_t unwindowedRefused = 0u;
+	uint64_t clockSends = 0u;
 };
+
+static_assert(std::atomic<std::thread::id>::is_always_lock_free,
+	"SimNetTransport: an immediate transport's input set belongs to the thread that opened it (beginInputSends), and every "
+	"append and end reads that owner from one lock-free atomic, so a refused call from another thread never waits");
 
 template <typename TransportT>
 class SimNetChannelTransport
@@ -223,13 +230,17 @@ public:
 		m_endpoint = &endpoint;
 		for (size_t lane = 0u; lane < kSimLaneCount; ++lane)
 		{
-			endpoint.setLaneHandler(static_cast<ognet::Lane>(lane), ognet::LaneHandler{&SimNetTransport::onLaneMessage, this});
+			const bool clockLane = static_cast<SimLane>(lane) == SimLane::SimClock && m_clockHandler.fn != nullptr;
+			endpoint.setLaneHandler(static_cast<ognet::Lane>(lane),
+				clockLane ? m_clockHandler : ognet::LaneHandler{&SimNetTransport::onLaneMessage, this});
 		}
 		// ⛔G-02  docs/SimNetTransport-guards.md
 
 	}
 
 	void markEndpointStarted() { m_endpointStarted.store(true, std::memory_order_release); }
+
+	bool hasClockHandler() const { return m_clockHandler.fn != nullptr; }
 
 	void onConnectionEvent(const ognet::ConnectionEvent& event)
 	{
@@ -258,32 +269,34 @@ public:
 
 	ChannelTransport channelTransport(uint8_t simId) { return ChannelTransport(*this, simId); }
 
-	void appendInputBundle(uint8_t simId, std::span<const std::byte> bundle)
+	void beginInputSends()
 	{
-		if (simId == 0u || bundle.size() < inputRedundancyBundle::kHeaderBytes
-			|| 1u + bundle.size() > kMaxSimMessageBytes - simEnvelope::kInputBundleSetHeaderBytes)
+		if (!m_config.immediate)
 		{
-			count(m_inputBundlesRefused);
 			return;
 		}
-		const std::span<std::byte> set(m_inputSet);
-		if (m_inputSetUsed == 0u)
-		{
-			m_inputSetUsed = simEnvelope::writeInputBundleSetHeader(set);
-		}
-		size_t used = simEnvelope::appendInputBundle(set, m_inputSetUsed, simId, bundle);
-		if (used == 0u)
-		{
-			emitInputSet();
-			count(m_inputSetSplits);
-			m_inputSetUsed = simEnvelope::writeInputBundleSetHeader(set);
-			used = simEnvelope::appendInputBundle(set, m_inputSetUsed, simId, bundle);
-		}
-		m_inputSetUsed = used;
-		count(used == 0u ? m_inputBundlesRefused : m_inputBundles);
+		std::thread::id none{};
+		const bool opened = m_inputSender.compare_exchange_strong(none, std::this_thread::get_id(), std::memory_order_acq_rel);
+		OG_CHECK(opened,
+			"SimNetTransport::beginInputSends: an immediate transport's input set is already open. The client session opens it "
+			"once per captured tick (SimNetClient::afterCaptureTick_Step) and ends it before the next");
 	}
 
-	void endInputSends() { emitInputSet(); }
+	void appendInputBundle(uint8_t simId, std::span<const std::byte> bundle)
+	{
+		withInputSet([&] { appendToInputSet(simId, bundle); });
+	}
+
+	void endInputSends()
+	{
+		withInputSet([&] {
+			emitInputSet();
+			if (m_config.immediate)
+			{
+				m_inputSender.store(std::thread::id{}, std::memory_order_release);
+			}
+		});
+	}
 
 	void relay(SimConnectionId skipOwner, std::span<const std::byte> bytes) { submit(SendOp::BroadcastExcept, skipOwner, SimLane::SimRelay, bytes); }
 	void sendState(SimConnectionId conn, std::span<const std::byte> bytes) { submit(SendOp::Send, conn, SimLane::SimState, bytes); }
@@ -329,12 +342,85 @@ public:
 		out.noSlotConnects = m_noSlotConnects.load(std::memory_order_relaxed);
 		out.unannouncedConnects = m_unannouncedConnects.load(std::memory_order_relaxed);
 		out.unannouncedRefused = m_unannouncedRefused.load(std::memory_order_relaxed);
+		out.unwindowedRefused = m_unwindowedRefused.load(std::memory_order_relaxed);
+		out.clockSends = m_clockSends.load(std::memory_order_relaxed);
 		return out;
 	}
 
 private:
+	template <class, class>
+	friend class SimNetClockServer;
+	template <class, class>
+	friend class SimNetClockClient;
+
 	enum class SendOp : uint8_t { Send, BroadcastExcept };
 	enum class SlotPresence : uint8_t { Silent, Announced, Unannounced };
+
+	void setClockHandler(ognet::LaneHandler handler)
+	{
+		OG_CHECK(m_endpoint == nullptr && !m_endpointStarted.load(std::memory_order_acquire),
+			"SimNetTransport::setClockHandler: the SimClock lane's own handler is set before installHandlers, which gives it the "
+			"lane in place of the copy-only handler (og-net takes lane handlers before start only)");
+		OG_CHECK(handler.fn != nullptr && m_clockHandler.fn == nullptr,
+			"SimNetTransport::setClockHandler: a transport has one clock handler (a SimNetClockServer or a SimNetClockClient), set once");
+		m_clockHandler = handler;
+	}
+
+	bool admitsClockFrom(SimConnectionId conn) { return admittedSlot(conn) != kNoInboxTag; }
+
+	void receiveClock(SimConnectionId conn, double recvSeconds, std::span<const std::byte> bytes)
+	{
+		receive(conn, SimLane::SimClock, recvSeconds, bytes);
+	}
+
+	void sendClockNow(SimConnectionId conn, std::span<const std::byte> bytes)
+	{
+		dispatch(SendOp::Send, conn, SimLane::SimClock, bytes);
+		count(m_clockSends);
+	}
+
+	template <class SetFn>
+	void withInputSet(SetFn&& onSet)
+	{
+		const bool owned = !m_config.immediate || m_inputSender.load(std::memory_order_acquire) == std::this_thread::get_id();
+		OG_CHECK(owned,
+			"SimNetTransport: an immediate transport's input set is appended to and ended only on the thread that opened it, "
+			"inside the client session's afterCaptureTick_Step on the step's thread. A send from anywhere else (the game "
+			"thread's onPostSimulationGameThread send, or SimNetClient::flushFrame or endInputSends in immediate mode) would "
+			"race the step's set");
+		// ⛔G-07  docs/SimNetTransport-guards.md
+		if (!owned)
+		{
+			count(m_unwindowedRefused);
+			return;
+		}
+		onSet();
+	}
+
+	void appendToInputSet(uint8_t simId, std::span<const std::byte> bundle)
+	{
+		if (simId == 0u || bundle.size() < inputRedundancyBundle::kHeaderBytes
+			|| 1u + bundle.size() > kMaxSimMessageBytes - simEnvelope::kInputBundleSetHeaderBytes)
+		{
+			count(m_inputBundlesRefused);
+			return;
+		}
+		const std::span<std::byte> set(m_inputSet);
+		if (m_inputSetUsed == 0u)
+		{
+			m_inputSetUsed = simEnvelope::writeInputBundleSetHeader(set);
+		}
+		size_t used = simEnvelope::appendInputBundle(set, m_inputSetUsed, simId, bundle);
+		if (used == 0u)
+		{
+			emitInputSet();
+			count(m_inputSetSplits);
+			m_inputSetUsed = simEnvelope::writeInputBundleSetHeader(set);
+			used = simEnvelope::appendInputBundle(set, m_inputSetUsed, simId, bundle);
+		}
+		m_inputSetUsed = used;
+		count(used == 0u ? m_inputBundlesRefused : m_inputBundles);
+	}
 
 	struct HeldHeader
 	{
@@ -351,22 +437,32 @@ private:
 		self.receive(id, static_cast<SimLane>(lane), recvSeconds, bytes);
 	}
 
-	void receive(SimConnectionId conn, SimLane lane, double recvSeconds, std::span<const std::byte> bytes)
+	uint16_t admittedSlot(SimConnectionId conn)
 	{
 		const uint16_t slot = slotFor(conn);
 		if (slot == kNoInboxTag)
 		{
 			count(m_unslottedRefused);
-			return;
+			return kNoInboxTag;
 		}
 		if (m_closing[slot])
 		{
 			count(m_closingRefused);
-			return;
+			return kNoInboxTag;
 		}
 		if (m_presence[slot] == SlotPresence::Unannounced)
 		{
 			count(m_unannouncedRefused);
+			return kNoInboxTag;
+		}
+		return slot;
+	}
+
+	void receive(SimConnectionId conn, SimLane lane, double recvSeconds, std::span<const std::byte> bytes)
+	{
+		const uint16_t slot = admittedSlot(conn);
+		if (slot == kNoInboxTag)
+		{
 			return;
 		}
 		if (m_inbox.push(conn, lane, recvSeconds, bytes, slot) == SimInboxPush::ControlQuotaRefused)
@@ -559,6 +655,7 @@ private:
 
 	SimNetConfig m_config;
 	EndpointT* m_endpoint = nullptr;
+	ognet::LaneHandler m_clockHandler{};
 	std::atomic<bool> m_endpointStarted{false};
 	Inbox m_inbox;
 	std::unique_ptr<std::atomic<SimConnectionId>[]> m_quotaOwner;
@@ -570,6 +667,7 @@ private:
 	size_t m_holdUsed = 0u;
 	std::array<std::byte, kMaxSimMessageBytes> m_inputSet{};
 	size_t m_inputSetUsed = 0u;
+	std::atomic<std::thread::id> m_inputSender{};
 
 	std::atomic<uint64_t> m_heldSends{0};
 	std::atomic<uint64_t> m_releasedSends{0};
@@ -588,6 +686,8 @@ private:
 	std::atomic<uint64_t> m_noSlotConnects{0};
 	std::atomic<uint64_t> m_unannouncedConnects{0};
 	std::atomic<uint64_t> m_unannouncedRefused{0};
+	std::atomic<uint64_t> m_unwindowedRefused{0};
+	std::atomic<uint64_t> m_clockSends{0};
 };
 
 namespace simNetTransportSelfCheck

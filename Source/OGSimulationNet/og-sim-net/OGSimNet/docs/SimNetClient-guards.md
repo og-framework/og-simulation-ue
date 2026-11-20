@@ -65,8 +65,10 @@ the consequence of ignoring it.
 
 ## G-06 — `flushFrame` ends the open input set before the transport flushes
 
-- **Site:** the `m_transport.endInputSends()` in `flushFrame`.
-- **Prohibition:** do not delete it, and do not move it after `m_transport.flushFrame()`.
+- **Site:** the `m_transport.endInputSends()` in `flushFrame`'s frame-locked branch (`if (!m_immediate)`).
+- **Prohibition:** do not delete it, and do not move it after `m_transport.flushFrame()`. (The branch around it is not this
+  guard's: an immediate session's set is ended by `afterCaptureTick_Step` on the step's thread, and the transport's own
+  `OG_CHECK` refuses a set end from `flushFrame` there, rationale §17.)
 - **Consequence:** a host that sends its channels' bundles and does not call `endInputSends()` would leave the set open in the
   transport. The frame's input would not leave at this flush, and the next frame's bundles would be appended to the same set,
   so one set would carry two bundles of one character and every input would reach the server a frame late.
@@ -101,10 +103,71 @@ the consequence of ignoring it.
 - **Prohibition:** do not call `onTimingInfo` from `onClock`, and do not deliver more than one clock tick per drain.
 - **Consequence:** every clock message queued since the last drain becomes its own RTT sample and authority tick. At a join
   that is 10 to 17 samples in one frame, all with the same RTT reading (og-input-latency's Ph3 gate run, task P5-25),
-  so one reading fills the estimator's sample count, and the clock's re-centre window (`TimeConfig::recentreSettleSamples`)
-  fills that many samples early.
+  so one reading fills the estimator's sample count with that many samples (the clock's re-centre window,
+  `TimeConfig::recentreSettleSamples`, counted them and filled that many samples early until og-input-latency P3-11; it
+  counts the clock's advances since).
 - **What breaks if it moves:** `SimNetClient.QueuedClockTicksReachTheHostAsTheNewestOnePerDrain` fails at
   `REQUIRE(s.host.timing.size() == 1u)` with `16 == 1`: one host call per queued tick where one is expected.
+
+---
+
+## G-10 — in immediate mode, `bindListener` and `unbindListener` only post a request
+
+- **Site:** the `if (m_immediate)` in `bindListener`.
+- **Prohibition:** do not apply the bind (the floor and tier replay) or the unbind in the caller's call when the session is
+  immediate, and do not drop the request so that the next drain never applies it.
+- **Consequence:** in immediate mode the drain runs on the step's thread and writes the latched floor and tier and reads the
+  bound flag there. A bind applied in the caller's call runs the replay on the binding thread: in the Unreal host that is the
+  game thread (`UESimNetLanes::bindClientSession`), so the host's tier-delay write (`UESimulationSession::onConnectionTierReceived`)
+  and the floor write run on the game thread while a step task drains, which is the crossing immediate mode removes, and the
+  plain latches race.
+- **What breaks if it moves:** `SimNetClientImmediate.InImmediateModeTheNextDrainAppliesTheListenerBind` fails at its first
+  `CHECK(host.calls.empty())` after `bindListener()`, and
+  `SimNetClientImmediate.EveryRelayStoreCorrectionCacheAndEstimatorWriteRunsOnAStepTaskNeverOnTheGameThread` counts the floor
+  and tier replays on the game thread.
+
+---
+
+## G-11 — the drain applies the lifecycle queue before it reads any record
+
+- **Site:** the `m_lifecycle.applyPending();` at the top of `drain()`.
+- **Prohibition:** do not move the apply after the inbox's drain, and do not apply the queue from anywhere but `drain()`.
+- **Consequence:** a correction that arrives in the same drain as its character's registration reaches the channel before
+  NetSync has bound its callbacks there: it is stored in the channel and never injected, so the first correction after a join is
+  lost (a relay ring is read again at bind, a correction is not). Applied from another member, the facades run on that caller's
+  thread: in the Unreal host the game thread, while a step reads the containers they write, which is the crossing the queue
+  closes (og-sim `ThreadingCrossings.md` row 11).
+- **What breaks if it moves:** `SimNetLifecycleQueue.ARegisterThenTheFirstArrivalInTheSameDrainReachesTheRegisteredCharacter`
+  fails at `CHECK( rig.landings() == 1u )` with `0 == 1`.
+
+---
+
+## G-12 — a roster Remove unregisters a queue-registered character before anything else
+
+- **Site:** the `if (unregisterLifecycle(simId))` in `onRosterRemoved`.
+- **Prohibition:** do not delete it, and do not move it below the host's `onRosterRemoved` call or the channel's erase.
+- **Consequence:** the channel is the character's owner in NetSync: the sender map holds a pointer to it and the arrival
+  callbacks are bound on it. Without the unregister the channel is destroyed with the roster entry while NetSync still holds
+  it, so the next send walks a destroyed owner, and the storage, the cache and the resolver's containers keep a character no
+  roster lists. Below the host's call, the host is told of a removal while the character is still registered.
+- **What breaks if it moves:** `SimNetLifecycleQueue.AnUnregisterThenALateArrivalIsACountedUnknownSimId`, its section "the
+  roster removes the character before the unregister is applied", fails at `CHECK_FALSE( *storageHadItAtTheHostEvent )`,
+  `CHECK( rig.fullyGone(kRemote) )`, `removalUnregisters == 1u` and `unregistersIgnored == 1u`.
+
+---
+
+## G-13 — the host hears of a queue-registered character's unregister before the facade runs
+
+- **Site:** the `if constexpr (SimNetLifecycleUnregisteringHook<HostT>)` in `unregisterLifecycle`.
+- **Prohibition:** do not delete the call, and do not move it below `m_unregisterLifecycle(*this, simId)`.
+- **Consequence:** the host's game systems hold pointers into the character's storage (the brawler's hit routing keeps the
+  character's root body and its `SimulatableBrawler`). The host's answer, the systems executor's unregister notify, needs the
+  character still in storage. Below the facade the storage entry is already destroyed, and without the call nothing tells the
+  systems at all for a roster Remove: they keep pointing at freed storage. The session's own unregistrations notify on their
+  own, so only the Remove path shows the loss.
+- **What breaks if it moves:** `SimNetLifecycleUnregisteringHook.TheClientHookRunsBeforeTheFacadeWhileTheCharacterIsInStorage`,
+  sections "a roster Remove of a queue-registered character" and "a queued unregister", fail at
+  `REQUIRE( rig.host.calls.size() == 1u )` (deleted) or `CHECK( rig.host.calls[0].inStorage )` (moved below the facade).
 
 ---
 

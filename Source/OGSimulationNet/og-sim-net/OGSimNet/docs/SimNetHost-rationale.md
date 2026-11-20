@@ -70,8 +70,57 @@ header.
 - **Self-check:** reference hosts with the hook satisfy their role's concept and the hook; the plain reference hosts are well
   formed without it; a host with a three-argument `noteDelivered`, and one with a private `noteDelivered`, are not well formed.
 
+## §4a The optional unregistering hook, `onLifecycleUnregistering`
+
+| service | meaning |
+|---|---|
+| `onLifecycleUnregistering(simId)` | optional, on either host: a character the session registered through its lifecycle queue is about to leave the simulation. Called by the session's `unregisterLifecycle`, on the drain's thread, **before** the facade (`unregisterSimulatable`) runs, so the character is still in storage |
+
+- **Why it exists.** A game's systems may hold pointers into a character's storage: the brawler's hit routing keeps the
+  character's root body and its simulatable. They forget the character in the systems executor's unregister notify, which reads
+  the character, so it must run before the facade. The session's own unregistrations can notify first (the host does it before it
+  enqueues), but a roster `Remove` reaches the facade inside the session, with no host code before it. Without the hook such a
+  removal left the systems pointing at freed storage (og-input-latency task P5-17's finding F1; added by task P5-19).
+- **When it is called.** In `SimNetClient::unregisterLifecycle` (a roster `Remove` or a queued unregister of a queue-registered
+  character) and in `SimNetServer::unregisterLifecycle` (`removeCharacter` or a queued unregister of one). A character the queue
+  never registered (a frame-locked host registers on its own) does not reach it: `unregisterLifecycle` returns before the call.
+- **Shape and checks.** The same pattern as `noteDelivered` (§4): `SimNetLifecycleUnregisteringHook<H>` is the call shape
+  `onLifecycleUnregistering(uint8_t) -> void`, called under `if constexpr`; `SimNetHostHasNoUnregisteringMember<H>` is the name
+  probe (a second `Names` struct, so the two probes stay independent); `SimNetLifecycleUnregisteringHookWellFormed<H>` is "has the
+  hook, or has no member of that name", and both sessions `static_assert` it. A host whose member returns a value, or is private,
+  does not compile.
+- **Self-check:** reference hosts with the hook satisfy their role's concept and the hook; the plain reference hosts are well
+  formed without it; a host whose `onLifecycleUnregistering` returns `bool`, and one with a private one, are not well formed.
+
+## §4b The optional SimClock sample hook, `onClockSample`
+
+| service | meaning |
+|---|---|
+| `onClockSample(const SimNetClockSample&)` | optional, client host only: one SimClock ping/pong measured by `SimNetClockClient` (`SimNetClock.h`: the RTT, theta, the server tick and the four stamps) was drained. Called by the client session on the drain's thread, ahead of the envelope decode, once per clockSample record, in drain order |
+
+- **Why it exists.** The clock client turns each pong into a clockSample record and pushes it into the inbox on og-net's
+  servicing thread (`SimNetClock-rationale.md` §6, §7). The record's version byte is one no envelope carries, so before this hook
+  the client session's decode refused it and counted it as a `badDecode`, and a host that wanted the samples had to drain the
+  records out of the inbox first (og-input-latency task P2-20's finding F1). The hook is the drain's own door for them: the host
+  copies the sample into its clock's estimator on the thread that already writes the estimator (`onTimingInfo`'s), so no new
+  thread crossing (og-input-latency task P3-10).
+- **Shape and checks.** The same pattern as `noteDelivered` (§4) and `onLifecycleUnregistering` (§4a):
+  `SimNetClockSampleHook<H>` is the call shape `onClockSample(const SimNetClockSample&) -> void`, called under `if constexpr`;
+  `SimNetHostHasNoClockSampleMember<H>` is the name probe (its own `Names` struct); `SimNetClockSampleHookWellFormed<H>` is "has
+  the hook, or has no member of that name", and the client session `static_assert`s it. This header names `SimNetClockSample`
+  by a forward declaration only, so it stays free of the clock's og-net includes; a reference parameter of an incomplete type is
+  enough for the concept.
+- **Without the hook** a host compiles unchanged: the session still reads the record ahead of the decode and drops it, counted
+  (`SimNetClientStats::clockSamples` and `clockSamplesUnheard`), never as a `badDecode`. The server session has no such record:
+  the server's clock answers pings on the servicing thread and pushes nothing for its session.
+- **Self-check:** a client host with the hook is still a client host, has the hook, and the probe sees it; the plain reference
+  client host is well formed without it; a host whose `onClockSample` takes a second argument, and one with a private one, are
+  not well formed.
+
 ## §5 Tests
 
 The reference shapes are the header's self-check. `SimNetServerTest.cpp` instantiates the server session with a fake host
 that records every stamp and line, and with a host that records `noteDelivered`; `SimNetClientTest.cpp` does the same for the
-client session.
+client session. `SimNetLifecycleUnregisteringHookTest.cpp` gives both sessions a host with `onLifecycleUnregistering` that records whether the
+character is still in storage at the call (§4a). `SimNetClockSampleRouteTest.cpp` drives a real `SimNetClockClient` ping and pong
+into a client session with and without `onClockSample` (§4b; `SimNetClient-rationale.md` §15).

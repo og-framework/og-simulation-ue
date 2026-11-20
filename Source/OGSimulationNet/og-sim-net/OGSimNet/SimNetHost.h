@@ -63,6 +63,58 @@ concept SimNetHostHasNoDeliveryMember = requires { &simNetHostMemberNames::Probe
 template <class H>
 concept SimNetDeliveryHookWellFormed = SimNetDeliveryHook<H> || SimNetHostHasNoDeliveryMember<H>;
 
+template <class H>
+concept SimNetLifecycleUnregisteringHook = requires(H& host, uint8_t simId)
+{
+	{ host.onLifecycleUnregistering(simId) } -> std::same_as<void>;
+};
+
+namespace simNetHostMemberNames
+{
+struct UnregisteringNames
+{
+	int onLifecycleUnregistering;
+};
+
+template <class H>
+struct UnregisteringProbe : H, UnregisteringNames
+{
+};
+} // namespace simNetHostMemberNames
+
+template <class H>
+concept SimNetHostHasNoUnregisteringMember = requires { &simNetHostMemberNames::UnregisteringProbe<H>::onLifecycleUnregistering; };
+
+template <class H>
+concept SimNetLifecycleUnregisteringHookWellFormed = SimNetLifecycleUnregisteringHook<H> || SimNetHostHasNoUnregisteringMember<H>;
+
+struct SimNetClockSample;
+
+template <class H>
+concept SimNetClockSampleHook = requires(H& host, const SimNetClockSample& sample)
+{
+	{ host.onClockSample(sample) } -> std::same_as<void>;
+};
+
+namespace simNetHostMemberNames
+{
+struct ClockSampleNames
+{
+	int onClockSample;
+};
+
+template <class H>
+struct ClockSampleProbe : H, ClockSampleNames
+{
+};
+} // namespace simNetHostMemberNames
+
+template <class H>
+concept SimNetHostHasNoClockSampleMember = requires { &simNetHostMemberNames::ClockSampleProbe<H>::onClockSample; };
+
+template <class H>
+concept SimNetClockSampleHookWellFormed = SimNetClockSampleHook<H> || SimNetHostHasNoClockSampleMember<H>;
+
 namespace simNetHostSelfCheck
 {
 struct ReferenceServerHost
@@ -115,6 +167,43 @@ private:
 	void noteDelivered(SimLane lane, double recvSeconds);
 };
 
+struct ReferenceUnregisteringServerHost : ReferenceServerHost
+{
+	void onLifecycleUnregistering(uint8_t simId);
+};
+
+struct ReferenceUnregisteringClientHost : ReferenceClientHost
+{
+	void onLifecycleUnregistering(uint8_t simId);
+};
+
+struct HostWithAnUnregisteringHookThatReturnsBool : ReferenceServerHost
+{
+	bool onLifecycleUnregistering(uint8_t simId);
+};
+
+struct HostWithAPrivateUnregisteringHook : ReferenceClientHost
+{
+private:
+	void onLifecycleUnregistering(uint8_t simId);
+};
+
+struct ReferenceClockSampleClientHost : ReferenceClientHost
+{
+	void onClockSample(const SimNetClockSample& sample);
+};
+
+struct HostWithATwoArgumentClockSampleHook : ReferenceClientHost
+{
+	void onClockSample(const SimNetClockSample& sample, double nowSeconds);
+};
+
+struct HostWithAPrivateClockSampleHook : ReferenceClientHost
+{
+private:
+	void onClockSample(const SimNetClockSample& sample);
+};
+
 static_assert(SimNetServerHost<ReferenceServerHost>, "SimNetServerHost self-check: the reference server host must satisfy the concept");
 static_assert(SimNetClientHost<ReferenceClientHost>, "SimNetClientHost self-check: the reference client host must satisfy the concept");
 static_assert(!SimNetServerHost<ReferenceClientHost> && !SimNetClientHost<ReferenceServerHost>,
@@ -135,5 +224,31 @@ static_assert(!SimNetDeliveryHookWellFormed<HostWithTheEndpointsThreeArgumentNot
 	"SimNetDeliveryHookWellFormed: a host member named noteDelivered that the sessions cannot call as noteDelivered(SimLane, "
 	"double) -> void (another arity, such as the endpoint's (lane, recvSeconds, now), or private) is refused, because the "
 	"sessions would silently never call it");
+static_assert(SimNetServerHost<ReferenceUnregisteringServerHost> && SimNetLifecycleUnregisteringHook<ReferenceUnregisteringServerHost>
+		&& SimNetClientHost<ReferenceUnregisteringClientHost> && SimNetLifecycleUnregisteringHook<ReferenceUnregisteringClientHost>,
+	"SimNetLifecycleUnregisteringHook self-check: a host with onLifecycleUnregistering(uint8_t) is still its role's host, and "
+	"has the hook");
+static_assert(!SimNetLifecycleUnregisteringHook<ReferenceServerHost> && SimNetLifecycleUnregisteringHookWellFormed<ReferenceServerHost>
+		&& SimNetLifecycleUnregisteringHookWellFormed<ReferenceClientHost>
+		&& SimNetLifecycleUnregisteringHookWellFormed<ReferenceUnregisteringServerHost>,
+	"SimNetLifecycleUnregisteringHook: the hook is optional; a host without an onLifecycleUnregistering member is well formed "
+	"and is never called");
+static_assert(!SimNetLifecycleUnregisteringHookWellFormed<HostWithAnUnregisteringHookThatReturnsBool>
+		&& !SimNetLifecycleUnregisteringHookWellFormed<HostWithAPrivateUnregisteringHook>,
+	"SimNetLifecycleUnregisteringHookWellFormed: a host member named onLifecycleUnregistering that the sessions cannot call as "
+	"onLifecycleUnregistering(uint8_t) -> void (another return type, or private) is refused, because the sessions would "
+	"silently never call it and a queue-registered character would leave the game's systems pointing at freed storage");
+static_assert(SimNetClientHost<ReferenceClockSampleClientHost> && SimNetClockSampleHook<ReferenceClockSampleClientHost>
+		&& SimNetClockSampleHookWellFormed<ReferenceClockSampleClientHost> && !SimNetHostHasNoClockSampleMember<ReferenceClockSampleClientHost>,
+	"SimNetClockSampleHook self-check: a client host with onClockSample(const SimNetClockSample&) is still a client host, has the "
+	"hook, and the name probe sees it");
+static_assert(!SimNetClockSampleHook<ReferenceClientHost> && SimNetClockSampleHookWellFormed<ReferenceClientHost>,
+	"SimNetClockSampleHook: the hook is optional; a client host without an onClockSample member is well formed, and the session "
+	"drops the SimClock samples it drains (counted, never decoded as a message)");
+static_assert(!SimNetClockSampleHookWellFormed<HostWithATwoArgumentClockSampleHook>
+		&& !SimNetClockSampleHookWellFormed<HostWithAPrivateClockSampleHook>,
+	"SimNetClockSampleHookWellFormed: a host member named onClockSample that the client session cannot call as "
+	"onClockSample(const SimNetClockSample&) -> void (another arity, or private) is refused, because the session would "
+	"silently never call it and the clock would stay on the engine ping");
 } // namespace simNetHostSelfCheck
 } // namespace ogsimnet

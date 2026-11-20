@@ -713,6 +713,7 @@ TEST_CASE("SimNetTransport.ASetThatWouldOutgrowOneSimMessageIsSplitAndRefusalsAr
 	auto transport = std::make_unique<FakeTransport>(ogsimnet::SimNetConfig{true});
 	transport->installHandlers(endpoint);
 
+	transport->beginInputSends();
 	transport->appendInputBundle(1, testBundle(1, 1));
 	transport->endInputSends();
 	CHECK(endpoint.calls.empty());
@@ -720,6 +721,7 @@ TEST_CASE("SimNetTransport.ASetThatWouldOutgrowOneSimMessageIsSplitAndRefusalsAr
 
 	transport->setServerConnection(9u);
 	const std::vector<std::byte> large = patternBytes(300u, 9);
+	transport->beginInputSends();
 	transport->appendInputBundle(1, large);
 	transport->appendInputBundle(2, large);
 	transport->endInputSends();
@@ -729,6 +731,7 @@ TEST_CASE("SimNetTransport.ASetThatWouldOutgrowOneSimMessageIsSplitAndRefusalsAr
 	CHECK(endpoint.calls[0].bytes[simEnvelope::kHeaderBytes] == 1u);
 	CHECK(endpoint.calls[1].bytes[simEnvelope::kHeaderBytes + 1u] == 2u);
 
+	transport->beginInputSends();
 	transport->appendInputBundle(0, testBundle(1, 1));
 	transport->appendInputBundle(3, patternBytes(1u, 1));
 	transport->appendInputBundle(3, patternBytes(kMaxSimMessageBytes, 1));
@@ -736,6 +739,7 @@ TEST_CASE("SimNetTransport.ASetThatWouldOutgrowOneSimMessageIsSplitAndRefusalsAr
 	CHECK(transport->stats().inputBundlesRefused == 3u);
 	CHECK(endpoint.calls.size() == 2u);
 
+	transport->beginInputSends();
 	for (uint8_t simId = 1; simId <= 9; ++simId)
 	{
 		transport->appendInputBundle(simId, testBundle(1, simId));

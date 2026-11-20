@@ -9,13 +9,17 @@
 #include "Engine/NetConnection.h"
 #include "Engine/NetDriver.h"
 #include "Misc/ConfigCacheIni.h"
+#include "UObject/StrongObjectPtr.h"
 #include "OGSimulation/BodyId.h"
+#include "OGSimulation/BodySlotOccupancy.h"
 #include "OGSimulation/CompilerControl.h"
 #include "OGSimulation/CorrectionStateBufferCodec.h"
 #include "OGSimulation/SimulationComparison.h"
+#include "OGSimulation/Mailbox.h"
 #include "OGSimulation/SimulationLog.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "OGSimulationUnreal/OGSimulationUnreal.h"
+#include "OGSimulationUnreal/UEAuthorityRunner.h"
 #include "OGSimulationUnreal/UELatencyBudgetDiagnostics.h"
 #include "OGSimulationUnreal/UESimulationLogRoutes.h"
 #include "OGSimulationUnreal/UESimNetHost.h"
@@ -25,6 +29,7 @@
 #include "OGNetUnreal/OGNetConnection.h"
 #include "OGNetUnreal/OGNetDriver.h"
 #include "OGSimNet/SimNetBindings.h"
+#include "OGSimNet/SimNetIdle.h"
 #include "OGSimNet/SimNetRoster.h"
 #include "OGSimNet/SimNetServer.h"
 #include "OGSimulation/PhysicsEngineTraits.h"
@@ -32,6 +37,7 @@
 #include "OGSimulation/RelayedInputRingCodec.h"
 #include "OGSimulation/ResimGateProbe.h"
 #include "OGSimulation/SimulatableList.h"
+#include "OGSimulation/SimulationDisplaySnapshot.h"
 #include "OGSimulation/SimulationInputResolution.h"
 #include "OGSimulation/SimulationIntegrationExecutor.h"
 #include "OGSimulation/SimulationManager.h"
@@ -49,9 +55,12 @@
 #include "OGSimulation/PCTimeManagement/ServerTickClock.h"
 #include "OGSimulation/PCTimeManagement/TimeConfig.h"
 
+#include <array>
 #include <concepts>
 #include <cstdio>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <type_traits>
@@ -74,8 +83,9 @@ enum class TryRegisterStatus { Pending, Ready, Refused };
 enum class ClientBindStep { Wait, Ready, Abandon };
 
 inline constexpr char kSimNetHostLineFormat[] =
-	"[Warning][SimNet.Host] role=%s immediate=0 rttSource=EnginePing driver=%s inbox=%u";
+	"[Warning][SimNet.Host] role=%s immediate=%d rttSource=EnginePing driver=%s inbox=%u";
 inline constexpr size_t kSimNetHostLineBytes = 128u;
+inline constexpr size_t kSessionDisplayWindowTicks = kLocalInputCacheCapacityTicks;
 inline constexpr uint64 kSimNetDriverRefusedToastKey = 0x4F47534EF0000002ull;
 inline constexpr float kSimNetDriverRefusedToastSeconds = 15.f;
 
@@ -97,6 +107,8 @@ namespace ueSimulationSessionHookNames
 		int afterBodiesCreated;
 		int afterRegistered;
 		int onUnregistered;
+		int authorityPresentationSlice_Step;
+		int presentAuthoritySlice;
 	};
 
 	template <typename SessionT>
@@ -115,6 +127,8 @@ namespace ueSimulationSessionHookNames
 		&Probe<SessionT>::afterBodiesCreated;
 		&Probe<SessionT>::afterRegistered;
 		&Probe<SessionT>::onUnregistered;
+		&Probe<SessionT>::authorityPresentationSlice_Step;
+		&Probe<SessionT>::presentAuthoritySlice;
 	};
 }
 
@@ -188,48 +202,60 @@ public:
 	typename EngineTraits::VizQuery&        editVizQuery();
 	const typename EngineTraits::VizReader& getVizReader() const;
 	std::optional<QueryVolumeId> registerVizVolume(const QueryVolumeDescriptor& descriptor, AActor& owner);
+	bool hasGameThreadVizWorld() const { return !m_authorityLoop; }
 
 	Storage& editStorage() { return m_storage; }
 
-	Reconciliation&       editReconciliation()       { return m_reconciliation; }
-	const Reconciliation& editReconciliation() const { return m_reconciliation; }
+	using DisplaySnapshot = SimulationDisplaySnapshotT<Simulatable, kMaxSimulatableSlots, kSessionDisplayWindowTicks,
+	                                                   kSessionDisplayWindowTicks>;
+	using DisplayEntry    = typename DisplaySnapshot::Entry;
+	using DisplayVizState = typename DisplayEntry::VizState;
+
+	const DisplaySnapshot* getDisplaySnapshot() const { return m_heldDisplaySnapshot; }
+
+	const DisplayEntry* findDisplayEntry(unsigned int id) const
+	{
+		return m_heldDisplaySnapshot != nullptr ? m_heldDisplaySnapshot->find(id) : nullptr;
+	}
+
+	const DisplayVizState* findDisplayVizState(unsigned int id) const
+	{
+		const DisplayEntry* const entry = findDisplayEntry(id);
+		if (entry == nullptr)
+			return nullptr;
+		return &(*m_displayVizStates)[static_cast<size_t>(entry - m_heldDisplaySnapshot->entries.data())];
+	}
+
+	template <typename FunctionT>
+	void forEachDisplayVizState(FunctionT&& function) const
+	{
+		if (m_heldDisplaySnapshot == nullptr)
+			return;
+		for (size_t index = 0u; index < m_heldDisplaySnapshot->entryCount; ++index)
+			function(m_heldDisplaySnapshot->entries[index].simId, (*m_displayVizStates)[index]);
+	}
 
 	std::optional<PlayerInput> getLastRelayedInput(unsigned int id) const
 	{
-		return m_inputResolution.template getLastRelayedInput<Simulatable>(id);
-	}
-
-	const LocalInputCache<PlayerInput>* getLocalInputCache(unsigned int id) const
-	{
-		return m_inputResolution.getDiagnostics().template localInputCache<Simulatable>(id);
+		const DisplayEntry* const entry = findDisplayEntry(id);
+		return entry != nullptr ? entry->lastRelayedInput : std::nullopt;
 	}
 
 	bool isLocallyControlledOnThisPeer(unsigned int id) const
 	{
-		return getLocalInputCache(id) != nullptr;
+		const DisplayEntry* const entry = findDisplayEntry(id);
+		return entry != nullptr && entry->hasLocalInputCache;
 	}
 
 	template <typename SliceT>
 	std::optional<SliceT> getVizSlice(unsigned int id) const
 	{
-		if (!m_storage.template has<Simulatable>(id))
+		const DisplayVizState* const vizState = findDisplayVizState(id);
+		if (vizState == nullptr)
 			return std::nullopt;
 
 		// ⛔G-02  docs/UESimulationSession-guards.md
-		return m_storage.template get<Simulatable>(id)
-			.getVizState().getState().template get<SliceT>();
-	}
-
-	const RelayedReadObservationRing* getRelayedReadObservations(unsigned int id) const
-	{
-		return m_inputResolution.getDiagnostics()
-			.template relayedReadObservations<Simulatable>(id);
-	}
-
-	const RelayedInputArrivalRing* getRelayedInputArrivals(unsigned int id) const
-	{
-		return m_inputResolution.getDiagnostics()
-			.template relayedInputArrivals<Simulatable>(id);
+		return vizState->getState().template get<SliceT>();
 	}
 
 	const TimeConfig* getTimeConfigPtr() const
@@ -238,7 +264,6 @@ public:
 	}
 
 	const std::optional<ManagerType>& getManager() const { return m_manager; }
-	const Storage&                    getStorage() const { return m_storage; }
 	const std::optional<SystemsExec>& getSystemsExec() const { return m_systemsExec; }
 
 	const std::unordered_map<unsigned int, TWeakObjectPtr<typename TraitsT::Component>>&
@@ -257,7 +282,10 @@ public:
 
 	void onTimingInfoReceived(uint32_t authorityTick, double roundTripTime)
 	{
-		m_latencyBudgetDiagnostics.noteWireSample(roundTripTime);
+		if (m_immediateClient)
+			m_latencyBudgetDiagnostics.noteWireSample_Internal(roundTripTime);
+		else
+			m_latencyBudgetDiagnostics.noteWireSample(roundTripTime);
 		if (m_onTimingInfoReceivedCallback)
 		{
 			m_onTimingInfoReceivedCallback(authorityTick, roundTripTime);
@@ -265,8 +293,19 @@ public:
 		}
 		if (!m_manager.has_value())
 			return;
-		m_manager->editNetworkEstimator().updateRTT(roundTripTime);
+		noteEngineRttForClockWindow(roundTripTime);
+		m_manager->editNetworkEstimator().noteEngineRttSample(roundTripTime);
 		m_manager->editNetworkEstimator().recordAuthorityTick(authorityTick);
+		maybeLogClockSourceWindow();
+	}
+
+	void onSimClockSample(const ogsimnet::SimNetClockSample& sample)
+	{
+		if (!m_manager.has_value())
+			return;
+		m_manager->editNetworkEstimator().noteSimClockSample(
+			SimClockRttSample{ sample.rttSeconds, sample.thetaSeconds, sample.t0, sample.t1, sample.t2, sample.t3 });
+		maybeLogClockSourceWindow();
 	}
 
 	void publishClientEffectiveInputDelayTicks(int32 delayTicks)
@@ -308,6 +347,8 @@ public:
 
 	ClientBindStep clientBindStep(unsigned int id, bool engineSaysLocal);
 
+	void onSimNetLifecycleUnregistering(uint8_t simId);
+
 private:
 	void requestInputDelayIncreaseStall(int32 deltaDelayTicks)
 	{
@@ -324,9 +365,65 @@ private:
 
 	void beginServerSimNet(UWorld& world, ENetMode netMode);
 
+	bool decideAuthorityLoop(UWorld& world, bool worldIsAuthority);
+
+	IdleWake idleUntil_Runner(double deadlineSeconds);
+
+	void beforeAuthorityPump_Runner();
+
+	void afterStep_Step();
+
+	void stampCorrectionsHanded_Runner();
+
+	void publishAuthorityPresentation_Runner();
+
+	void presentAuthority_GameThread();
+
+	static uint32 correctionTickOf(const SimChannel& channel);
+
+	void postRunnerRequest(TUniqueFunction<void()> request);
+
+	TryRegisterStatus tryRegisterOnRunner(unsigned int id, typename TraitsT::Component& owner);
+
+	bool bodiesResolvable_Runner(const Simulatable& simulatable) const;
+
+	void onRunnerRegisterApplied_Runner(unsigned int id, uint64 key, SimChannel* channel);
+
+	void requestRunnerUnregister_GameThread(unsigned int id, typename TraitsT::Component* owner);
+
+	void releaseOnRunner_Runner(unsigned int id, uint64 key);
+
+	void onAuthorityRunnerJoined_GameThread();
+
 	void beginClientSimNet(UWorld& world);
 
-	void logSimNetHostLine(bool isServer, bool detached) const;
+	void logSimNetHostLine(bool isServer, bool detached, bool immediate) const;
+
+	void logSimTrafficImmediateRefusal(ESimTrafficImmediate decision) const;
+
+	typename SimNetLanes::Client* boundImmediateClient_Step() const;
+
+	void afterClientCapture_Step();
+
+	void receiveForClientStep_Step();
+
+	void applyUnregisterRequests_Step(typename SimNetLanes::Client& client);
+
+	void enqueueQueuedUnregister_Step(typename SimNetLanes::Client& client, unsigned int id);
+
+	void onQueuedRegisterApplied_Step(unsigned int id, SimChannel* channel, bool hasProvider);
+
+	TryRegisterStatus tryRegisterQueued(unsigned int id, typename TraitsT::Component& owner);
+
+	TryRegisterStatus finishQueuedRegistration(unsigned int id, typename TraitsT::Component& owner);
+
+	void requestQueuedUnregister_GameThread(unsigned int id, typename TraitsT::Component& owner);
+
+	void unregisterCharacterHostOnly(unsigned int id, typename TraitsT::Component* owner, bool releaseBodiesNow);
+
+	void collectLifecycleOutcomes_GameThread();
+
+	void teardownImmediateClient_GameThread();
 
 	void onSimNetLanesStopping(bool isServer);
 
@@ -366,10 +463,12 @@ private:
 		int32   configuredRedundancyFrames;
 		bool    hasIniRelayResendEntries;
 		int32   configuredRelayResendEntries;
-		bool    hasIniSimTrafficImmediate;
-		int32   configuredSimTrafficImmediate;
 		bool    hasIniRecentreSettleSamples;
 		int32   configuredRecentreSettleSamples;
+		bool    hasIniClockRttSource;
+		FString configuredClockRttSource;
+		bool    hasIniJitterMultiplier;
+		double  configuredJitterMultiplier;
 	};
 
 	static SessionKnobs readSessionKnobs(bool worldIsAuthority);
@@ -380,9 +479,19 @@ private:
 
 	void applyLatencyKnobs(const SessionKnobs& knobs);
 
-	void onFrameStepsDue_GameThread(int32 firstUpcomingSimTick, int32 numSteps);
+	void applyClockRttSource(const SessionKnobs& knobs, bool jitterFromIni);
+
+	void noteEngineRttForClockWindow(double roundTripSeconds);
+
+	void maybeLogClockSourceWindow();
+
+	void onFrameStepsDue_Step(int32 firstUpcomingSimTick, int32 numSteps);
 
 	void onPostPhysicsStep();
+
+	void publishDisplaySnapshot_GameThread();
+
+	void refreshDisplayView_GameThread();
 
 	void releaseDelayedInputsForStep(int32 firstTick, int32 numSteps);
 
@@ -447,7 +556,30 @@ private:
 	SimNetLanes* m_simNetLanes = nullptr;
 	std::optional<SimNetServerHost> m_simNetServerHost;
 	std::optional<SimNetServer> m_simNetServer;
+	std::optional<ogsimnet::SimNetIdle<ognetunreal::SimLaneEndpoint>> m_simNetIdle;
+	UESimNetClockServer* m_clockServer = nullptr;
 	bool m_detachedClientAbandonLogged = false;
+	bool m_authorityLoop = false;
+	bool m_runnerStopped = false;
+	std::unordered_map<unsigned int, uint64> m_runnerBodyKeysById;
+	uint64 m_authorityWakes_Runner = 0u;
+
+	using AuthorityPresentationSlice = typename Game::AuthorityPresentationSlice;
+
+	struct AuthorityPresentationEntry
+	{
+		unsigned int               simId = 0u;
+		AuthorityPresentationSlice slice{};
+	};
+
+	struct AuthorityPresentation
+	{
+		size_t                                                       entryCount = 0u;
+		std::array<AuthorityPresentationEntry, kMaxSimulatableSlots> entries{};
+	};
+
+	std::unique_ptr<TripleBuffer<AuthorityPresentation>> m_authorityPresentation =
+		std::make_unique<TripleBuffer<AuthorityPresentation>>();
 
 	FrameHealthProbe m_frameHealthProbe;
 
@@ -461,6 +593,12 @@ private:
 
 	std::function<void(uint32_t, double)> m_onTimingInfoReceivedCallback;
 
+	std::unique_ptr<SimulationDisplayPublisher<DisplaySnapshot>> m_displayPublisher =
+		std::make_unique<SimulationDisplayPublisher<DisplaySnapshot>>();
+	std::unique_ptr<std::array<DisplayVizState, kMaxSimulatableSlots>> m_displayVizStates =
+		std::make_unique<std::array<DisplayVizState, kMaxSimulatableSlots>>();
+	const DisplaySnapshot* m_heldDisplaySnapshot = nullptr;
+
 	inline static UESimulationSession* s_instances[2] = { nullptr, nullptr };
 
 	struct PendingRegistration
@@ -469,8 +607,57 @@ private:
 		bool bodiesCreated = false;
 		InputProvider inputProvider;
 		bool isAuthority = false;
+		bool queued = false;
+		bool applied = false;
+		bool refused = false;
+		bool rosterRemoved = false;
+		bool onRunner = false;
+		bool runnerBusy = false;
+		bool bodiesBound = false;
+		bool registerPosted = false;
+		uint32 boundSlot = 0u;
+		uint64 bodyKey = 0u;
+		std::shared_ptr<Simulatable> runnerSimulatable;
 	};
 	std::unordered_map<unsigned int, PendingRegistration> m_pendingRegistrations;
+
+	enum class LifecycleOutcomeKind : uint8
+	{
+		RegisterApplied,
+		RegisterRefused,
+		UnregisterApplied,
+		RosterRemoved,
+		BodiesBound,
+		BodiesPending,
+		BodiesUnresolvable
+	};
+
+	struct LifecycleOutcome
+	{
+		unsigned int         id = 0u;
+		LifecycleOutcomeKind kind = LifecycleOutcomeKind::RegisterApplied;
+		uint32               slot = 0u;
+	};
+
+	void postLifecycleOutcome(unsigned int id, LifecycleOutcomeKind kind, uint32 slot = 0u)
+	{
+		const std::scoped_lock lock(m_lifecycleBridgeMutex);
+		m_lifecycleOutcomes.push_back(LifecycleOutcome{ id, kind, slot });
+	}
+
+	bool m_immediateClient = false;
+	bool m_immediateStepsStopped = false;
+	double m_engineRttWindowSeconds = kNoRttReadingSeconds;
+	std::optional<double> m_clockWindowStartSeconds;
+	std::mutex m_lifecycleBridgeMutex;
+	std::vector<unsigned int> m_unregisterRequests;
+	std::vector<LifecycleOutcome> m_lifecycleOutcomes;
+	std::vector<TUniqueFunction<void()>> m_runnerRequests;
+	std::unordered_set<unsigned int> m_systemsNotified_Step;
+	std::unordered_set<unsigned int> m_unregisterRequested_Step;
+	std::unordered_map<unsigned int, TStrongObjectPtr<typename TraitsT::Component>> m_pendingUnregisters;
+	std::unordered_map<unsigned int, TStrongObjectPtr<typename TraitsT::Component>> m_componentsHeldForRunner;
+	std::unique_ptr<TripleBuffer<DisplayTierReading>> m_displayTier = std::make_unique<TripleBuffer<DisplayTierReading>>();
 
 	static constexpr bool compositionContractsHold()
 	{
@@ -624,6 +811,8 @@ UESimulationSession<TraitsT>::UESimulationSession(SessionOwner& owner, Game& gam
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::onPostSimulationGameThread()
 {
+	if (m_immediateClient)
+		return;
 	m_manager->onPostSimulationGameThread();
 }
 
@@ -683,12 +872,44 @@ auto UESimulationSession<TraitsT>::findDriverSimNetLanes(UWorld& world, ognet::R
 }
 
 template <typename TraitsT>
-void UESimulationSession<TraitsT>::logSimNetHostLine(bool isServer, bool detached) const
+void UESimulationSession<TraitsT>::logSimNetHostLine(bool isServer, bool detached, bool immediate) const
 {
 	char line[kSimNetHostLineBytes];
-	std::snprintf(line, sizeof(line), kSimNetHostLineFormat, isServer ? "server" : "client", detached ? "detached" : "OGNet",
-		static_cast<unsigned>(kUESimNetInboxSlots));
+	std::snprintf(line, sizeof(line), kSimNetHostLineFormat, isServer ? "server" : "client", immediate ? 1 : 0,
+		detached ? "detached" : "OGNet", static_cast<unsigned>(kUESimNetInboxSlots));
 	RouteOGMessage(line);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::logSimTrafficImmediateRefusal(ESimTrafficImmediate decision) const
+{
+	const int32 requested = readSimTrafficImmediateKnob().value_or(0);
+	switch (decision)
+	{
+	case ESimTrafficImmediate::Off:
+	case ESimTrafficImmediate::On:
+		return;
+	case ESimTrafficImmediate::RefusedServer:
+		UE_LOG(LogOGNet, Warning,
+			TEXT("[SimNet.Host] ini [OGNetcode] SimTrafficImmediate=%d refused on the server: the server's sim traffic stays "
+				 "frame-locked until its authority loop drains it; this server runs frame-locked (0)"), requested);
+		return;
+	case ESimTrafficImmediate::RefusedNoTickDriver:
+		UE_LOG(LogOGNet, Warning,
+			TEXT("[SimNet.Host] ini [OGNetcode] SimTrafficImmediate=%d refused: the %hs backend does not step through the tick "
+				 "driver, so nothing would drain at step start; this client runs frame-locked (0)"), requested, EngineTraits::kName);
+		return;
+	case ESimTrafficImmediate::RefusedRunInline:
+		UE_LOG(LogOGNet, Warning,
+			TEXT("[SimNet.Host] ini [OGNetcode] SimTrafficImmediate=%d refused: og.Sim.RunInline=1 steps this client on the game "
+				 "thread; this client runs frame-locked (0)"), requested);
+		return;
+	case ESimTrafficImmediate::RefusedDetached:
+		UE_LOG(LogOGNet, Warning,
+			TEXT("[SimNet.Host] ini [OGNetcode] SimTrafficImmediate=%d refused: this world has no og-net sim lanes; this client "
+				 "runs frame-locked (0)"), requested);
+		return;
+	}
 }
 
 template <typename TraitsT>
@@ -719,9 +940,94 @@ void UESimulationSession<TraitsT>::beginServerSimNet(UWorld& world, ENetMode net
 	m_simNetServerHost.emplace(lanes->driver(), lanes->endpoint(), this);
 	m_simNetServer.emplace(*m_simNetServerHost, lanes->transport(), m_manager->getTimeConfig(),
 		ogsimnet::correctionAllowanceBytes(config.lanes, config.budget, static_cast<double>(NetConfig::tickFrequencyHz)));
-	lanes->bindServerSession([this]() { m_simNetServer->dispatchFrame(); }, [this]() { m_simNetServer->flushFrame(); });
+	m_simNetServer->bindLifecycle(m_storage, m_reconciliation, m_inputResolution, m_netSync);
+	m_clockServer = lanes->clockServer();
+	checkf(m_simNetServer->immediate() == m_authorityLoop,
+		TEXT("UESimulationSession: the server's og-sim-net session reads its mode from the lanes' transport, which is immediate "
+			 "exactly when the lanes chose the authority loop; a session that disagreed would drain on the wrong thread"));
+	if (m_authorityLoop)
+	{
+		m_simNetServerHost->serveFromRunner();
+		m_simNetIdle.emplace(lanes->endpoint());
+		lanes->bindAuthorityRunner([this]() { m_simNetServerHost->publishRunnerRtt_GameThread(); },
+			[this]() { onAuthorityRunnerJoined_GameThread(); });
+	}
+	else
+	{
+		lanes->bindServerSession([this]() { m_simNetServer->dispatchFrame(); }, [this]() { m_simNetServer->flushFrame(); });
+	}
 	lanes->setStopHandler([this]() { onSimNetLanesStopping(/*isServer=*/true); });
-	logSimNetHostLine(/*isServer=*/true, detached);
+	logSimTrafficImmediateRefusal(lanes->immediateDecision());
+	logSimNetHostLine(/*isServer=*/true, detached, /*immediate=*/m_authorityLoop);
+}
+
+template <typename TraitsT>
+bool UESimulationSession<TraitsT>::decideAuthorityLoop(UWorld& world, bool worldIsAuthority)
+{
+	if (!worldIsAuthority)
+		return false;
+	SimNetLanes* const lanes = findDriverSimNetLanes(world, ognet::Role::Server);
+	if (lanes != nullptr)
+		return lanes->authorityLoop();
+	if (readAuthorityLoopKnob() != 0)
+	{
+		UE_LOG(LogOGSimHost, Warning,
+			TEXT("[SimHost.Runner] og.Sim.AuthorityLoop=%d refused: this world has no og-net sim lanes (detached); this server "
+				 "steps inline on the game thread"), readAuthorityLoopKnob());
+	}
+	return false;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::onAuthorityRunnerJoined_GameThread()
+{
+	m_physicsBackend.stopAuthorityLoop_GameThread();
+	m_runnerStopped = true;
+}
+
+template <typename TraitsT>
+IdleWake UESimulationSession<TraitsT>::idleUntil_Runner(double deadlineSeconds)
+{
+	return m_simNetIdle.has_value() ? m_simNetIdle->idleUntil(deadlineSeconds) : IdleWake::Unavailable;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::postRunnerRequest(TUniqueFunction<void()> request)
+{
+	const std::scoped_lock lock(m_lifecycleBridgeMutex);
+	m_runnerRequests.push_back(MoveTemp(request));
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::beforeAuthorityPump_Runner()
+{
+	if (!m_authorityLoop)
+		return;
+	std::vector<TUniqueFunction<void()>> requests;
+	{
+		const std::scoped_lock lock(m_lifecycleBridgeMutex);
+		requests.swap(m_runnerRequests);
+	}
+	for (TUniqueFunction<void()>& request : requests)
+		request();
+	if (m_simNetServer.has_value())
+		m_simNetServer->drain();
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::afterStep_Step()
+{
+	if (m_clockServer != nullptr && m_manager.has_value() && !m_manager->runsPrediction())
+		m_clockServer->publishServerTick(static_cast<uint32_t>(getServerClock().getTick()));
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::onSimNetLifecycleUnregistering(uint8_t simId)
+{
+	const unsigned int id = simId;
+	// ⛔G-35  docs/UESimulationSession-guards.md
+	if (m_systemsNotified_Step.erase(id) != 0u && m_storage.template has<Simulatable>(id))
+		m_manager->notifyCharacterUnregistered(id);
 }
 
 template <typename TraitsT>
@@ -748,15 +1054,21 @@ void UESimulationSession<TraitsT>::beginClientSimNet(UWorld& world)
 		lanes = m_detachedSimNetLanes.Get();
 	}
 	m_simNetLanes = lanes;
+	m_immediateClient = lanes->isImmediate();
 	lanes->setOnRegisteredRemoved([this](uint8_t simId) { onSimNetRegisteredRemoved(simId); });
 	lanes->setStopHandler([this]() { onSimNetLanesStopping(/*isServer=*/false); });
+	if (m_immediateClient)
+		lanes->client()->bindLifecycle(m_storage, m_reconciliation, m_inputResolution, m_netSync);
 	lanes->bindClientSession(*this);
-	logSimNetHostLine(/*isServer=*/false, detached);
+	logSimTrafficImmediateRefusal(lanes->immediateDecision());
+	logSimNetHostLine(/*isServer=*/false, detached, m_immediateClient);
 }
 
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::onSimNetLanesStopping(bool isServer)
 {
+	if (!isServer)
+		teardownImmediateClient_GameThread();
 	std::vector<unsigned int> ids;
 	ids.reserve(m_registeredComponentsById.size());
 	for (const auto& entry : m_registeredComponentsById)
@@ -764,9 +1076,14 @@ void UESimulationSession<TraitsT>::onSimNetLanesStopping(bool isServer)
 	for (const unsigned int id : ids)
 	{
 		typename TraitsT::Component* const component = m_registeredComponentsById[id].Get();
-		unregisterCharacter(id, component, isServer);
+		if (isServer && m_authorityLoop)
+			requestRunnerUnregister_GameThread(id, component);
+		else
+			unregisterCharacter(id, component, isServer);
 		m_simUnregisteredIds.insert(id);
 	}
+	m_simNetIdle.reset();
+	m_clockServer = nullptr;
 	m_simNetServer.reset();
 	m_simNetServerHost.reset();
 	m_simNetLanes = nullptr;
@@ -890,6 +1207,12 @@ int32 UESimulationSession<TraitsT>::recomputeAndPublishEffectiveInputDelay()
     m_lastPublishedEffectiveInputDelayTicks = delayTicks;
     publishClientEffectiveInputDelayTicks(delayTicks);
 
+    if (m_manager.has_value())
+    {
+        m_displayTier->write() = readDisplayTier(*m_replicatedTierConsumer, m_manager->getTimeConfig(), delayTicks);
+        m_displayTier->publish();
+    }
+
     UE_LOG(LogOGNet, Log,
         TEXT("[ConnectionTier] applied client input delay = %d ticks (tier %d, arrived=%d, floor %d)"),
         delayTicks,
@@ -1000,19 +1323,6 @@ auto UESimulationSession<TraitsT>::readSessionKnobs(bool worldIsAuthority) -> Se
 		}
 	}
 
-	bool  hasIniSimTrafficImmediate = false;
-	int32 configuredSimTrafficImmediate = 0;
-	if (GConfig != nullptr)
-	{
-		int32 iniImmediate = 0;
-		if (GConfig->GetInt(TEXT("OGNetcode"), TEXT("SimTrafficImmediate"), iniImmediate, GGameIni) ||
-			GConfig->GetInt(TEXT("OGNetcode"), TEXT("SimTrafficImmediate"), iniImmediate, GEngineIni))
-		{
-			hasIniSimTrafficImmediate = true;
-			configuredSimTrafficImmediate = iniImmediate;
-		}
-	}
-
 	bool  hasIniRecentreSettleSamples = false;
 	int32 configuredRecentreSettleSamples = 0;
 	if (GConfig != nullptr)
@@ -1026,12 +1336,39 @@ auto UESimulationSession<TraitsT>::readSessionKnobs(bool worldIsAuthority) -> Se
 		}
 	}
 
+	bool    hasIniClockRttSource = false;
+	FString configuredClockRttSource;
+	if (GConfig != nullptr)
+	{
+		FString iniSource;
+		if (GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockRttSource"), iniSource, GGameIni) ||
+			GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockRttSource"), iniSource, GEngineIni))
+		{
+			hasIniClockRttSource = true;
+			configuredClockRttSource = iniSource.TrimStartAndEnd();
+		}
+	}
+
+	bool   hasIniJitterMultiplier = false;
+	double configuredJitterMultiplier = 0.0;
+	if (GConfig != nullptr)
+	{
+		double iniMultiplier = 0.0;
+		if (GConfig->GetDouble(TEXT("OGNetcode"), TEXT("JitterMultiplier"), iniMultiplier, GGameIni) ||
+			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("JitterMultiplier"), iniMultiplier, GEngineIni))
+		{
+			hasIniJitterMultiplier = true;
+			configuredJitterMultiplier = iniMultiplier;
+		}
+	}
+
 	return SessionKnobs{ configuredRelayDelayFloorTicks, configuredCorrectionRotationK,
 		hasIniResimTriggerPolicy, configuredResimTriggerPolicy,
 		hasIniRedundancyFrames, configuredRedundancyFrames,
 		hasIniRelayResendEntries, configuredRelayResendEntries,
-		hasIniSimTrafficImmediate, configuredSimTrafficImmediate,
-		hasIniRecentreSettleSamples, configuredRecentreSettleSamples };
+		hasIniRecentreSettleSamples, configuredRecentreSettleSamples,
+		hasIniClockRttSource, configuredClockRttSource,
+		hasIniJitterMultiplier, configuredJitterMultiplier };
 }
 
 template <typename TraitsT>
@@ -1166,19 +1503,125 @@ void UESimulationSession<TraitsT>::applyLatencyKnobs(const SessionKnobs& knobs)
 		TEXT("[ClockRecentre.Config] recentreSettleSamples=%u (%s)"),
 		m_manager->getTimeConfig().recentreSettleSamples,
 		knobs.hasIniRecentreSettleSamples ? TEXT("ini") : TEXT("compiled"));
+
+	bool jitterFromIni = false;
+	if (knobs.hasIniJitterMultiplier)
+	{
+		if (!FMath::IsFinite(knobs.configuredJitterMultiplier))
+		{
+			UE_LOG(LogOGNet, Warning,
+				TEXT("[ClockSource.Config] ini [OGNetcode] JitterMultiplier is not a finite number, keeping the compiled defaults"));
+		}
+		else
+		{
+			const double clampedMultiplier = clockJitter::clampJitterMultiplier(knobs.configuredJitterMultiplier);
+			if (clampedMultiplier != knobs.configuredJitterMultiplier)
+			{
+				UE_LOG(LogOGNet, Warning,
+					TEXT("[ClockSource.Config] ini [OGNetcode] JitterMultiplier=%.3f out of range, clamped to %.3f"),
+					knobs.configuredJitterMultiplier, clampedMultiplier);
+			}
+			m_manager->setJitterMultiplier(clampedMultiplier);
+			jitterFromIni = true;
+		}
+	}
+
+	applyClockRttSource(knobs, jitterFromIni);
 }
 
 template <typename TraitsT>
-void UESimulationSession<TraitsT>::onFrameStepsDue_GameThread(int32 firstUpcomingSimTick, int32 numSteps)
+void UESimulationSession<TraitsT>::applyClockRttSource(const SessionKnobs& knobs, bool jitterFromIni)
+{
+	bool fromIni = false;
+	if (knobs.hasIniClockRttSource)
+	{
+		if (knobs.configuredClockRttSource.Equals(TEXT("Engine"), ESearchCase::IgnoreCase))
+		{
+			m_manager->setClockRttSource(TimeConfig::ClockRttSource::Engine);
+			fromIni = true;
+		}
+		else if (knobs.configuredClockRttSource.Equals(TEXT("SimClock"), ESearchCase::IgnoreCase))
+		{
+			m_manager->setClockRttSource(TimeConfig::ClockRttSource::SimClock);
+			fromIni = true;
+		}
+		else
+		{
+			UE_LOG(LogOGNet, Warning,
+				TEXT("[ClockSource.Config] ini [OGNetcode] ClockRttSource='%s' unrecognised (expected Engine or SimClock), keeping ")
+				TEXT("the compiled default"),
+				*knobs.configuredClockRttSource);
+		}
+	}
+	UE_LOG(LogOGNet, Warning,
+		TEXT("[ClockSource.Config] clockRttSource=%s (%s) jitterMultiplier engine=%.3f simClock=%.3f (%s)"),
+		m_manager->getTimeConfig().clockRttSource == TimeConfig::ClockRttSource::SimClock ? TEXT("SimClock") : TEXT("Engine"),
+		fromIni ? TEXT("ini") : TEXT("compiled"),
+		m_manager->getTimeConfig().jitterMultiplier,
+		m_manager->getTimeConfig().simClockJitterMultiplier,
+		jitterFromIni ? TEXT("ini") : TEXT("compiled"));
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::noteEngineRttForClockWindow(double roundTripSeconds)
+{
+	if (!(roundTripSeconds > 0.0) || !FMath::IsFinite(roundTripSeconds))
+		return;
+	const double alpha = m_manager->getTimeConfig().rttSmoothingAlpha;
+	m_engineRttWindowSeconds = m_engineRttWindowSeconds > 0.0
+		? alpha * roundTripSeconds + (1.0 - alpha) * m_engineRttWindowSeconds
+		: roundTripSeconds;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::maybeLogClockSourceWindow()
+{
+	if (!m_manager.has_value() || !m_manager->runsPrediction())
+		return;
+	const double now = FPlatformTime::Seconds();
+	if (!m_clockWindowStartSeconds.has_value())
+	{
+		m_clockWindowStartSeconds = now;
+		return;
+	}
+	if (now - *m_clockWindowStartSeconds < ogsimnet::kSimNetWindowSeconds)
+		return;
+	m_clockWindowStartSeconds = now;
+	const NetworkTimeEstimator& estimator = m_manager->getNetworkEstimator();
+	const ClockSourceShadow shadow = estimator.getClockSourceShadow();
+	const double ackSrttSeconds = m_simNetLanes != nullptr ? m_simNetLanes->ackSrttSeconds() : kNoRttReadingSeconds;
+	const UESimNetClockClient* const clock = m_simNetLanes != nullptr ? m_simNetLanes->clockClient() : nullptr;
+	const ogsimnet::SimNetClockStats clockStats = clock != nullptr ? clock->stats() : ogsimnet::SimNetClockStats{};
+	const auto toMs = [](double seconds) { return seconds >= 0.0 ? seconds * 1000.0 : -1.0; };
+	UE_LOG(LogOGNet, Warning,
+		TEXT("[ClockSource.Window] source=%s engineRttMs=%.3f simClockRttMs=%.3f ackSrttMs=%.3f minRttOffsetUs=%.0f ")
+		TEXT("owdVarUs=%.0f/%.0f smoothedRttMs=%.3f samples=%u invalid=%u pings=%llu pongs=%llu"),
+		estimator.getActiveRttSource() == TimeConfig::ClockRttSource::SimClock ? TEXT("SimClock") : TEXT("Engine"),
+		toMs(m_engineRttWindowSeconds),
+		shadow.samples > 0u ? shadow.simClockRttSeconds * 1000.0 : -1.0,
+		toMs(ackSrttSeconds),
+		shadow.offsetSeconds * 1000000.0,
+		shadow.owdVarUpSeconds * 1000000.0,
+		shadow.owdVarDownSeconds * 1000000.0,
+		estimator.getSmoothedRTT() * 1000.0,
+		shadow.samples,
+		shadow.invalidSamples,
+		static_cast<unsigned long long>(clockStats.pingsSent),
+		static_cast<unsigned long long>(clockStats.pongsReceived));
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::onFrameStepsDue_Step(int32 firstUpcomingSimTick, int32 numSteps)
 {
     static_assert(kFrameHealthProbeWindowSamples == kResimGateProbeWindowSamples,
         "PROBE A's window must stay the same length as ResimGateProbe's, so one [ResimProbe.Frame] "
         "window lines up against the surrounding [ResimProbe.Gate] windows without a resim-tick "
         "count on the line. Was the COMPARABLE WITH ResimGateProbe caution in PROBE A's banner.");
     {
+        const uint64 probeFrame = m_authorityLoop ? ++m_authorityWakes_Runner : static_cast<uint64>(GFrameCounter);
         FrameHealthWindowSummary frameSummary;
         const bool frameWindowClosed = m_frameHealthProbe.noteFrame(
-            static_cast<uint64>(GFrameCounter),
+            probeFrame,
             static_cast<uint32>(firstUpcomingSimTick),
             static_cast<uint32>(numSteps),
             static_cast<uint64>(FPlatformTime::Seconds() * 1000000.0),
@@ -1235,6 +1678,15 @@ void UESimulationSession<TraitsT>::onFrameStepsDue_GameThread(int32 firstUpcomin
     // ⛔G-18  docs/UESimulationSession-guards.md
     if (!m_simNetServer.has_value())
         return;
+
+    if (m_authorityLoop)
+        return;
+
+    checkf(IsInGameThread(),
+        TEXT("UESimulationSession: PROBE 6 ([RelayProbe.Budget], [PacketBudget]) reads the UNetDriver's client connections, "
+             "which are game-thread state. It runs only where onFrameStepsDue runs on the game thread (inline Jolt, Chaos); "
+             "with the authority loop on, onFrameStepsDue runs on the runner once per stepping wake and PROBE 6 is retired "
+             "(the return above). Was og-input-latency P5-19's interim skip"));
 
     if (const UWorld* world = m_owner.GetWorld())
     {
@@ -1320,8 +1772,87 @@ void UESimulationSession<TraitsT>::releaseDelayedInputsForStep(int32 firstTick, 
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::afterAuthorityBatch(int32 firstUpcomingSimTick)
 {
-    if (m_simNetServer.has_value())
+    if (!m_simNetServer.has_value())
+        return;
+    if (!m_authorityLoop)
+    {
         m_simNetServer->afterBatch(firstUpcomingSimTick);
+        return;
+    }
+    checkf(firstUpcomingSimTick != 0 || m_simNetServer->attachedConnections().empty(),
+        TEXT("UESimulationSession::afterAuthorityBatch: the authority loop's first batch reports tick 0 (the driver publishes its "
+             "offset after a tick ran), and a client capture reaped against it is refused by the coordinator's domain gate. The "
+             "runner services og-net only in its idle, after its first batch, so no connection can be attached yet. Was P2-19 F2"));
+    m_manager->onPostSimulationGameThread();
+    m_simNetServer->publishClock(static_cast<uint32_t>(getServerClock().getTick()));
+    m_simNetServer->afterInlineBatch(firstUpcomingSimTick);
+    stampCorrectionsHanded_Runner();
+    publishAuthorityPresentation_Runner();
+}
+
+template <typename TraitsT>
+uint32 UESimulationSession<TraitsT>::correctionTickOf(const SimChannel& channel)
+{
+    const CorrectionStateBuffer& buffer = channel.getSyncedCorrectionStateBuffer();
+    if (buffer.payload().size() < correctionStateBuffer::kHeaderBytes)
+        return 0u;
+    return buffer.template readFromBuffer<uint32>(correctionStateBuffer::kTickOffset);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::stampCorrectionsHanded_Runner()
+{
+    const double handedSeconds = FPlatformTime::Seconds();
+    m_storage.template forEachSimulatable<Simulatable>([this, handedSeconds](unsigned int id, const auto&)
+    {
+        SimChannel* const channel =
+            id != 0u && id <= 0xFFu ? m_simNetServer->template channel<Simulatable>(static_cast<uint8_t>(id)) : nullptr;
+        if (channel == nullptr)
+            return;
+        const uint32 correctionTick = correctionTickOf(*channel);
+        if (correctionTick != 0u)
+            m_latencyBudgetDiagnostics.stampCorrectionHanded_Internal(id, correctionTick, handedSeconds);
+    });
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::publishAuthorityPresentation_Runner()
+{
+    static_assert(requires(const SystemsExec& systems, const UESimulationSession& session, unsigned int id,
+            const AuthorityPresentationSlice& slice)
+        {
+            { Game::authorityPresentationSlice_Step(systems, id) } -> std::same_as<AuthorityPresentationSlice>;
+            Game::presentAuthoritySlice(session, id, slice);
+        },
+        "UESimulationSession<TraitsT>: with the authority loop on, the game's presentation of authority-only state is "
+        "two static hooks of TraitsT::Game over its AuthorityPresentationSlice: authorityPresentationSlice_Step(systems, id), "
+        "read on the runner after each batch, and presentAuthoritySlice(session, id, slice), applied on the game thread "
+        "from the newest published snapshot. Was the loop's skip of afterVisualization, whose ring-out score push read the "
+        "score system on the game thread (og-input-latency P5-19 F5)");
+    checkf(m_systemsExec.has_value(),
+        TEXT("UESimulationSession::publishAuthorityPresentation_Runner: the authority's systems executor is built by the "
+             "session's configuration, which the runner runs before its first batch"));
+    AuthorityPresentation& presentation = m_authorityPresentation->write();
+    presentation.entryCount = 0u;
+    m_storage.template forEachSimulatable<Simulatable>([this, &presentation](unsigned int id, const auto&)
+    {
+        checkf(presentation.entryCount < presentation.entries.size(),
+            TEXT("UESimulationSession: the authority holds more simulatables than its presentation snapshot's "
+                 "kMaxSimulatableSlots entries"));
+        presentation.entries[presentation.entryCount++] =
+            AuthorityPresentationEntry{ id, Game::authorityPresentationSlice_Step(*m_systemsExec, id) };
+    });
+    m_authorityPresentation->publish();
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::presentAuthority_GameThread()
+{
+    const AuthorityPresentation* const presentation = m_authorityPresentation->acquireLatest();
+    if (presentation == nullptr)
+        return;
+    for (size_t index = 0u; index < presentation->entryCount; ++index)
+        Game::presentAuthoritySlice(*this, presentation->entries[index].simId, presentation->entries[index].slice);
 }
 
 template <typename TraitsT>
@@ -1340,12 +1871,12 @@ std::optional<uint32> UESimulationSession<TraitsT>::physicsSlotFor(AActor& owner
         TEXT("UESimulationSession::physicsSlotFor: a client's slot comes from the roster, which keys characters by their sim "
              "id (1..255); storage key %u is not one"), storageKey);
     SimNetLanes* const lanes = m_simNetLanes;
-    typename SimNetLanes::Client* const client = lanes != nullptr ? lanes->client() : nullptr;
-    const ogsimnet::RosterEntry* const entry =
-        client != nullptr ? client->roster().entryFor(static_cast<uint8_t>(storageKey)) : nullptr;
-    if (entry == nullptr || entry->physicsSlot == ogsimnet::kRosterNoSlot)
+    if (lanes == nullptr || lanes->client() == nullptr)
         return std::nullopt;
-    return static_cast<uint32>(entry->physicsSlot);
+    const ogsimnet::BindVerdict entry = lanes->bindings().verdict(static_cast<uint8_t>(storageKey), /*engineSaysLocal=*/false);
+    if (entry.step == ogsimnet::BindStep::Wait || entry.physicsSlot == ogsimnet::kRosterNoSlot)
+        return std::nullopt;
+    return static_cast<uint32>(entry.physicsSlot);
 }
 
 template <typename TraitsT>
@@ -1373,10 +1904,7 @@ void UESimulationSession<TraitsT>::forEachAuthorityCorrectionTick(FunctionT&& fu
         return;
     for (const auto& entry : m_simChannelsById)
     {
-        const CorrectionStateBuffer& buffer = std::as_const(*entry.second).getSyncedCorrectionStateBuffer();
-        if (buffer.payload().size() < correctionStateBuffer::kHeaderBytes)
-            continue;
-        const uint32 correctionTick = buffer.template readFromBuffer<uint32>(correctionStateBuffer::kTickOffset);
+        const uint32 correctionTick = correctionTickOf(*entry.second);
         if (correctionTick == 0u)
             continue;
         function(entry.first, correctionTick);
@@ -1433,6 +1961,12 @@ template <typename TraitsT>
 void UESimulationSession<TraitsT>::onSimNetRegisteredRemoved(uint8_t simId)
 {
     const unsigned int id = simId;
+    if (m_immediateClient)
+    {
+        m_systemsNotified_Step.erase(id);
+        postLifecycleOutcome(id, LifecycleOutcomeKind::RosterRemoved);
+        return;
+    }
     const auto found = m_registeredComponentsById.find(id);
     checkf(found != m_registeredComponentsById.end(),
         TEXT("UESimulationSession::onSimNetRegisteredRemoved: sim id %u is registered in the roster bindings and not in the "
@@ -1524,94 +2058,107 @@ void UESimulationSession<TraitsT>::beginPlay()
 
 	auto sessionKnobs = readSessionKnobs(worldIsAuthority);
 
-	if (sessionKnobs.hasIniSimTrafficImmediate && sessionKnobs.configuredSimTrafficImmediate != 0)
+	if constexpr (EngineTraits::kHasWorldHost)
+		m_authorityLoop = decideAuthorityLoop(*uWorld, worldIsAuthority);
+
+	auto configureSession = [&]()
 	{
-		UE_LOG(LogOGNet, Error,
-			TEXT("[SimNet.Host] ini [OGNetcode] SimTrafficImmediate=%d refused: immediate sim traffic needs Ph4's code; this "
-				 "session runs frame-locked (0)"),
-			sessionKnobs.configuredSimTrafficImmediate);
+		if (worldIsAuthority)
+		{
+			if (s_instances[0] != nullptr)
+			{
+				checkf(false, TEXT("UESimulationSession: unexpected state"));
+			}
+			s_instances[0] = this;
+			auto pctmloggerServer = [](const char* msg) { RouteOGMessage(msg); };
+			m_integrationLayer.emplace(m_storage, m_staticData, *m_physAdapter, *m_queryAdapter);
+			Game::emplaceSystems(m_systemsExec, *m_physAdapter, *m_queryAdapter);
+			m_manager.emplace(false, dt, typename ManagerType::Params{
+				*m_integrationLayer, m_netSync, m_inputResolution, m_reconciliation, *m_systemsExec,
+				m_storage, m_staticData, std::function<void(const char*)>(pctmloggerServer) });
+			m_reconciliation.setLogger(std::function<void(const char*)>(pctmloggerServer));
+			m_inputResolution.setLogger(std::function<void(const char*)>(pctmloggerServer));
+			m_netSync.setLogger(std::function<void(const char*)>(pctmloggerServer));
+
+			// ⛔G-23  docs/UESimulationSession-guards.md
+			m_inputResolution.template setNeutralInput<Simulatable>(Game::neutralInput());
+
+			beginServerSimNet(*uWorld, worldNetMode);
+
+			applySessionKnobs(sessionKnobs);
+
+			// ⛔G-06  docs/UESimulationSession-guards.md
+			beginTierConsumer();
+
+			simlog::setGlobal(std::function<void(const char*)>(pctmloggerServer));
+			Game::installGameLoggers(worldIsAuthority);
+			bindCorrectionFieldDiffGate();
+		}
+		else
+		{
+			if (s_instances[1] != nullptr)
+			{
+				checkf(false, TEXT("UESimulationSession: unexpected state"));
+			}
+			s_instances[1] = this;
+			auto pctmlogger = [](const char* msg) { RouteOGMessage(msg); };
+			m_integrationLayer.emplace(m_storage, m_staticData, *m_physAdapter, *m_queryAdapter);
+			Game::emplaceSystems(m_systemsExec, *m_physAdapter, *m_queryAdapter);
+			m_manager.emplace(/*usePrediction=*/true, dt, typename ManagerType::Params{
+				*m_integrationLayer, m_netSync, m_inputResolution, m_reconciliation, *m_systemsExec,
+				m_storage, m_staticData, std::function<void(const char*)>(pctmlogger) });
+			m_reconciliation.setLogger(std::function<void(const char*)>(pctmlogger));
+			m_inputResolution.setLogger(std::function<void(const char*)>(pctmlogger));
+			m_netSync.setLogger(std::function<void(const char*)>(pctmlogger));
+
+			m_inputResolution.template setNeutralInput<Simulatable>(Game::neutralInput());
+
+			beginTierConsumer();
+
+			beginClientSimNet(*uWorld);
+			simlog::setGlobal(std::function<void(const char*)>(pctmlogger));
+			Game::installGameLoggers(worldIsAuthority);
+			bindCorrectionFieldDiffGate();
+
+#if !NO_LOGGING
+			UE_LOG(LogOGResimProbe, Warning,
+				TEXT("[ResimProbe.Session] resim-gate probe LIVE — verbosity=%s verboseDetail=%s windowSamples=%u"),
+				ToString(LogOGResimProbe.GetVerbosity()),
+				LogOGResimProbe.IsSuppressed(ELogVerbosity::Verbose) ? TEXT("off") : TEXT("on"),
+				static_cast<uint32>(kResimGateProbeWindowSamples));
+#endif
+		}
+
+		// ⛔G-24  docs/UESimulationSession-guards.md
+		applyResimTriggerPolicy(sessionKnobs);
+
+		applyLatencyKnobs(sessionKnobs);
+
+		m_game.afterSessionConfigured(worldNetMode);
+
+		{
+			const std::string_view fingerprint = Game::backendFingerprint();
+			UE_LOG(LogOGSimHost, Warning, TEXT("[SimHost.Backend] backend=%hs fingerprint=%.*hs"),
+				EngineTraits::kName, static_cast<int32>(fingerprint.size()), fingerprint.data());
+		}
+	};
+
+	if constexpr (EngineTraits::kHasWorldHost)
+	{
+		if (m_authorityLoop)
+		{
+			const bool highResolutionWait = findDriverSimNetLanes(*uWorld, ognet::Role::Server)->endpoint().hasHighResolutionWait();
+			m_physicsBackend.buildWorld(*uWorld, dt, worldIsAuthority, /*freeRunning=*/true);
+			m_physicsBackend.runAuthorityLoop_GameThread(*uWorld, dt, highResolutionWait, readAuthorityIdleSlackSeconds(),
+				configureSession);
+			UE_LOG(LogOGMgmt, Log, TEXT("SimulationManager: adapters, integration layer, and manager initialized"));
+			return;
+		}
 	}
 
 	m_physicsBackend.buildWorld(*uWorld, dt, worldIsAuthority);
 
-	if (worldIsAuthority)
-	{
-		if (s_instances[0] != nullptr)
-		{
-			checkf(false, TEXT("UESimulationSession: unexpected state"));
-		}
-		s_instances[0] = this;
-		auto pctmloggerServer = [](const char* msg) { RouteOGMessage(msg); };
-		m_integrationLayer.emplace(m_storage, m_staticData, *m_physAdapter, *m_queryAdapter);
-		Game::emplaceSystems(m_systemsExec, *m_physAdapter, *m_queryAdapter);
-		m_manager.emplace(false, dt, typename ManagerType::Params{
-			*m_integrationLayer, m_netSync, m_inputResolution, m_reconciliation, *m_systemsExec,
-			m_storage, m_staticData, std::function<void(const char*)>(pctmloggerServer) });
-		m_reconciliation.setLogger(std::function<void(const char*)>(pctmloggerServer));
-		m_inputResolution.setLogger(std::function<void(const char*)>(pctmloggerServer));
-		m_netSync.setLogger(std::function<void(const char*)>(pctmloggerServer));
-
-		// ⛔G-23  docs/UESimulationSession-guards.md
-		m_inputResolution.template setNeutralInput<Simulatable>(Game::neutralInput());
-
-		beginServerSimNet(*uWorld, worldNetMode);
-
-		applySessionKnobs(sessionKnobs);
-
-		// ⛔G-06  docs/UESimulationSession-guards.md
-		beginTierConsumer();
-
-		simlog::setGlobal(std::function<void(const char*)>(pctmloggerServer));
-		Game::installGameLoggers(worldIsAuthority);
-		bindCorrectionFieldDiffGate();
-	}
-	else
-	{
-		if (s_instances[1] != nullptr)
-		{
-			checkf(false, TEXT("UESimulationSession: unexpected state"));
-		}
-		s_instances[1] = this;
-		auto pctmlogger = [](const char* msg) { RouteOGMessage(msg); };
-		m_integrationLayer.emplace(m_storage, m_staticData, *m_physAdapter, *m_queryAdapter);
-		Game::emplaceSystems(m_systemsExec, *m_physAdapter, *m_queryAdapter);
-		m_manager.emplace(/*usePrediction=*/true, dt, typename ManagerType::Params{
-			*m_integrationLayer, m_netSync, m_inputResolution, m_reconciliation, *m_systemsExec,
-			m_storage, m_staticData, std::function<void(const char*)>(pctmlogger) });
-		m_reconciliation.setLogger(std::function<void(const char*)>(pctmlogger));
-		m_inputResolution.setLogger(std::function<void(const char*)>(pctmlogger));
-		m_netSync.setLogger(std::function<void(const char*)>(pctmlogger));
-
-		m_inputResolution.template setNeutralInput<Simulatable>(Game::neutralInput());
-
-		beginTierConsumer();
-
-		beginClientSimNet(*uWorld);
-		simlog::setGlobal(std::function<void(const char*)>(pctmlogger));
-		Game::installGameLoggers(worldIsAuthority);
-		bindCorrectionFieldDiffGate();
-
-#if !NO_LOGGING
-		UE_LOG(LogOGResimProbe, Warning,
-			TEXT("[ResimProbe.Session] resim-gate probe LIVE — verbosity=%s verboseDetail=%s windowSamples=%u"),
-			ToString(LogOGResimProbe.GetVerbosity()),
-			LogOGResimProbe.IsSuppressed(ELogVerbosity::Verbose) ? TEXT("off") : TEXT("on"),
-			static_cast<uint32>(kResimGateProbeWindowSamples));
-#endif
-	}
-
-	// ⛔G-24  docs/UESimulationSession-guards.md
-	applyResimTriggerPolicy(sessionKnobs);
-
-	applyLatencyKnobs(sessionKnobs);
-
-	m_game.afterSessionConfigured(worldNetMode);
-
-	{
-		const std::string_view fingerprint = Game::backendFingerprint();
-		UE_LOG(LogOGSimHost, Warning, TEXT("[SimHost.Backend] backend=%hs fingerprint=%.*hs"),
-			EngineTraits::kName, static_cast<int32>(fingerprint.size()), fingerprint.data());
-	}
+	configureSession();
 
 	m_physicsBackend.startStepping(*uWorld, dt, worldIsAuthority);
 	UE_LOG(LogOGMgmt, Log, TEXT("SimulationManager: adapters, integration layer, and manager initialized"));
@@ -1622,18 +2169,29 @@ void UESimulationSession<TraitsT>::endPlay()
 {
 	// ⛔G-20  docs/UESimulationSession-guards.md
 	m_physicsBackend.onEndPlayBegin();
+	m_runnerStopped = m_authorityLoop;
+
+	teardownImmediateClient_GameThread();
 
 	detachFromSimNetLanes();
 
 	// ⛔G-21  docs/UESimulationSession-guards.md
+	m_simNetIdle.reset();
+	m_clockServer = nullptr;
 	m_simNetServer.reset();
 	m_simNetServerHost.reset();
 	m_registeredComponentsById.clear();
 	m_simChannelsById.clear();
 	m_authoritativeSlotsByActor.clear();
 	m_simUnregisteredIds.clear();
+	m_pendingUnregisters.clear();
+	m_componentsHeldForRunner.clear();
 
 	m_replicatedTierConsumer.reset();
+
+	if (m_heldDisplaySnapshot != nullptr)
+		m_displayPublisher->release_GameThread(m_heldDisplaySnapshot);
+	m_heldDisplaySnapshot = nullptr;
 
 	if (s_instances[0] == this)
 		s_instances[0] = nullptr;
@@ -1660,6 +2218,16 @@ void UESimulationSession<TraitsT>::onPostPhysicsStep()
 
 	m_physicsBackend.beforePresent_GameThread();
 
+	if (m_immediateClient || m_authorityLoop)
+		collectLifecycleOutcomes_GameThread();
+
+	if (m_authorityLoop)
+	{
+		presentAuthority_GameThread();
+		m_latencyBudgetDiagnostics.tick_GameThread(m_physicsBackend.editDiagnostics());
+		return;
+	}
+
 	onPostSimulationGameThread();
 
 	publishServerClock_GameThread();
@@ -1670,11 +2238,71 @@ void UESimulationSession<TraitsT>::onPostPhysicsStep()
 		m_detachedSimNetLanes->onTickFlush();
 	}
 
-	m_physicsBackend.updateVisualization_GameThread();
+	publishDisplaySnapshot_GameThread();
+
+	refreshDisplayView_GameThread();
 
 	Game::afterVisualization(*this);
 
 	m_latencyBudgetDiagnostics.tick_GameThread(m_physicsBackend.editDiagnostics());
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::publishDisplaySnapshot_GameThread()
+{
+	checkf(!m_authorityLoop,
+		TEXT("UESimulationSession::publishDisplaySnapshot_GameThread fills the display snapshot from storage, the "
+			 "reconciliation and the input resolution on the game thread; with the authority loop on the runner writes them, "
+			 "and a dedicated server shows nothing. Was og-input-latency P5-19's loop return alone (P5-16 F6)"));
+	if (!m_manager.has_value())
+		return;
+
+	DisplayClockReading clock;
+	DisplayTierReading  tier;
+	if (m_manager->runsPrediction())
+	{
+		clock = readDisplayClock(m_manager->getClientClock(), m_manager->getNetworkEstimator());
+		if (m_immediateClient)
+		{
+			if (const DisplayTierReading* const published = m_displayTier->acquireLatest())
+				tier = *published;
+		}
+		else if (m_replicatedTierConsumer.has_value())
+		{
+			tier = readDisplayTier(*m_replicatedTierConsumer, m_manager->getTimeConfig(),
+				m_inputResolution.getClientEffectiveInputDelayTicks());
+		}
+	}
+	else
+	{
+		const SimulationTimeStep step = m_manager->getServerClock().getSimulationStep();
+		clock.predictionTick   = step.getTick();
+		clock.stepDeltaSeconds = step.getDeltaSeconds();
+	}
+
+	m_displayPublisher->publish_Step([&](DisplaySnapshot& snapshot)
+	{
+		fillSimulationDisplaySnapshot(snapshot, m_storage, m_inputResolution, m_reconciliation, clock, tier);
+	});
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::refreshDisplayView_GameThread()
+{
+	const DisplaySnapshot* const newest = m_displayPublisher->acquire_GameThread();
+	if (m_heldDisplaySnapshot != nullptr && m_heldDisplaySnapshot != newest)
+		m_displayPublisher->release_GameThread(m_heldDisplaySnapshot);
+	m_heldDisplaySnapshot = newest;
+	if (m_heldDisplaySnapshot == nullptr)
+		return;
+
+	for (size_t index = 0u; index < m_heldDisplaySnapshot->entryCount; ++index)
+	{
+		const DisplayEntry& entry = m_heldDisplaySnapshot->entries[index];
+		DisplayVizState& vizState = (*m_displayVizStates)[index];
+		vizState = entry.vizState;
+		m_physicsBackend.overlayRenderPoses_GameThread(entry.simId, vizState);
+	}
 }
 
 OGSIM_OPTIMIZE_ON
@@ -1715,6 +2343,12 @@ TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
 
     PendingRegistration& record = it->second;
 
+    if (record.queued)
+        return finishQueuedRegistration(id, owner);
+
+    if (record.isAuthority && m_authorityLoop)
+        return tryRegisterOnRunner(id, owner);
+
     if (!record.bodiesCreated)
     {
         typename TraitsT::Character* character = Cast<typename TraitsT::Character>(owner.GetOwner());
@@ -1753,6 +2387,9 @@ TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
 
     if (!allResolvable)
         return TryRegisterStatus::Pending;
+
+    if (!record.isAuthority && m_immediateClient)
+        return tryRegisterQueued(id, owner);
 
     SimChannel* channel = nullptr;
     if (record.isAuthority)
@@ -1831,6 +2468,18 @@ void UESimulationSession<TraitsT>::unregisterFromNewFramework(
     if (m_simUnregisteredIds.erase(id) != 0u)
         return;
 
+    if (!isAuthority && m_immediateClient)
+    {
+        requestQueuedUnregister_GameThread(id, owner);
+        return;
+    }
+
+    if (isAuthority && m_authorityLoop)
+    {
+        requestRunnerUnregister_GameThread(id, &owner);
+        return;
+    }
+
     unregisterCharacter(id, &owner, isAuthority);
 }
 
@@ -1863,6 +2512,508 @@ void UESimulationSession<TraitsT>::unregisterCharacter(unsigned int id, typename
         m_physicsBackend.onUnregistered_GameThread(*owner, id);
 
     UE_LOG(LogOGMgmt, Log, TEXT("NewFramework: unregistered simulatable id=%u"), id);
+}
+
+OGSIM_OPTIMIZE_ON
+
+OGSIM_OPTIMIZE_OFF
+
+template <typename TraitsT>
+typename UESimulationSession<TraitsT>::SimNetLanes::Client* UESimulationSession<TraitsT>::boundImmediateClient_Step() const
+{
+    if (!m_immediateClient)
+        return nullptr;
+    SimNetLanes* const lanes = m_simNetLanes;
+    typename SimNetLanes::Client* const client = lanes != nullptr ? lanes->client() : nullptr;
+    return client != nullptr && lanes->clientSessionBound() ? client : nullptr;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::afterClientCapture_Step()
+{
+    typename SimNetLanes::Client* const client = boundImmediateClient_Step();
+    if (client == nullptr)
+        return;
+    client->afterCaptureTick_Step(m_netSync, m_manager->currentIntegratedTick(), m_manager->getTimeConfig());
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::receiveForClientStep_Step()
+{
+    typename SimNetLanes::Client* const client = boundImmediateClient_Step();
+    if (client == nullptr)
+        return;
+    applyUnregisterRequests_Step(*client);
+    m_simNetLanes->drainClient_Step();
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::applyUnregisterRequests_Step(typename SimNetLanes::Client& client)
+{
+    std::vector<unsigned int> requests;
+    {
+        const std::scoped_lock lock(m_lifecycleBridgeMutex);
+        requests.swap(m_unregisterRequests);
+    }
+    for (const unsigned int id : requests)
+        enqueueQueuedUnregister_Step(client, id);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::enqueueQueuedUnregister_Step(typename SimNetLanes::Client& client, unsigned int id)
+{
+    if (id == 0u || id > 0xFFu)
+        return;
+    m_unregisterRequested_Step.insert(id);
+    // ⛔G-31  docs/UESimulationSession-guards.md
+    if (m_systemsNotified_Step.erase(id) != 0u && m_storage.template has<Simulatable>(id))
+        m_manager->notifyCharacterUnregistered(id);
+    client.unregisterCharacter(static_cast<uint8_t>(id), [this, id](SimChannel* channel)
+    {
+        if (channel != nullptr)
+            channel->clearOnInputHandedCallback();
+        m_unregisterRequested_Step.erase(id);
+        postLifecycleOutcome(id, LifecycleOutcomeKind::UnregisterApplied);
+    });
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::onQueuedRegisterApplied_Step(unsigned int id, SimChannel* channel, bool hasProvider)
+{
+    if (channel == nullptr)
+    {
+        postLifecycleOutcome(id, LifecycleOutcomeKind::RegisterRefused);
+        return;
+    }
+    if (hasProvider)
+    {
+        channel->setOnInputHandedCallback([this, id](const InputBundleBuffer& bundle)
+        {
+            bundle.template forEachSlot<PlayerInput>([this, id](uint32 captureTick, const PlayerInput&)
+            {
+                m_latencyBudgetDiagnostics.stampHandedAndLeft_Internal(id, captureTick);
+            });
+        });
+    }
+    // ⛔G-32  docs/UESimulationSession-guards.md
+    if (m_unregisterRequested_Step.find(id) == m_unregisterRequested_Step.end())
+    {
+        m_manager->notifyCharacterRegistered(id);
+        m_systemsNotified_Step.insert(id);
+    }
+    postLifecycleOutcome(id, LifecycleOutcomeKind::RegisterApplied);
+}
+
+template <typename TraitsT>
+TryRegisterStatus UESimulationSession<TraitsT>::tryRegisterQueued(unsigned int id, typename TraitsT::Component& owner)
+{
+    PendingRegistration& record = m_pendingRegistrations.at(id);
+    SimNetLanes* const lanes = m_simNetLanes;
+    typename SimNetLanes::Client* const client = lanes != nullptr ? lanes->client() : nullptr;
+    if (client == nullptr || m_immediateStepsStopped || id == 0u || id > 0xFFu)
+        return TryRegisterStatus::Pending;
+    const uint8_t simId = static_cast<uint8_t>(id);
+    const bool hasProvider = static_cast<bool>(record.inputProvider);
+    const ogsimnet::BindVerdict verdict = lanes->editBindings().markRegisteredIfReady(simId, hasProvider);
+    if (verdict.step == ogsimnet::BindStep::Wait)
+        return TryRegisterStatus::Pending;
+    checkf(verdict.step == ogsimnet::BindStep::Ready,
+        TEXT("UESimulationSession::tryRegister: id=%u registers %s an input provider, and its roster entry says the other: "
+             "the provider is built for the engine's autonomous proxy, which clientBindStep checked against the roster. Was "
+             "the engine role alone (isLocallyPredicted)"), id, hasProvider ? TEXT("with") : TEXT("without"));
+    if (verdict.step != ogsimnet::BindStep::Ready)
+        return TryRegisterStatus::Pending;
+    client->registerCharacter(simId, std::move(*record.simulatable),
+        m_latencyBudgetDiagnostics.wrapInputProvider(id, owner, std::move(record.inputProvider)),
+        [this, id, hasProvider](SimChannel* channel) { onQueuedRegisterApplied_Step(id, channel, hasProvider); });
+    record.simulatable.reset();
+    record.queued = true;
+    return TryRegisterStatus::Pending;
+}
+
+template <typename TraitsT>
+TryRegisterStatus UESimulationSession<TraitsT>::finishQueuedRegistration(unsigned int id, typename TraitsT::Component& owner)
+{
+    collectLifecycleOutcomes_GameThread();
+    const auto it = m_pendingRegistrations.find(id);
+    if (it == m_pendingRegistrations.end())
+        return TryRegisterStatus::Pending;
+    PendingRegistration& record = it->second;
+    if (record.refused || record.rosterRemoved)
+    {
+        if (m_simNetLanes != nullptr && id <= 0xFFu)
+            m_simNetLanes->editBindings().markUnregistered(static_cast<uint8_t>(id));
+        UE_LOG(LogOGMgmt, Error,
+            TEXT("tryRegister: id=%u: the og-sim-net client's queued registration did not hold (%s); the character stays "
+                 "unsimulated"),
+            id, record.rosterRemoved ? TEXT("the roster removed it") : TEXT("its [SimNet.Lifecycle] line names why"));
+        m_pendingRegistrations.erase(it);
+        return TryRegisterStatus::Refused;
+    }
+    if (!record.applied)
+        return TryRegisterStatus::Pending;
+
+    m_registeredComponentsById[id] = &owner;
+    UE_LOG(LogOGMgmt, Log, TEXT("tryRegister: registered simulatable id=%u isAuthority=%d"), id, 0);
+    m_game.afterRegistered(id, /*isAuthority=*/false);
+    m_physicsBackend.onRegistered_GameThread(owner, id);
+    m_pendingRegistrations.erase(it);
+    return TryRegisterStatus::Ready;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::requestQueuedUnregister_GameThread(unsigned int id, typename TraitsT::Component& owner)
+{
+    const auto pending = m_pendingRegistrations.find(id);
+    const bool queued = pending != m_pendingRegistrations.end() && pending->second.queued;
+    const bool registered = m_registeredComponentsById.find(id) != m_registeredComponentsById.end();
+    if (pending != m_pendingRegistrations.end())
+        m_pendingRegistrations.erase(pending);
+    if (m_immediateStepsStopped || (!queued && !registered))
+    {
+        unregisterCharacterHostOnly(id, &owner, /*releaseBodiesNow=*/true);
+        return;
+    }
+    {
+        const std::scoped_lock lock(m_lifecycleBridgeMutex);
+        m_unregisterRequests.push_back(id);
+    }
+    m_pendingUnregisters[id] = TStrongObjectPtr<typename TraitsT::Component>(&owner);
+    // ⛔G-33  docs/UESimulationSession-guards.md
+    unregisterCharacterHostOnly(id, &owner, /*releaseBodiesNow=*/false);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::unregisterCharacterHostOnly(unsigned int id, typename TraitsT::Component* owner,
+    bool releaseBodiesNow)
+{
+    forgetSimNetCharacter(id, owner != nullptr ? owner->GetOwner() : nullptr, /*isAuthority=*/false);
+    m_game.onUnregistered(id);
+    m_latencyBudgetDiagnostics.forgetCharacter(id);
+    if (releaseBodiesNow && owner != nullptr)
+        m_physicsBackend.onUnregistered_GameThread(*owner, id);
+    UE_LOG(LogOGMgmt, Log, TEXT("NewFramework: unregistered simulatable id=%u"), id);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::collectLifecycleOutcomes_GameThread()
+{
+    std::vector<LifecycleOutcome> outcomes;
+    {
+        const std::scoped_lock lock(m_lifecycleBridgeMutex);
+        outcomes.swap(m_lifecycleOutcomes);
+    }
+    for (const LifecycleOutcome& outcome : outcomes)
+    {
+        switch (outcome.kind)
+        {
+        case LifecycleOutcomeKind::RegisterApplied:
+        case LifecycleOutcomeKind::RegisterRefused:
+        {
+            const auto pending = m_pendingRegistrations.find(outcome.id);
+            if (pending == m_pendingRegistrations.end() || !(pending->second.queued || pending->second.onRunner))
+                break;
+            pending->second.runnerBusy = false;
+            if (outcome.kind == LifecycleOutcomeKind::RegisterApplied)
+                pending->second.applied = true;
+            else
+                pending->second.refused = true;
+            break;
+        }
+        case LifecycleOutcomeKind::BodiesBound:
+        case LifecycleOutcomeKind::BodiesPending:
+        case LifecycleOutcomeKind::BodiesUnresolvable:
+        {
+            if (outcome.kind != LifecycleOutcomeKind::BodiesUnresolvable)
+                m_componentsHeldForRunner.erase(outcome.id);
+            const auto pending = m_pendingRegistrations.find(outcome.id);
+            if (pending == m_pendingRegistrations.end() || !pending->second.onRunner)
+                break;
+            pending->second.runnerBusy = false;
+            if (outcome.kind == LifecycleOutcomeKind::BodiesBound)
+            {
+                pending->second.bodiesBound = true;
+                pending->second.boundSlot = outcome.slot;
+            }
+            break;
+        }
+        case LifecycleOutcomeKind::UnregisterApplied:
+        {
+            const auto found = m_pendingUnregisters.find(outcome.id);
+            if (found == m_pendingUnregisters.end())
+                break;
+            if (typename TraitsT::Component* const component = found->second.Get())
+                m_physicsBackend.onUnregistered_GameThread(*component, outcome.id);
+            m_pendingUnregisters.erase(found);
+            break;
+        }
+        case LifecycleOutcomeKind::RosterRemoved:
+        {
+            if (m_pendingUnregisters.find(outcome.id) != m_pendingUnregisters.end())
+                break;
+            const auto pending = m_pendingRegistrations.find(outcome.id);
+            if (pending != m_pendingRegistrations.end() && pending->second.queued)
+            {
+                pending->second.rosterRemoved = true;
+                break;
+            }
+            const auto found = m_registeredComponentsById.find(outcome.id);
+            if (found == m_registeredComponentsById.end())
+                break;
+            unregisterCharacterHostOnly(outcome.id, found->second.Get(), /*releaseBodiesNow=*/true);
+            m_simUnregisteredIds.insert(outcome.id);
+            break;
+        }
+        }
+    }
+}
+
+template <typename TraitsT>
+TryRegisterStatus UESimulationSession<TraitsT>::tryRegisterOnRunner(unsigned int id, typename TraitsT::Component& owner)
+{
+    if constexpr (!EngineTraits::kHasWorldHost)
+    {
+        checkf(false, TEXT("UESimulationSession::tryRegisterOnRunner: only a world-host engine runs the authority loop"));
+        return TryRegisterStatus::Refused;
+    }
+    else
+    {
+        collectLifecycleOutcomes_GameThread();
+        const auto it = m_pendingRegistrations.find(id);
+        checkf(it != m_pendingRegistrations.end(), TEXT("UESimulationSession::tryRegisterOnRunner: tryRegister made the record"));
+        PendingRegistration& record = it->second;
+        record.onRunner = true;
+        if (record.refused)
+        {
+            UE_LOG(LogOGMgmt, Error,
+                TEXT("tryRegister: id=%u refused by the og-sim-net server (its [Roster.Refused] line names why); the character "
+                     "stays unsimulated"), id);
+            m_pendingRegistrations.erase(it);
+            return TryRegisterStatus::Refused;
+        }
+        if (record.applied)
+        {
+            m_registeredComponentsById[id] = &owner;
+            m_runnerBodyKeysById[id] = record.bodyKey;
+            UE_LOG(LogOGMgmt, Log, TEXT("tryRegister: registered simulatable id=%u isAuthority=%d"), id, 1);
+            m_game.afterRegistered(id, /*isAuthority=*/true);
+            m_physicsBackend.onRegisteredHost_GameThread(owner, id);
+            m_pendingRegistrations.erase(it);
+            return TryRegisterStatus::Ready;
+        }
+        if (record.runnerBusy || m_runnerStopped)
+            return TryRegisterStatus::Pending;
+
+        typename TraitsT::Character* const character = Cast<typename TraitsT::Character>(owner.GetOwner());
+        checkf(character != nullptr,
+               TEXT("UESimulationSession::tryRegister: the component must be attached to a TraitsT::Character — the ")
+               TEXT("first-call body pass reads that class's own root capsule"));
+        if (!record.runnerSimulatable)
+        {
+            record.runnerSimulatable = std::make_shared<Simulatable>(std::move(*record.simulatable));
+            record.simulatable.reset();
+        }
+
+        if (!record.bodiesCreated)
+        {
+            if (!record.bodiesBound)
+            {
+                typename PhysicsBackend::BodyRequest request = m_physicsBackend.makeBodyRequest_GameThread(owner, *character, id);
+                record.bodyKey = request.key;
+                record.runnerBusy = true;
+                m_componentsHeldForRunner[id] = TStrongObjectPtr<typename TraitsT::Component>(&owner);
+                postRunnerRequest([this, id, request = MoveTemp(request), simulatable = record.runnerSimulatable,
+                    staticData = &owner.getStaticData()]()
+                {
+                    const std::optional<uint32_t> slot = m_physicsBackend.createBodies_Runner(request, *simulatable, *staticData, id);
+                    postLifecycleOutcome(id, slot.has_value() ? LifecycleOutcomeKind::BodiesBound : LifecycleOutcomeKind::BodiesPending,
+                        slot.value_or(0u));
+                });
+                return TryRegisterStatus::Pending;
+            }
+            recordAuthoritativeSlot(*owner.GetOwner(), record.bodyKey, record.boundSlot);
+#if DO_CHECK
+            record.runnerSimulatable->getPhysicsComposite().forEach([&](const auto& decl)
+            {
+                checkf(decl.bindings.ownBodyId.value != 0,
+                       TEXT("PhysicsDeclaration bindings.ownBodyId not populated by fold (id=%u)"), id);
+                checkf(decl.bindings.parentBodyId.value != 0,
+                       TEXT("PhysicsDeclaration bindings.parentBodyId not populated by fold (id=%u)"), id);
+            });
+#endif
+            m_game.afterBodiesCreated(*record.runnerSimulatable, *character, id, /*isAuthority=*/true, m_owner.GetNetMode());
+            record.bodiesCreated = true;
+            return TryRegisterStatus::Pending;
+        }
+
+        checkf(id != 0u && id <= 0xFFu,
+            TEXT("UESimulationSession::tryRegister: og-sim-net's roster keys a character by its sim id (1..255); id %u is not one"), id);
+        AActor* const pawn = owner.GetOwner();
+        const UOGNetConnection* const ownerConnection = Cast<UOGNetConnection>(GetRootNetConnection(pawn));
+        const SimConnectionId ownerConn = ownerConnection != nullptr ? ownerConnection->OGNetId : kInvalidSimConnection;
+        const uint8_t localIndex = GetPlayerSlotForActor(pawn);
+        const FTCHARToUTF8 debugName(pawn != nullptr ? *pawn->GetName() : TEXT("none"));
+        record.runnerBusy = true;
+        record.registerPosted = true;
+        postRunnerRequest([this, id, key = record.bodyKey, physicsSlot = static_cast<uint8_t>(record.boundSlot), ownerConn, localIndex,
+            name = std::string(debugName.Get()), simulatable = record.runnerSimulatable]() mutable
+        {
+            if (!bodiesResolvable_Runner(*simulatable))
+            {
+                postLifecycleOutcome(id, LifecycleOutcomeKind::BodiesUnresolvable);
+                return;
+            }
+            m_simNetServer->template registerCharacter<Simulatable>(static_cast<uint8_t>(id), physicsSlot, ownerConn, localIndex,
+                std::move(name), std::move(*simulatable),
+                [this, id, key](SimChannel* channel) { onRunnerRegisterApplied_Runner(id, key, channel); });
+        });
+        return TryRegisterStatus::Pending;
+    }
+}
+
+template <typename TraitsT>
+bool UESimulationSession<TraitsT>::bodiesResolvable_Runner(const Simulatable& simulatable) const
+{
+    if (!m_physAdapter->isBodyResolvable(Game::rootBodyId(simulatable)))
+        return false;
+    bool allResolvable = true;
+    simulatable.getPhysicsComposite().forEach([&](const auto& decl)
+    {
+        if (!m_physAdapter->isBodyResolvable(decl.bindings.ownBodyId))
+            allResolvable = false;
+    });
+    return allResolvable;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::onRunnerRegisterApplied_Runner(unsigned int id, uint64 key, SimChannel* channel)
+{
+    if constexpr (EngineTraits::kHasWorldHost)
+    {
+        if (channel == nullptr)
+        {
+            m_physicsBackend.releaseBodies_Runner(key, id);
+            postLifecycleOutcome(id, LifecycleOutcomeKind::RegisterRefused);
+            return;
+        }
+        // ⛔G-36  docs/UESimulationSession-guards.md
+        m_manager->notifyCharacterRegistered(id);
+        m_systemsNotified_Step.insert(id);
+        m_physicsBackend.onRegistered_Runner(key, id);
+        postLifecycleOutcome(id, LifecycleOutcomeKind::RegisterApplied);
+    }
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::requestRunnerUnregister_GameThread(unsigned int id, typename TraitsT::Component* owner)
+{
+    if constexpr (EngineTraits::kHasWorldHost)
+    {
+        AActor* const pawn = owner != nullptr ? owner->GetOwner() : nullptr;
+        const bool registered = m_registeredComponentsById.find(id) != m_registeredComponentsById.end();
+        const auto pending = m_pendingRegistrations.find(id);
+        const bool pendingOnRunner = pending != m_pendingRegistrations.end() && pending->second.onRunner;
+        const bool registerPosted = registered || (pendingOnRunner && pending->second.registerPosted);
+        const bool bodiesHeld = registered || (pendingOnRunner && (pending->second.bodiesBound || pending->second.runnerBusy));
+        const auto knownKey = m_runnerBodyKeysById.find(id);
+        const uint64 key = knownKey != m_runnerBodyKeysById.end() ? knownKey->second
+            : pendingOnRunner ? pending->second.bodyKey : PhysicsBackend::slotKeyFor(pawn);
+        if (pending != m_pendingRegistrations.end())
+            m_pendingRegistrations.erase(pending);
+        if (knownKey != m_runnerBodyKeysById.end())
+            m_runnerBodyKeysById.erase(knownKey);
+
+        if (!m_runnerStopped && bodiesHeld)
+        {
+            postRunnerRequest([this, id, key, registerPosted]()
+            {
+                // ⛔G-37  docs/UESimulationSession-guards.md
+                if (!registerPosted)
+                {
+                    releaseOnRunner_Runner(id, key);
+                    return;
+                }
+                m_simNetServer->template unregisterCharacter<Simulatable>(static_cast<uint8_t>(id), ogsimnet::RosterRemoveReason::Left,
+                    [this, id, key](SimChannel*) { releaseOnRunner_Runner(id, key); });
+            });
+        }
+
+        m_registeredComponentsById.erase(id);
+        m_authoritativeSlotsByActor.erase(pawn);
+        m_game.onUnregistered(id);
+        m_latencyBudgetDiagnostics.forgetCharacter(id);
+        if (registered)
+            m_physicsBackend.onUnregisteredHost_GameThread(id);
+        UE_LOG(LogOGMgmt, Log, TEXT("NewFramework: unregistered simulatable id=%u"), id);
+    }
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::releaseOnRunner_Runner(unsigned int id, uint64 key)
+{
+    if constexpr (EngineTraits::kHasWorldHost)
+    {
+        m_systemsNotified_Step.erase(id);
+        m_physicsBackend.releaseBodies_Runner(key, id);
+    }
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::teardownImmediateClient_GameThread()
+{
+    if (!m_immediateClient || m_immediateStepsStopped)
+        return;
+    // ⛔G-34  docs/UESimulationSession-guards.md
+    m_physicsBackend.onEndPlayBegin();
+    m_immediateStepsStopped = true;
+
+    SimNetLanes* const lanes = m_simNetLanes;
+    typename SimNetLanes::Client* const client = lanes != nullptr ? lanes->client() : nullptr;
+    if (client != nullptr)
+    {
+        applyUnregisterRequests_Step(*client);
+        std::vector<unsigned int> live;
+        for (const auto& entry : m_pendingRegistrations)
+        {
+            if (entry.second.queued)
+                live.push_back(entry.first);
+        }
+        for (const auto& entry : m_registeredComponentsById)
+            live.push_back(entry.first);
+        for (const unsigned int id : live)
+            enqueueQueuedUnregister_Step(*client, id);
+        lanes->drainClientWhileStopped_GameThread();
+    }
+    collectLifecycleOutcomes_GameThread();
+
+    for (auto& entry : m_pendingUnregisters)
+    {
+        if (typename TraitsT::Component* const component = entry.second.Get())
+            m_physicsBackend.onUnregistered_GameThread(*component, entry.first);
+    }
+    m_pendingUnregisters.clear();
+
+    std::vector<unsigned int> registered;
+    registered.reserve(m_registeredComponentsById.size());
+    for (const auto& entry : m_registeredComponentsById)
+        registered.push_back(entry.first);
+    for (const unsigned int id : registered)
+    {
+        unregisterCharacterHostOnly(id, m_registeredComponentsById[id].Get(), /*releaseBodiesNow=*/true);
+        m_simUnregisteredIds.insert(id);
+    }
+
+    for (auto it = m_pendingRegistrations.begin(); it != m_pendingRegistrations.end();)
+    {
+        if (!it->second.queued)
+        {
+            ++it;
+            continue;
+        }
+        if (m_simNetLanes != nullptr && it->first <= 0xFFu)
+            m_simNetLanes->editBindings().markUnregistered(static_cast<uint8_t>(it->first));
+        it = m_pendingRegistrations.erase(it);
+    }
 }
 
 OGSIM_OPTIMIZE_ON

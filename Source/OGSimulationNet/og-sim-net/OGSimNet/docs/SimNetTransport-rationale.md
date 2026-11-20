@@ -2,7 +2,8 @@
 # `SimNetTransport.h` — rationale
 
 `SimNetTransport<EndpointT, InboxN>` is the sim's transport port over an og-net endpoint. Inbound, it copies every message
-on the five sim lanes, and every connection event it is handed, into one `SimInbox`. Outbound, it maps the sim's sends onto
+on the five sim lanes, and every connection event it is handed, into one `SimInbox`; with a SimClock ping/pong installed, the
+SimClock lane goes through the clock's own handler first (§13). Outbound, it maps the sim's sends onto
 the endpoint's `send` and `broadcastExcept`, either at once or held until the host's frame flush. The prohibitions that govern
 its lines are in `SimNetTransport-guards.md`. The connection handles the sessions build from the inbox's events are in
 `SimNetConnections.h`.
@@ -35,8 +36,9 @@ crosses between the two with a cast and no lookup. og-simulation names no og-net
 
 ## §3 Installing the handlers
 
-- **`installHandlers(endpoint)`** binds the endpoint and sets a lane handler on each of the five sim lanes. og-net's other
-  lanes (Voice, Engine) are left alone: the engine lane has its own consumer.
+- **`installHandlers(endpoint)`** binds the endpoint and sets a lane handler on each of the five sim lanes: the copy-only
+  handler (§4), or on the SimClock lane the clock's handler when one was set (§13). og-net's other lanes (Voice, Engine) are
+  left alone: the engine lane has its own consumer.
 - **Before the endpoint starts.** og-net takes lane handlers before `start` only, and fails its own check otherwise
   (`EndpointCore.cpp`, line 319). The transport checks first, so the failure names the transport: the host calls
   `markEndpointStarted()` right after a successful `start`, and an `installHandlers` after it fails an `OG_CHECK`. The hidden
@@ -84,7 +86,8 @@ crosses between the two with a cast and no lookup. og-simulation names no og-net
   `appendInputBundle(simId, bundle)` takes the id, so a channel cannot hold the transport by mistake.
 - **The set.** `appendInputBundle` appends `simId │ bundle` to the pending `InputBundleSet` (og-simulation's
   `simEnvelope::writeInputBundleSetHeader` and `simEnvelope::appendInputBundle`). `endInputSends()`, from any adapter or the
-  transport, sends the set as one SimInput message to the server connection and empties it. og-net's default lane table
+  transport, sends the set as one SimInput message to the server connection and empties it. On an immediate transport the set
+  is first opened by `beginInputSends()`, and only its thread may append or end it (§12). og-net's default lane table
   caps SimInput at 1,200 messages per second per connection, 300 per local player for 4 local players (`LaneConfig.h`,
   `kDefaultLaneTable`). One message per character would take four local players at 144 frames per second to 576 messages a
   second. One set per send takes them to 144 when the four bundles fit one message, and to 288 at the default 3 redundancy
@@ -125,7 +128,8 @@ og-simulation's `ServerSimTransport`, which the header's self-check asserts.
   the endpoint at once (counted `holdOverflows`). Sending it alone would put it ahead of earlier sends of the same frame
   (G-03). Every send the hold refuses still leaves, in order, only earlier than its frame flush.
 - **`immediate = true`:** every send goes straight to the endpoint, which takes sends from any thread (og-net's
-  `EndpointCore-rationale.md` §2). Nothing is held, and `flushFrame()` has nothing to release.
+  `EndpointCore-rationale.md` §2). Nothing is held, and `flushFrame()` has nothing to release. The client's input set still has
+  one owner thread at a time (§12).
 - **The switch is fixed at construction** (`config()` reads it), so a session never mixes held and immediate sends.
 
 ## §8 Counters
@@ -133,7 +137,8 @@ og-simulation's `ServerSimTransport`, which the header's self-check asserts.
 `stats()` returns `SimNetTransportStats`, relaxed reads of atomics: `heldSends`, `releasedSends`, `directSends` (sent at once,
 immediate or overflow), `holdOverflows`, `holdHighWaterBytes`, `inputBundles`, `inputBundlesRefused`, `inputSets`,
 `inputSetSplits`, `inputSetsWithoutServer`, `addressChangesIgnored`, §10's `unslottedRefused`, `closingRefused`,
-`controlQuotaDisconnects` and `noSlotConnects`, and §11's `unannouncedConnects` and `unannouncedRefused`. The inbox keeps its own
+`controlQuotaDisconnects` and `noSlotConnects`, §11's `unannouncedConnects` and `unannouncedRefused`, §12's
+`unwindowedRefused`, and §13's `clockSends`. The inbox keeps its own
 (`inbox().stats()`), among them the quota refusals per lane and the Control ring's high-water mark, which the sessions print on
 their `[SimNet.Window]` line with the quota disconnects they drained, and the event ring's `eventsRefused` and
 `eventHighWater`, which no line prints yet. `quotaRefused(conn)` gives one live connection's quota refusals per lane, and `slotOf(conn)` its
@@ -293,3 +298,45 @@ and 8 slots churning:
   64-slot reserve this aborts on the inbox's event `OG_CHECK`;
 - a 3 s drain gap that opens 800: 392 announced and 408 not, none of whose records reach the inbox, then all of the next
   gaps' connections announced; high-water 808, the ring's 816 less the 8 staying connections' kept slots.
+
+## §12 The immediate input set has one owner thread (og-input-latency P2-16)
+
+**Why.** An immediate client sends at capture, from the step's thread (`SimNetClient-rationale.md` §17), while the game thread
+still runs its frame. The set is one buffer and one length (`m_inputSet`, `m_inputSetUsed`), so it can have one writer at a
+time; the host's frame-path send, if it ran too, would write the same buffer from the game thread.
+
+- **`beginInputSends()`** opens the set for the calling thread: it stores that thread's id in one lock-free atomic
+  (`m_inputSender`; a `static_assert` pins `is_always_lock_free`), and `OG_CHECK`s that no set is already open. On a
+  frame-locked transport it does nothing: there the set is the hold's, made and flushed from one thread at a time (§7).
+- **`appendInputBundle` and `endInputSends`** go through one door, `withInputSet`. On an immediate transport it `OG_CHECK`s that
+  the calling thread is the one that opened the set, and refuses the call if not (G-07, counted `unwindowedRefused`).
+  `endInputSends` then sends the set and closes it. A split inside the set (§5) sends from inside the door, on the owner thread.
+- **The owner is a thread id, not a flag,** so a call from the game thread is refused while the step's set is open as well as
+  between two sets. The steps of a FrameBounded client run on a chain of worker tasks, any worker per task; each tick's set is
+  opened and ended inside one task, so the owner is whichever worker runs that tick, and the chain orders one task's close
+  before the next one's open.
+- **Frame-locked is unchanged:** no owner, no check, and `endInputSends()` from any adapter or the transport ends the set as
+  before (§5).
+
+## §13 The SimClock lane's own handler (og-input-latency P2-20)
+
+**Why.** The clock ping/pong (`SimNetClock.h`, `SimNetClock-rationale.md`) must answer a ping on og-net's servicing thread,
+where it arrives, and stamp a pong's receive time there. The copy-only handler may do neither (G-01), so the clock gets a
+handler of its own for its lane, as G-01 foresaw.
+
+- **`setClockHandler(handler)`** stores the handler that `installHandlers` then sets on the SimClock lane in place of the
+  copy-only one. It `OG_CHECK`s that it is called before `installHandlers` and before the endpoint started, and once per
+  transport. Without it (a host that builds no clock; the Unreal host builds one on each role's transport), every lane has the
+  copy-only handler and nothing below runs.
+  `hasClockHandler()` says whether one was set.
+- **The clock's door into the transport** is four private members, reachable only from the two clock class templates the
+  transport befriends (`SimNetClockServer`, `SimNetClockClient`):
+  - `setClockHandler`;
+  - `admitsClockFrom(conn)`: the copy-only path's three refusals (no slot, closing, unannounced), counted as they are there, without
+    a push. The server answers no ping the copy-only path would refuse;
+  - `receiveClock(conn, recvSeconds, bytes)`: `receive` on the SimClock lane, the copy-only path itself. The clock hands it what
+    it passes through (a `ClockPublish`) and the client's clockSample records;
+  - `sendClockNow(conn, bytes)`: a SimClock send straight to the endpoint, never held (§7), counted `clockSends`. A held pong
+    or ping would wait for the frame flush, the turnaround the clock measures without.
+- **`receive` is unchanged in what it does:** its three refusals moved into `admittedSlot`, which both `receive` and
+  `admitsClockFrom` call.

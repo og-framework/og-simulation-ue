@@ -37,13 +37,18 @@ that `emulatorStats()` is empty.
   `ognet::ReportsLocalAddress` (its `[OGNet.Socket] open` and `[OGNet.Rebind]` lines print the local address from it) and
   `ognet::ReportsReceiveErrors` (a growing receive-error count requests a rebind, `EndpointCore::checkReceiveErrors`) through the
   switch, and the engine-lane core's `localAddress()` gives the driver its bound port.
+- **`hasHighResolutionWait()`** exists exactly when `Inner` has it, and forwards to the inner backend in the same way (the
+  emulator's own forwards there too, `EmulatedBackend::hasHighResolutionWait`). The engine-lane core reads it for a host-serviced
+  runner (`EngineLaneDriverCore-rationale.md` §13, task P5-18).
 - **`inner()`** gives the inner backend back, for its own statistics.
 
 ## §3 The compile-time checks
 
 - **In the header,** for `ognet::BsdDatagramBackend`, the backend the Unreal driver uses: the switch is a `ognet::DatagramBackend`,
-  `ognet::ReportsLocalAddress` and `ognet::ReportsReceiveErrors`. A change that drops a forward fails the compile of every file that
-  includes the header.
+  `ognet::ReportsLocalAddress` and `ognet::ReportsReceiveErrors`, and it has a `bool hasHighResolutionWait()`. A change that drops
+  a forward fails the compile of every file that includes the header.
+- **In `SimLaneSeamTest.cpp`,** `hasHighResolutionWait` "exactly when" both ways: absent over `VirtualBackend`, present over that
+  test's `HighResolutionVirtualBackend`.
 - **In the test,** "exactly when" both ways: over og-net's `VirtualBackend` (a local address, no receive errors) the switch reports a
   local address and no receive errors; over the test's `ErrorCountingBackend` (receive errors, no local address) the reverse.
 

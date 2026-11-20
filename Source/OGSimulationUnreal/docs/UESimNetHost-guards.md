@@ -2,6 +2,7 @@
 <!-- lint-external-ref: onRelayDelayFloorReplayed -- deleted by og-input-latency task P5-9 (the session's two replay members); kept in the history -->
 <!-- lint-external-ref: UEConnectionHandle.h -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
 <!-- lint-external-ref: IndexOfByKey -- Unreal Engine symbol or file, outside every scan root -->
+<!-- lint-external-ref: UNetConnection::Close -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: AssignConnectionHandle -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: UChildConnection::InitChildConnection -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: Engine/Private/NetConnection.cpp -- Unreal Engine symbol or file, outside every scan root -->
@@ -44,7 +45,8 @@ end (rationale §2).
 **The prohibition.** Do not return `0.0`, or any other non-negative value, when the server connection's ping has no reading.
 
 **The consequence.** The value is the round trip `onTimingInfoReceived` hands to the network time estimator, which rejects
-and counts a negative sample. A `0.0` is latched as a real 0 ms round trip, and the prediction offset then runs on its floor
+and counts a negative sample. A `0.0` is taken as a real 0 ms round trip: once the estimator has a reading above 0 (a 0 does
+not seed it, og-input-latency P5-28), every `0.0` pulls the smoothed RTT toward 0, and the prediction offset falls to its floor
 while every log says it is tracking the network.
 
 **What breaks if it moves.** Nothing at compile time and no test: the client host is only driven by a live server.
@@ -61,6 +63,12 @@ while every log says it is tracking the network.
 channel as soon as the call returns. The registered simulatable holds that channel as its net-sync owner, and
 unregistration clears the callbacks bound on it, so an unregister that runs later runs against a destroyed channel. A host
 that does defer it must keep the channel alive itself first (og-sim-net's `SimNetClient-rationale.md` §5).
+
+**An immediate client** (og-input-latency task P5-17) still makes the call here, at once, inside the drain on the step's thread.
+og-sim-net has already unregistered a queue-registered character before it (`SimNetClient-guards.md` G-12), so the session's
+handler runs no og-sim unregistration; it posts the host's own game-thread work to the game thread
+(`UESimulationSession-rationale.md` §18.5). The prohibition binds the call, which a deferral would still break for a frame-locked
+client.
 
 **What breaks if it moves.** Nothing at compile time; at run time a use of a destroyed object on the first leave.
 
@@ -194,7 +202,8 @@ a smoothing change with no evidence behind it. The derivation is in the rational
 
 ## G-10 — the server's RTT is the engine's raw reading, with nothing smoothed on top
 
-**Tag site:** `UESimNetHost.h`, `readRoundTripMs`, the line above `return pingVals.Current * 1000.0;`.
+**Tag site:** `UESimNetHost.h`, `readRoundTripMs`, the line above `outMs = pingVals.Current * 1000.0;` (a `return` of the
+same expression until og-input-latency task P5-26 made the reading an out parameter; "the return" below is that write).
 
 **The prohibition, as it stood in the source** (`UEConnectionHandle.h`, moved here by og-input-latency task P5-9):
 
@@ -210,6 +219,41 @@ value takes is seconds to milliseconds.
 lag the client's view of the same round trip.
 
 **What breaks if it moves.** Nothing at compile time and no test.
+
+---
+
+## G-11 — a closing connection is skipped before the read, with no warning and no wire sample
+
+**Tag site:** `UESimNetHost.h`, `UESimNetServerHost::rttMs`, the line above `if (found.connection->IsClosingOrClosed())`.
+
+**The prohibition.** Do not delete this check, and do not move it below `readRoundTripMs` or below the wire sample.
+
+**The consequence.** In the frame of a graceful close `UNetConnection::Close` has set `USOCK_Closed` and reset the
+connection's `FNetPing`, while `FindConnection` still finds it and og-sim-net can still drain the leaving client's input. Without
+the check the read reports "no FNetPing on the connection - check net.NetPingEnabled": a false cause, which spends that cause's
+one warning (rationale §2), so a later genuine loss of the ping on any connection is silent, and a −1 ms wire sample reaches the
+latency probe on every graceful leave. Moved below the read, the warning fires; moved below the wire sample, the sample is taken.
+
+**What breaks if it moves.** Nothing at compile time and no test: a graceful-leave smoke shows the warning return.
+
+## G-12 — the server finds a connection through the host's lookup, never the driver's `FindConnection` directly
+
+**Tag site:** `UESimNetHost.h`, `UESimNetServerHost::rttMs`, the line above
+`const FServerConnectionFound found = m_connections.find(m_driver, conn, nowSeconds());`.
+
+**The prohibition.** Do not replace `m_connections.find(m_driver, conn, nowSeconds())` with `m_driver->FindConnection(conn)`.
+
+**The consequence.** In the frame of a graceful leave the driver can drop the leaving client's og-net id before og-sim-net
+drains that client's last input bundle and asks `rttMs` for it: `UOGNetConnection::CleanUp` calls `UOGNetDriver::engineClosed`,
+which removes the id, and og-net's own close removes it too. `FindConnection` then misses, and a bare miss reads as "no UE
+connection for og-net id": a routine leave that spends the `NoConnection` cause's one warning (rationale §2), so a later
+genuine no-connection outage on that server is silent. The lookup remembers each og-net id it found and reports a miss of a
+remembered one with no cause (`missingCause` is `None`): no warning, and the sentinel is still returned (G-01). Calling the
+driver directly skips the remembering as well as the check.
+
+**What breaks if it moves.** Nothing at compile time. The automation test `OGBrawler.SimNet.Hosts` checks the lookup itself
+(a graceful leave, then an unknown id, through one `FServerRttWarnings`), not `rttMs`'s use of it, so a `rttMs` that bypasses
+the lookup still passes; a graceful-leave smoke shows the `no UE connection` warning return.
 
 ---
 

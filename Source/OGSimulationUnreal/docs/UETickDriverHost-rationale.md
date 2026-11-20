@@ -54,7 +54,9 @@ rule, the same per-frame cadence for the probes and the reap, and the same roles
 | client: the steps run as chained task-graph tasks after the previous frame's; dedicated server: inline on the game thread | client: one task per frame, chained after the previous frame's, at the step task's priority (§3); authority (and a client under `og.Sim.RunInline=1`, which the game reads through `runInline`, §4): inline |
 | the end-physics tick function at `TG_EndPhysics` waits for the steps dispatched in **earlier** frames, then fires the scene's post-tick delegate | `FSimulationEndStepsTickFunctionUImpl` at `TG_EndPhysics` calls the driver's `endFrame` with its completion event and the block mode, read every frame from `og.Sim.BlockMode` (§4): the driver waits for earlier frames' task, then calls the game's `onPostPhysics` |
 
-Block mode 1 (debug; `og.Sim.BlockMode`, §4) makes the end of physics also wait for this frame's task.
+Block mode 1 (debug; `og.Sim.BlockMode`, §4) makes the end of physics also wait for this frame's task. An
+immediate client's driver does too, under block mode 0, when the frame dispatched exactly one step: its frame wait
+(`TickDriverBackendUImpl-rationale.md` §16). The frame host passes the block mode as before; the driver chooses.
 
 ## 3. The executor
 

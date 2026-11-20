@@ -8,6 +8,7 @@
 #include "OGNet/NetConcepts.h"
 #include "OGNet/NetTypes.h"
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -93,6 +94,12 @@ public:
 		return m_inner.localAddress();
 	}
 
+	decltype(auto) hasHighResolutionWait() const
+		requires requires(const Inner& i) { i.hasHighResolutionWait(); }
+	{
+		return m_inner.hasHighResolutionWait();
+	}
+
 	Inner& inner() { return m_inner; }
 	const Inner& inner() const { return m_inner; }
 
@@ -110,4 +117,9 @@ static_assert(ognet::ReportsLocalAddress<SwitchableBackend<ognet::BsdDatagramBac
 static_assert(ognet::ReportsReceiveErrors<SwitchableBackend<ognet::BsdDatagramBackend>>,
 	"the switch must forward stats, or og-net stops seeing receive errors and never rebinds on them. Was P4-3's 'stats exists "
 	"exactly when Inner has it'");
+static_assert(requires(const SwitchableBackend<ognet::BsdDatagramBackend>& backend) {
+	{ backend.hasHighResolutionWait() } -> std::same_as<bool>;
+}, "the switch must forward hasHighResolutionWait, or the engine-lane core reports no high-resolution wait for the BSD backend and "
+   "a host-serviced runner cannot tell a precise idle from a millisecond one. Was task P5-18's 'hasHighResolutionWait, forwarded "
+   "to the core'");
 } // namespace ognetunreal

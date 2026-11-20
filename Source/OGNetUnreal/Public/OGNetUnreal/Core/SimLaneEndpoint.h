@@ -22,6 +22,8 @@ struct SimLaneEndpointOps
 	void (*disconnect)(void* ctx, ognet::ConnectionId id) = nullptr;
 	void (*noteDelivered)(void* ctx, ognet::Lane lane, double recvSeconds, double nowSeconds) = nullptr;
 	const ognet::EndpointConfig& (*config)(const void* ctx) = nullptr;
+	ognet::ServiceResult (*serviceUntil)(void* ctx, double deadlineSeconds) = nullptr;
+	bool (*hasHighResolutionWait)(const void* ctx) = nullptr;
 };
 
 struct SimLaneEndpoint
@@ -31,8 +33,9 @@ public:
 	{
 		OGNET_CHECK(m_ops.send != nullptr && m_ops.broadcastExcept != nullptr && m_ops.setLaneHandler != nullptr
 				&& m_ops.setConnectionHandler != nullptr && m_ops.disconnect != nullptr && m_ops.noteDelivered != nullptr
-				&& m_ops.config != nullptr,
-			"SimLaneEndpoint needs all seven operations: a missing one would be a null call on the first use");
+				&& m_ops.config != nullptr && m_ops.serviceUntil != nullptr && m_ops.hasHighResolutionWait != nullptr,
+			"SimLaneEndpoint needs all nine operations: a missing one would be a null call on the first use. Was task P5-3's seven, "
+			"plus task P5-18's serviceUntil and hasHighResolutionWait");
 	}
 
 	// ⛔G-01  docs/SimLaneEndpoint-guards.md
@@ -65,6 +68,9 @@ public:
 
 	const ognet::EndpointConfig& config() const { return m_ops.config(m_ctx); }
 
+	ognet::ServiceResult serviceUntil(double deadlineSeconds) { return m_ops.serviceUntil(m_ctx, deadlineSeconds); }
+	bool hasHighResolutionWait() const { return m_ops.hasHighResolutionWait(m_ctx); }
+
 	uint64_t detachedDrops() const { return m_detachedDrops.load(std::memory_order_relaxed); }
 
 private:
@@ -90,6 +96,12 @@ private:
 		ops.config = [](const void* ctx) -> const ognet::EndpointConfig& {
 			return static_cast<const SimLaneEndpoint*>(ctx)->m_detachedConfig;
 		};
+		ops.serviceUntil = [](void*, double) {
+			ognet::ServiceResult result;
+			result.stopped = true;
+			return result;
+		};
+		ops.hasHighResolutionWait = [](const void*) { return false; };
 		return ops;
 	}
 

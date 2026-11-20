@@ -16,10 +16,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -517,6 +520,61 @@ std::vector<Drained> drainAll(SeamTransport& transport)
 	});
 	return out;
 }
+
+template <bool HighResolution>
+class HighResolutionVirtualBackend
+{
+public:
+	explicit HighResolutionVirtualBackend(VirtualBackend& inner) : m_inner(inner) {}
+
+	bool open(const ognet::BindConfig& config) { return m_inner.open(config); }
+	ognet::SendResult sendTo(const ognet::Address& to, std::span<const std::byte> bytes) { return m_inner.sendTo(to, bytes); }
+	std::size_t receive(uint32_t timeoutUs, ognet::RecvFn fn) { return m_inner.receive(timeoutUs, fn); }
+	bool rebind() { return m_inner.rebind(); }
+	void wake() { m_inner.wake(); }
+	bool hasHighResolutionWait() const { return HighResolution; }
+
+private:
+	VirtualBackend& m_inner;
+};
+
+template <typename B>
+concept ReportsHighResolutionWait = requires(const B& backend) { backend.hasHighResolutionWait(); };
+
+static_assert(!ReportsHighResolutionWait<Backend>, "the switch offers hasHighResolutionWait only when its inner backend has it");
+static_assert(ReportsHighResolutionWait<ognetunreal::SwitchableBackend<HighResolutionVirtualBackend<true>>>,
+	"the switch forwards hasHighResolutionWait when its inner backend has it");
+
+ognetunreal::DriverCallbacks inertCallbacks()
+{
+	ognetunreal::DriverCallbacks callbacks;
+	callbacks.accept = [](void*, ConnectionId) { return AcceptVerdict::Accept; };
+	callbacks.deliver = [](void*, ConnectionId, std::span<const std::byte>) {};
+	callbacks.closed = [](void*, ConnectionId, DisconnectReason) {};
+	callbacks.serverConnectionUp = [](void*, ConnectionId) {};
+	callbacks.connectEnded = [](void*, DisconnectReason) {};
+	return callbacks;
+}
+
+template <bool HighResolution>
+std::pair<bool, bool> hostServicedHighResolutionWait()
+{
+	using InnerBackend = HighResolutionVirtualBackend<HighResolution>;
+	using SwitchedBackend = ognetunreal::SwitchableBackend<InnerBackend>;
+	VirtualNetwork network;
+	network.setNow(kStartSeconds);
+	TestHost host(network.clock(), 700);
+	InnerBackend inner(network.addHost(kServerHostIndex));
+	SwitchedBackend backend(inner);
+	ognetunreal::EngineLaneDriverCore<TestHost, SwitchedBackend> core;
+	RecordingAttach recording;
+	const SimLaneAttach attach = recording.attach();
+	REQUIRE(core.start(host, backend, configFor(Role::Server), IoMode::HostServiced, inertCallbacks(), &attach));
+	REQUIRE(recording.endpoint != nullptr);
+	const std::pair<bool, bool> reported{core.hasHighResolutionWait(), recording.endpoint->hasHighResolutionWait()};
+	core.stop(network.nowSeconds(), 0.0);
+	return reported;
+}
 } // namespace
 
 TEST_CASE("EngineLaneDriver.ARecordingAttachInstallsTheFiveSimLaneHandlersBeforeStartAndEachLaneDeliversWithItsReceiveTime",
@@ -695,6 +753,126 @@ TEST_CASE("EngineLaneDriver.OnItsOwnThreadTheForwardRunsOnOGNetsThreadBeforeTheC
 	server.core.stop(network.nowSeconds(), 0.2);
 }
 
+TEST_CASE("EngineLaneDriver.AHostServicedServerServicedOnlyByARunnerThreadDeliversEngineAndSimLaneTraffic", "[OGNet][EngineLaneDriver]")
+{
+	constexpr double kGiveUpSeconds = 30.0;
+	constexpr double kRunnerSliceSeconds = 0.002;
+	VirtualNetwork network(NetworkMode::Steady);
+	Side server(network, kServerHostIndex, 500);
+	Side client(network, kClientHostIndex, 600);
+	const SimLaneAttach serverAttach = server.recording.attach();
+	const SimLaneAttach clientAttach = client.recording.attach();
+	REQUIRE(server.start(Role::Server, IoMode::HostServiced, &serverAttach));
+	REQUIRE(client.start(Role::Client, IoMode::OwnThread, &clientAttach));
+	CHECK(server.core.mode() == IoMode::HostServiced);
+	SimLaneEndpoint& serverLanes = *server.recording.endpoint;
+	CHECK_FALSE(serverLanes.hasHighResolutionWait());
+
+	std::atomic<bool> runnerStop{false};
+	std::atomic<uint64_t> runnerServices{0};
+	std::atomic<uint64_t> runnerSawStopped{0};
+	std::thread runner([&] {
+		while (!runnerStop.load(std::memory_order_acquire))
+		{
+			const ognet::ServiceResult result = serverLanes.serviceUntil(network.nowSeconds() + kRunnerSliceSeconds);
+			runnerServices.fetch_add(1, std::memory_order_relaxed);
+			if (result.stopped)
+			{
+				runnerSawStopped.fetch_add(1, std::memory_order_relaxed);
+				return;
+			}
+		}
+	});
+	const std::thread::id runnerThread = runner.get_id();
+	const std::thread::id testThread = std::this_thread::get_id();
+
+	const double giveUpAt = network.nowSeconds() + kGiveUpSeconds;
+	client.core.connect(serverAddress(), giveUpAt);
+	bool clientSent = false;
+	bool serverSent = false;
+	auto done = [&] {
+		return server.count(Kind::Deliver) == 1 && client.count(Kind::Deliver) == 1 && server.recording.messagesOn(Lane::SimInput).size() == 1
+			&& client.recording.messagesOn(Lane::SimState).size() == 1;
+	};
+	while (network.nowSeconds() < giveUpAt && !done())
+	{
+		server.core.tick(network.nowSeconds(), false);
+		client.core.tick(network.nowSeconds(), client.enginePending());
+		if (client.isUp() && !clientSent)
+		{
+			CHECK(client.core.send(client.core.serverConnection(), text("engine up")) == SendVerdict::Sent);
+			client.recording.endpoint->send(client.core.serverConnection(), Lane::SimInput, text("sim up"));
+			clientSent = true;
+		}
+		if (server.peerId() != ognet::kInvalidConnection && !serverSent)
+		{
+			CHECK(server.core.send(server.peerId(), text("engine down")) == SendVerdict::Sent);
+			serverLanes.send(server.peerId(), Lane::SimState, text("sim down"));
+			serverSent = true;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	runnerStop.store(true, std::memory_order_release);
+	runner.join();
+	REQUIRE(done());
+
+	CHECK(u8(server.delivered()[0]) == u8(text("engine up")));
+	CHECK(u8(client.delivered()[0]) == u8(text("engine down")));
+	CHECK(client.recording.messagesOn(Lane::SimState)[0].bytes == u8(text("sim down")));
+	CHECK(runnerThread != testThread);
+	CHECK(runnerServices.load() > 0);
+	CHECK(runnerSawStopped.load() == 0);
+
+	const std::vector<SeamRecord> beforeStop = server.recording.records();
+	REQUIRE(beforeStop.size() == 2);
+	CHECK_FALSE(beforeStop[0].isMessage);
+	CHECK(beforeStop[0].kind == ConnectionEventKind::Connected);
+	CHECK(beforeStop[1].isMessage);
+	CHECK(beforeStop[1].lane == Lane::SimInput);
+	CHECK(beforeStop[1].bytes == u8(text("sim up")));
+	for (const SeamRecord& record : beforeStop)
+	{
+		CHECK(record.thread == runnerThread);
+	}
+
+	server.core.stop(network.nowSeconds(), 0.2);
+	CHECK(server.core.isStopped());
+	const std::vector<SeamRecord> afterStop = server.recording.records();
+	REQUIRE(afterStop.size() == 3);
+	CHECK(afterStop[2].kind == ConnectionEventKind::Disconnected);
+	CHECK(afterStop[2].reason == DisconnectReason::LocalClose);
+	CHECK(afterStop[2].thread == testThread);
+	client.core.stop(network.nowSeconds(), 0.2);
+}
+
+TEST_CASE("EngineLaneDriver.Death.ASecondThreadsServiceUntilOnAHostServicedEndpointAborts", "[.][OGSimDeath]")
+{
+#if defined(_MSC_VER)
+	_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+	Rig rig(true);
+	rig.startServer();
+	SimLaneEndpoint& serverLanes = *rig.server->recording.endpoint;
+	std::thread runner([&] { serverLanes.serviceUntil(rig.now()); });
+	runner.join();
+	std::printf("the runner serviced the endpoint; the test thread calls serviceUntil next\n");
+	std::fflush(stdout);
+	serverLanes.serviceUntil(rig.now());
+	std::printf("serviceUntil returned on a second thread\n");
+	std::fflush(stdout);
+	FAIL("a second thread's serviceUntil on a host-serviced endpoint did NOT fire og-net's servicing-thread OGNET_CHECK");
+}
+
+TEST_CASE("EngineLaneDriver.TheSimEndpointReportsTheBackendsHighResolutionWaitThroughTheSwitch", "[OGNet][EngineLaneDriver]")
+{
+	const std::pair<bool, bool> withTimer = hostServicedHighResolutionWait<true>();
+	CHECK(withTimer.first);
+	CHECK(withTimer.second);
+	const std::pair<bool, bool> withoutTimer = hostServicedHighResolutionWait<false>();
+	CHECK_FALSE(withoutTimer.first);
+	CHECK_FALSE(withoutTimer.second);
+}
+
 TEST_CASE("EngineLaneDriver.AnAttachedSimNetTransportReceivesEachSimLaneIntoItsInboxWithConnectedFirst", "[OGNet][EngineLaneDriver]")
 {
 	TransportAttach serverLanes;
@@ -784,6 +962,17 @@ TEST_CASE("EngineLaneDriver.TheDetachedEndpointCountsAndDropsItsSendsAndDisconne
 	transport.flushFrame();
 	CHECK(detached.detachedDrops() == 5);
 	CHECK(drainAll(transport).empty());
+}
+
+TEST_CASE("EngineLaneDriver.TheDetachedEndpointServicesNothingAndHasNoHighResolutionWait", "[OGNet][EngineLaneDriver]")
+{
+	SimLaneEndpoint detached = SimLaneEndpoint::detached(configFor(Role::Server));
+	const ognet::ServiceResult result = detached.serviceUntil(5.0);
+	CHECK(result.stopped);
+	CHECK_FALSE(result.reachedDeadline);
+	CHECK(result.datagrams == 0);
+	CHECK_FALSE(detached.hasHighResolutionWait());
+	CHECK(detached.detachedDrops() == 0);
 }
 
 TEST_CASE("EngineLaneDriver.NoteDeliveredOnTheSimEndpointWritesTheSimLaneRxLineOfTheCoresWindow", "[OGNet][EngineLaneDriver]")

@@ -243,6 +243,18 @@ public:
 		return m_endpoint->serviceUntil(deadlineSeconds);
 	}
 
+	bool hasHighResolutionWait() const
+	{
+		if constexpr (requires(const BackendT& backend) { backend.hasHighResolutionWait(); })
+		{
+			return m_backend != nullptr && m_backend->hasHighResolutionWait();
+		}
+		else
+		{
+			return false;
+		}
+	}
+
 	bool isStarted() const { return m_started; }
 	bool isStopped() const { return m_stopped; }
 	IoMode mode() const { return m_mode; }
@@ -370,6 +382,8 @@ private:
 			}
 		};
 		ops.config = [](const void* ctx) -> const ognet::EndpointConfig& { return static_cast<const EngineLaneDriverCore*>(ctx)->m_config; };
+		ops.serviceUntil = [](void* ctx, double deadlineSeconds) { return coreOf(ctx).serviceUntil(deadlineSeconds); };
+		ops.hasHighResolutionWait = [](const void* ctx) { return static_cast<const EngineLaneDriverCore*>(ctx)->hasHighResolutionWait(); };
 		return ops;
 	}
 

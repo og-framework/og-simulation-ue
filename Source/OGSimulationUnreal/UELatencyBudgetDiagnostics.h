@@ -78,8 +78,13 @@ public:
 	void stampCorrectionReceived(unsigned int lane, uint32 correctionTick);
 	void noteWireSample(double roundTripSeconds);
 	void post_Internal(const latencyBudget::Event& event);
+	void stampClientReceived_Internal(latencyBudget::Stream stream, unsigned int lane, uint32 tick, double recvSeconds);
+	void noteWireSample_Internal(double roundTripSeconds);
+	void stampHandedAndLeft_Internal(unsigned int lane, uint32 captureTick);
 	void stampAfterStep_Internal(double stepStartSeconds);
 	void stampStepEnd_Internal();
+	void stampServerReceived_Internal(unsigned int lane, uint32 captureTick, double recvSeconds);
+	void stampCorrectionHanded_Internal(unsigned int lane, uint32 correctionTick, double handedSeconds);
 	void onPostTickFlush();
 
 	template <typename BackendDiagnosticsT>
@@ -96,7 +101,18 @@ public:
 	}
 
 private:
-	using Mailbox      = latencyBudget::SpscMailbox<latencyBudget::Event, 4096>;
+	struct PostedEvent
+	{
+		latencyBudget::Event event;
+		uint32               healDelayTicks   = 0u;
+		bool                 healByCorrection = false;
+	};
+
+	static_assert(std::is_trivially_copyable_v<PostedEvent>,
+		"UELatencyBudgetDiagnostics::PostedEvent crosses from the step thread to the game thread by value through "
+		"SpscMailbox, like the latencyBudget::Event it carries; it must own no memory");
+
+	using Mailbox      = latencyBudget::SpscMailbox<PostedEvent, 4096>;
 	using ClockMailbox = latencyBudget::SpscMailbox<ClockCounts, 64>;
 
 	struct SeenRead
@@ -139,6 +155,7 @@ private:
 	ClockCounts                                        m_clockAtWindowStart;
 	uint64                                             m_mailboxDropped = 0u;
 	std::unordered_map<unsigned int, uint32>           m_lastHandedCorrectionTick;
+	std::unordered_map<unsigned int, uint32>           m_lastHandedCorrectionTick_Runner;
 	std::unordered_map<unsigned int, SeenReads>        m_seenReads_Physics;
 	FDelegateHandle                                    m_postTickFlushHandle;
 #else
@@ -153,8 +170,13 @@ private:
 	void stampCorrectionReceived(unsigned int, uint32) {}
 	void noteWireSample(double) {}
 	void post_Internal(const latencyBudget::Event&) {}
+	void stampClientReceived_Internal(latencyBudget::Stream, unsigned int, uint32, double) {}
+	void noteWireSample_Internal(double) {}
+	void stampHandedAndLeft_Internal(unsigned int, uint32) {}
 	void stampAfterStep_Internal(double) {}
 	void stampStepEnd_Internal() {}
+	void stampServerReceived_Internal(unsigned int, uint32, double) {}
+	void stampCorrectionHanded_Internal(unsigned int, uint32, double) {}
 	void onPostTickFlush() {}
 
 	template <typename BackendDiagnosticsT>
@@ -301,7 +323,74 @@ template <typename TraitsT>
 void UELatencyBudgetDiagnostics<TraitsT>::post_Internal(const latencyBudget::Event& event)
 {
 	if (m_mailbox)
-		m_mailbox->tryPush(event);
+		m_mailbox->tryPush(PostedEvent{ event });
+}
+
+template <typename TraitsT>
+void UELatencyBudgetDiagnostics<TraitsT>::stampClientReceived_Internal(
+	latencyBudget::Stream stream, unsigned int lane, uint32 tick, double recvSeconds)
+{
+	if (!m_mailbox)
+		return;
+	const double nowSeconds = FPlatformTime::Seconds();
+	m_mailbox->tryPush(PostedEvent{ latencyBudget::Event::stamp(stream, lane, tick, latencyBudget::Point::ClientReceived,
+		nowSeconds) });
+	if (stream == latencyBudget::Stream::State)
+	{
+		const auto* store =
+			m_owner.m_inputResolution.template findRemoteInputCache<typename TraitsT::Simulatable>(lane);
+		if (store != nullptr)
+		{
+			const auto latest = store->findLatest();
+			if (latest.valid)
+			{
+				m_mailbox->tryPush(PostedEvent{ latencyBudget::Event::stamp(latencyBudget::Stream::Input, lane, tick,
+					latencyBudget::Point::Healed, nowSeconds), static_cast<uint32>(latest.dA), true });
+			}
+		}
+	}
+	m_mailbox->tryPush(PostedEvent{ latencyBudget::Event::stamp(stream, lane, tick, latencyBudget::Point::NetReceived,
+		recvSeconds) });
+}
+
+template <typename TraitsT>
+void UELatencyBudgetDiagnostics<TraitsT>::noteWireSample_Internal(double roundTripSeconds)
+{
+	post_Internal(latencyBudget::Event::sample(latencyBudget::Hop::Wire, roundTripSeconds * 0.5));
+}
+
+template <typename TraitsT>
+void UELatencyBudgetDiagnostics<TraitsT>::stampHandedAndLeft_Internal(unsigned int lane, uint32 captureTick)
+{
+	const double nowSeconds = FPlatformTime::Seconds();
+	post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::Input, lane, captureTick, latencyBudget::Point::Handed,
+		nowSeconds));
+	post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::Input, lane, captureTick,
+		latencyBudget::Point::LeftProcess, nowSeconds));
+}
+
+template <typename TraitsT>
+void UELatencyBudgetDiagnostics<TraitsT>::stampServerReceived_Internal(unsigned int lane, uint32 captureTick,
+	double recvSeconds)
+{
+	post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::Input, lane, captureTick,
+		latencyBudget::Point::ServerReceived, FPlatformTime::Seconds()));
+	post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::Input, lane, captureTick,
+		latencyBudget::Point::NetReceived, recvSeconds));
+}
+
+template <typename TraitsT>
+void UELatencyBudgetDiagnostics<TraitsT>::stampCorrectionHanded_Internal(unsigned int lane, uint32 correctionTick,
+	double handedSeconds)
+{
+	uint32& lastHanded = m_lastHandedCorrectionTick_Runner[lane];
+	if (lastHanded == correctionTick)
+		return;
+	lastHanded = correctionTick;
+	post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::State, lane, correctionTick,
+		latencyBudget::Point::Handed, handedSeconds));
+	post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::State, lane, correctionTick,
+		latencyBudget::Point::LeftProcess, handedSeconds));
 }
 
 template <typename TraitsT>
@@ -432,7 +521,13 @@ void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread(BackendDiagnosticsT ba
 	if (!m_probe || !m_mailbox || !m_owner.m_manager.has_value())
 		return;
 
-	m_mailbox->drain([this](const latencyBudget::Event& event) { m_probe->apply(event); });
+	m_mailbox->drain([this](const PostedEvent& posted)
+	{
+		if (posted.healByCorrection)
+			m_probe->stampHealedByCorrection(posted.event.lane, posted.event.tick, posted.healDelayTicks, posted.event.seconds);
+		else
+			m_probe->apply(posted.event);
+	});
 	m_mailboxDropped += m_mailbox->takeDroppedCount();
 	if (m_clockMailbox)
 	{
@@ -444,7 +539,7 @@ void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread(BackendDiagnosticsT ba
 	const double nowSeconds = FPlatformTime::Seconds();
 	const bool isClient = m_owner.m_manager->runsPrediction();
 
-	if (!isClient)
+	if (!isClient && !m_owner.m_authorityLoop)
 	{
 		m_owner.forEachAuthorityCorrectionTick(
 			[this, nowSeconds](unsigned int id, uint32 correctionTick)

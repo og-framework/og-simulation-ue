@@ -1,4 +1,10 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: getSyncedTimingBuffer -- deleted by og-input-latency task P5-26 (og-simulation's SimulationManagerConcept.h lost the timing-buffer owner concepts, which nothing modelled since P5-7); kept in the history -->
+<!-- lint-external-ref: SimulationManagerOwnerConcept -- deleted by og-input-latency task P5-26 (og-simulation's SimulationManagerConcept.h lost the timing-buffer owner concepts, which nothing modelled since P5-7); kept in the history -->
+<!-- lint-external-ref: getLocalInputCache -- deleted by og-input-latency task P5-16 (the game-thread readers read the session's display snapshot); kept in the history -->
+<!-- lint-external-ref: getRelayedReadObservations -- deleted by og-input-latency task P5-16 (the game-thread readers read the session's display snapshot); kept in the history -->
+<!-- lint-external-ref: getRelayedInputArrivals -- deleted by og-input-latency task P5-16 (the game-thread readers read the session's display snapshot); kept in the history -->
+<!-- lint-external-ref: getStorage -- deleted by og-input-latency task P5-16 (the game-thread readers read the session's display snapshot); kept in the history -->
 <!-- lint-external-ref: onInputRelayHostReady -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
 <!-- lint-external-ref: ISimulationTimingRelayListener -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
 <!-- lint-external-ref: ISimulationConnectionRelayListener -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
@@ -58,7 +64,8 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
   reception (§9.7), which the seam exempts; and since task 26b the session knobs (§9.8) and the frame probes, PROBE A and
   PROBE 6 (§9.9). One contiguous section.
 * **§10** is the teardown and the post-physics pass (task 27a): `endPlay`, `onPostPhysicsStep`, the game's
-  post-visualization hook, and the test hitch cvar in the `.cpp`.
+  post-visualization hook, and the test hitch cvars in the `.cpp` (since og-input-latency task P5-32 with its delay and
+  its marker).
 * **§11** is the start-up (task 27b): `beginPlay`, the game's six start-up hooks and their inline check, the neutral input
   on both roles, the field-diff gate, the step-length check and the backend line.
 * **§12** is the registration sequences (task 28): `tryRegister` and `unregisterFromNewFramework`, the pending record, the
@@ -74,6 +81,17 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
   in this session and the lanes' client session; registration through the roster; and the two early unregistration paths.
   Where an earlier section describes the relays, the listeners, the session's own coordinator or its component map, §16 is
   what replaced it.
+* **§17** is og-input-latency task P5-16: the display snapshot the game thread draws from, where it is published, the
+  game-thread view of it, and the doors that read it.
+* **§18** is og-input-latency task P5-17: immediate mode on a client (`SimTrafficImmediate=1`), its lines, the step hooks,
+  registration through og-sim-net's lifecycle queue, unregistration, teardown, and what frame-locked keeps.
+* **§19** is og-input-latency task P5-19: the authority loop (`og.Sim.AuthorityLoop=1`), the dedicated server stepping on its
+  runner: the decision, start, og-sim-net and registration on the runner, the game thread on the loop, and stop.
+* **§20** is og-input-latency task P3-10: the clock's RTT source, its two feeds, the `ClockRttSource` knob and the shadow line;
+  and task P3-13's `JitterMultiplier` knob, on the same proof line.
+* **§21** is og-input-latency task P5-20: the game-thread paths off the authority on the loop: PROBE A per stepping wake,
+  PROBE 6 retired, the authority presentation snapshot, the visualization gate, the probe stamps, and what the game thread
+  still does.
 
 ---
 
@@ -265,13 +283,14 @@ registration notice, and `unregisterFromNewFramework` the manager's notice, the 
 those two moved. Task 28 moved them (§12) and deleted `friend SessionOwner;`; every configuration builds without it, so the
 owner reaches only the public surface. Since then the class befriends exactly the three Q-G friends above.
 
-**The public surface is narrow.** `owner()` (const and mutable), the latency member's `get`/`edit` pair, since task
+**The public surface is narrow.** This paragraph lists it as it grew, task by task; what og-input-latency tasks P5-7, P5-9
+and P5-26 removed is named at its end. `owner()` (const and mutable), the latency member's `get`/`edit` pair, since task
 24b the composition reads and doors of §8, and since task 25 the transport's public members (§9): `instanceFor`, the five
 listener overrides, `getSyncedTimingBuffer` and `setOnTimingInfoReceivedCallback` (og-simulation's owner concept),
 `publishClientEffectiveInputDelayTicks`, and two const reads for a game's parts, `getClientEffectiveInputDelayTicks` and
 `getReplicatedTierConsumer`; and since task 26a the reception's public members (§9.7): the coordinator's type and its
-three accessors, which the component binding's RPC tail calls, the route's registration, and the two sinks, which the
-coordinator calls; and since task 27a `endPlay`, which the owner calls (public, so it still can once task 27b drops the
+three accessors, which the component binding's RPC tail called, the route's registration, and the two sinks, which the
+coordinator called; and since task 27a `endPlay`, which the owner calls (public, so it still can once task 27b drops the
 owner's friendship), and two const reads for the game's post-visualization hook, `getSystemsExec` and
 `getDelayedInputComponentsById` (§10); and since task 27b `beginPlay`, which the owner calls after its `Super` (§11); and
 since task 28 `tryRegister` and `unregisterFromNewFramework`, which the owner's wrappers call (§12; since task 29 the
@@ -279,7 +298,12 @@ component's registration skeleton, `UESimulatableOwnerBinding`, calls `tryRegist
 directly, and since task 36 the owner has no wrapper for either). **Since og-input-latency task P5-7** (§16) the listener
 overrides are plain members the og-net hosts call, the timing buffer's accessor, the route's registration and the two sinks
 are gone, the game's const read is `getRegisteredComponentsById`, the coordinator's accessors answer from og-sim-net's server,
-and `clientBindStep` is the client's roster gate, which the game's key hook calls. The owner keeps its own
+and `clientBindStep` is the client's roster gate, which the game's key hook calls; the reception's members left are the
+coordinator's type, `hasServerTierWiring` (the Chaos host's test), `getReceptionCoordinator` (no caller left in code) and
+`getServerReceptionTick` (the server host's `receptionTick()`), §16.3. og-input-latency task P5-9 deleted the two `Replayed`
+overrides, so three listener overrides remain (`onConnectionTierReceived`, `onRelayDelayFloorReceived`,
+`onTimingInfoReceived`), and task P5-26 deleted `getSyncedTimingBuffer`. The og-sim-net hosts also call
+`onSimClockSample` (og-input-latency task P3-10, §20) and `onSimNetLifecycleUnregistering` (`⛔G-35`). The owner keeps its own
 `getLatencyBudgetDiagnostics()` / `editLatencyBudgetDiagnostics()`, which forward here, so its latency lookups (`instanceFor`)
 are unchanged. *R0, task 28:* the mutable one keeps one caller, the latency member's own `instanceFor`
 (`UELatencyBudgetDiagnostics.h`), which reaches it through `TraitsT::SessionOwner::instanceFor`; the const one has no caller
@@ -295,7 +319,7 @@ work before the steps, the reception coordinator, the per-step release, the post
 tasks 26a to 27a re-pointed each to the session as it moved (task 25 moved nothing the hosts call). Task 26a re-pointed
 the reception: the tick-driver binding's release and reap, and the self-scheduled host's coordinator test, release and
 reap, call the session; task 26b re-pointed the per-frame work, so both hosts call the session's
-`onFrameStepsDue_GameThread`; task 27a re-pointed the post-physics pass, so the tick-driver binding's `onPostPhysics` and
+`onFrameStepsDue_Step`; task 27a re-pointed the post-physics pass, so the tick-driver binding's `onPostPhysics` and
 the self-scheduled host's post-tick lambda call the session's `onPostPhysicsStep` (§10). The path is closed: what still
 goes through `owner()` is the `UObject` calls, which are the owner's for good (a host's `GetWorld` and `GetNetMode`, the
 weak-lambda owners below, the tick-driver host's frame-host owner), and the owner's own `instanceFor`, which returns
@@ -339,7 +363,7 @@ way. A call typed anywhere in the header is a compile error; task 24a saw one fa
 * **The transport's out-of-line members (task 25)** are defined after the class in a pair of their own, so the block moves
   as one. By ruling F1 they compile optimized wherever they are instantiated; in the owner, where they were non-template
   members of its `.cpp` under its pair, they compiled unoptimized. The task's notes list them and their floating point.
-  The knob functions and `onFrameStepsDue_GameThread` (task 26b) are defined at the end of the same pair, and compile
+  The knob functions and `onFrameStepsDue_Step` (task 26b) are defined at the end of the same pair, and compile
   optimized for the same reason; the frame probes' two microsecond stamps are their only floating point, and task 26b's
   notes compare their disassembly before and after.
 * **The input reception's out-of-line members (task 26a)** are defined after the transport's pair in a pair of their
@@ -365,7 +389,8 @@ way. A call typed anywhere in the header is a compile error; task 24a saw one fa
   `BrawlerSessionGameUImpl.cpp` since its task 33, `OGBrawlerSimulationManager.cpp` before), and so do the game's parts
   they call.
 * **The `.cpp` (task 27a)** holds what a header cannot: the test hitch console variable, a namespace-scope object that
-  must be registered once, its exported accessor and the exported sleep (§10). The plugin compiles it on its own (the
+  must be registered once, its exported accessor and the exported sleep (§10); since og-input-latency task P5-32 also the
+  hitch's delay variable, which the same accessor reads. The plugin compiles it on its own (the
   module is not unity), and the two functions, non-templates, sit in a pair of their own, so their statements keep the
   unoptimized state they had in the owner's post-physics step: the sleep's division compiles to `divss` by `1000.0f`, as
   in the owner, not to a multiply by its reciprocal. The game's post-visualization hook is likewise a non-template function in
@@ -453,12 +478,17 @@ template called on a dependent object gained its `template` keyword):
 | `getLastRelayedInput`, `getLocalInputCache`, `isLocallyControlledOnThisPeer` | the input-resolution peer and its diagnostic view |
 | `getRelayedReadObservations`, `getRelayedInputArrivals` | the input-resolution peer's diagnostic view |
 | `getVizSlice<SliceT>` | one slice of a simulatable's visualization copy (`⛔G-02`) |
+
+⚠ **Since og-input-latency task P5-16 the visualization rows of this table are history.** `getLastRelayedInput`,
+`isLocallyControlledOnThisPeer` and `getVizSlice` answer from the display snapshot, and `editReconciliation`,
+`getLocalInputCache` and the two relayed-ring doors are deleted (§17.4). The paragraphs below on `getVizSlice` and the
+narrow read doors describe the doors as task 24b moved them.
 | `getTimeConfigPtr` | the manager's `TimeConfig`, or a null pointer |
 | `editVizQuery`, `getVizReader`, `registerVizVolume` | the backend's three visualization doors |
 | `onPostSimulationGameThread` | the manager's post-simulation pass |
 
 Two members are new, and read-only: `getManager()` (the manager's `std::optional`, by const reference) and
-`getStorage()` (the storage, by const reference). They exist for a game's parts, which read through a const reference
+`getStorage()` (the storage, by const reference; deleted by og-input-latency task P5-16, §17.4). They exist for a game's parts, which read through a const reference
 to the session and are not its friends (below); the owner and the hosts read the members directly.
 
 **The clock reads dereference the manager unchecked,** as the owner's did. They are for callers that run only while
@@ -748,7 +778,9 @@ was written into the timing relay's synced buffer, which a relay found once per 
 relay found`).
 
 **`onTimingInfoReceived`** first hands the round trip to the latency member's wire sample, then either to the callback set
-by `setOnTimingInfoReceivedCallback`, if one is set, or to the manager's network estimator (round trip and authority tick).
+by `setOnTimingInfoReceivedCallback`, if one is set, or to the manager's network estimator (round trip and authority tick;
+since og-input-latency task P3-10 the round trip goes through `noteEngineRttSample`, which reaches the estimate only while the
+engine is its active RTT source, §20).
 The client host calls it for every newer clock the client session delivers, with the round trip it reads from the server
 connection's FNetPing (`UESimNetHost-rationale.md`), and drops a clock while no session is bound. No caller in the tree sets the
 callback. Until P5-7 the session modelled og-simulation's `SimulationManagerOwnerConcept` with it and the timing buffer's
@@ -774,7 +806,7 @@ re-pointed (§16.3):
 
 **Still exempt from the seam** (`⛔G-11`): the release is typed on the game's input, and so is og-sim-net's server.
 
-**The drain and the reap** keep their pattern: `onFrameStepsDue_GameThread` (PROBE A, then the server test, then PROBE 6;
+**The drain and the reap** keep their pattern: `onFrameStepsDue_Step` (PROBE A, then the server test, then PROBE 6;
 §9.9), the drain per authority step or per frame batch, which prints `[ReleaseBatch] first=<tick> numSteps=<n>` on `LogOGNet`
 at `Verbose` (its row is in `kOGAdapterLogRoutes`, `UESimulationLogRoutes-rationale.md` §6), and the reap once per frame. Where
 each host calls them is the host's; the brawler's two hosts are its `OGBrawlerSimulationManager-rationale.md` §7.
@@ -938,7 +970,8 @@ same thing on both roles.
 #### `RecentreSettleSamples`: the clock's re-centre window (og-input-latency task 27)
 
 One integer key under `[OGNetcode]`, read by the same intake and applied by `applyLatencyKnobs` after the two latency
-knobs. It feeds `TimeConfig::recentreSettleSamples`, the number of measured RTT samples (valid and above 0) the client clock waits after a join
+knobs. It feeds `TimeConfig::recentreSettleSamples`, the number of clock advances with an RTT reading (a window of ticks since
+og-input-latency P3-11; it counted measured RTT samples before) the client clock waits after a join
 or a hard resync before its one-shot re-centre; 0 disables the re-centre. What the re-centre does is og-simulation's
 `TimeConfig-rationale.md` §14. The key exists so the re-centre's A arm (0) runs on the same binary as its B arm (the
 compiled default).
@@ -965,12 +998,15 @@ above. Its history (§11 C1, C17, C18) stayed there.*
 
 ### 9.9 The frame probes: PROBE A and PROBE 6 (task 26b)
 
-`onFrameStepsDue_GameThread(firstUpcomingSimTick, numSteps)` is the per-frame work before the steps: the host calls it on
-the game thread, once per frame that has steps due, with the frame's first upcoming simulation tick and its step count. Its
-body is three pieces, in order:
+`onFrameStepsDue_Step(firstUpcomingSimTick, numSteps)` is the per-frame work before the steps: the host calls it on
+the thread that runs the steps, once per frame that has steps due (on the authority loop once per stepping wake, on the
+runner, §21.1; on the game thread otherwise), with the frame's first upcoming simulation tick and its step count. It was
+`onFrameStepsDue_GameThread` until og-input-latency task P5-33 renamed it for that reason (the `_Step` suffix of
+`afterStep_Step`). Its body is three pieces, in order:
 
 1. **PROBE A**, frame health, on both roles;
-2. **the coordinator test** (`⛔G-18`): a client has no reception coordinator, and the function returns here;
+2. **the server test** (`⛔G-18`, `m_simNetServer`; the coordinator test until og-input-latency task P5-7): a client has no
+   og-sim-net server, and the function returns here; on the authority loop it returns next (§21.2);
 3. on the authority, per client connection of the world's net driver: the one-shot `[PacketBudget]` line, then
    **PROBE 6**, the per-connection send budget.
 
@@ -1052,7 +1088,8 @@ drift apart over a session exactly as far as their emitters' cadences do, which 
 
 #### PROBE 6: per-connection send budget (`m_connectionBudgetProbe`), server only
 
-*Site: `onFrameStepsDue_GameThread`, below its coordinator test, once per frame with steps, for each client connection.*
+*Site: `onFrameStepsDue_Step`, below its server test (`⛔G-18`, `m_simNetServer`) and the authority loop's return (§21.2), once
+per frame with steps, for each client connection.*
 
 **Why arithmetic was not enough.** The budget model is `allowance = CurrentNetSpeed / DesiredTickRate` bytes per tick,
 with up to two ticks of bankable credit. Both halves are read from engine source, but **every term in it is derived**:
@@ -1092,13 +1129,13 @@ ever smaller than that literal, the literal is optimistic and must be lowered (t
 the value is a property of the build and the handler stack, not of the connection.
 
 *R0, task 26b:* the moved text said "one shot per session". The latch is a function-local `static` of
-`onFrameStepsDue_GameThread`, so it is one per process (per instantiation in the one module that instantiates the session):
+`onFrameStepsDue_Step`, so it is one per process (per instantiation in the one module that instantiates the session):
 a process that runs two authority sessions in turn, or a listen server's two worlds, prints it once. That was already so in
 the owner, where the same `static` sat in a non-template member.
 
 #### The capacity pin's word rounding: `(usableBits / 32) * 4` ∴D-01
 
-*The `[PacketBudget]` line in `onFrameStepsDue_GameThread`.*
+*The `[PacketBudget]` line in `onFrameStepsDue_Step`.*
 
 The first argument of that line turns `UNetConnection::GetMaxSingleBunchSizeBits()` into usable **bytes**. It does not
 divide by 8: it rounds **down to whole 32-bit words** first, because the channel writes a bunch in words, and then counts
@@ -1159,7 +1196,9 @@ Nothing resets the manager, the composition or the backend: they live until the 
 3. The manager's post-simulation pass, `onPostSimulationGameThread()` (§8).
 4. The authority's server-clock publish, `publishServerClock_GameThread()` (§9.6).
 5. For a session on its own detached lanes only (§16.2): the lanes' `afterDispatch` and `onTickFlush`.
-6. `m_physicsBackend.updateVisualization_GameThread()`.
+6. `publishDisplaySnapshot_GameThread()`, then `refreshDisplayView_GameThread()` (§17.2, §17.3). Until og-input-latency
+   task P5-16 this step was the backend's visualization refresh, which copied every stored simulatable's state into its
+   visualization copy on the game thread and overlaid the rendered poses there.
 7. `Game::afterVisualization(*this)`, the game's hook, at the position of the game statement it replaced.
 8. The latency member's `tick_GameThread`, with the backend's diagnostics view (`UELatencyBudgetDiagnostics-rationale.md`).
 
@@ -1181,6 +1220,21 @@ sleeps the game thread that many milliseconds, once, and sets the variable back 
 frame: on an inline-stepping server, 250 ms gives a frame of about 15 steps. The sleep is the first statement of the pass,
 the one hitch site for every backend.
 
+* **The delay, `og.Sim.TestGameThreadHitchAfterSeconds`** (og-input-latency task P5-32; not in Shipping; default 0). Set on
+  a command line or in an ini, the hitch variable is already set at the process's first pass, so without a delay the hitch
+  lands in that first frame, before any client has joined (P5-21's finding F1: `P519_hitchOff`'s hitch window closed
+  15 s before its first client joined), and the Ph4 gate's hitch rows, which read the clients across a server hitch, could
+  not be measured. When the delay is above 0, the accessor leaves the hitch variable set and returns 0 until that many
+  seconds have passed since the process's first pass (a function-local `static` holding `FPlatformTime::Seconds()` at the
+  accessor's first call), then fires as before. At 0 it fires at the next pass, as before the delay existed. Both
+  variables are per process, so with two sessions in one process the first pass of either starts the delay and the first
+  pass after it fires the hitch. The delay does not depend on the stepping mode: the pass runs on the game thread with the
+  authority loop on and off (§19.5).
+* **The marker, `[SimHost.TestHitch] ms=<n> afterSeconds=<s> frame=<f>`** (P5-32). When the hitch fires, the accessor
+  logs this one Warning on `LogOGSimHost`, after the reset and before it returns, so the sleep follows it at once and the
+  line's time stamp is the hitch's start; `frame` is the engine's `GFrameCounter`. It is new with the delay and prints at
+  0 too; a session without the hitch prints no new line. Ph4's gate checker reads it first (P5-21's `check_ph4.py`, rows
+  T2 and R1).
 * **Where it lives.** The console variable is a namespace-scope object, registered when it is constructed; the class
   template's header has no translation unit of its own to define it in, so the plugin's `.cpp` does (the initiative's
   review, finding m-10), and the plugin module constructs it once. It is defined in `UESimulationSession.cpp`, under
@@ -1189,15 +1243,17 @@ the one hitch site for every backend.
   condition, `OGSIMULATIONUNREAL_API int32 consumeTestGameThreadHitchMs()`: it reads the value on the game thread, sets it
   back to 0 when it is above 0, and returns what it read; when that is above 0, `onPostPhysicsStep` calls the second
   exported function, `sleepTestGameThreadHitch(hitchMs)`, whose one statement is the unchanged sleep. The read, the reset
-  and the sleep run in their old order.
+  and the sleep run in their old order. The delay's variable sits beside it in the same `#if` and namespace, read by the
+  same accessor (P5-32), so the header and its call site did not change.
 * **Why the sleep is in the `.cpp` too.** Its argument is `static_cast<float>(hitchMs) / 1000.f`, and the engine sleeps
   `(uint32)(Seconds * 1000.0)` milliseconds. Compiled optimized in the template under `/fp:fast`, the division became a
   multiply by `0.001f`, one ulp off for most values, so the engine's truncation slept one millisecond more than before for
   about half of all values (250 itself was unchanged). In the `.cpp`'s unoptimized pair it is a division again, as it was
   in the owner (task 27a's notes, F1-b).
 * **Off the step path** (the initiative's review, finding m-10). The accessor is called once per frame on the game
-  thread, never from a step; in Shipping neither the variable nor the accessor exists, and the call is compiled out
-  with them.
+  thread, never from a step; in Shipping neither variable nor the accessor exists, and the call is compiled out
+  with them. The delay's elapsed-time comparison (doubles) is the only floating point P5-32 added; it sits in the `.cpp`'s
+  unoptimized pair and decides only when a test hitch fires.
 
 *Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §1 (the post-physics pass's row), §2 (the teardown), §16
 (the latency member's `end` and `tick_GameThread` call sites) and §18 (the backend seam's teardown and post-physics call
@@ -1226,8 +1282,9 @@ site (the task's notes show what it checked).
 5. The role: `worldIsAuthority` is the owner's net mode not being `NM_Client`, never the actor's `HasAuthority()` (§5).
 6. The latency member's `begin` (`UELatencyBudgetDiagnostics-rationale.md`): its probe and two mailboxes, and its
    post-tick-flush binding, all before stepping starts.
-7. `readSessionKnobs` (§9.8; since og-input-latency task P5-7 it also reads `SimTrafficImmediate`, and a nonzero value logs
-   its refusal here, §16.2), then the backend's `buildWorld` (the adapters, §3).
+7. `readSessionKnobs` (§9.8; from og-input-latency task P5-7 to P5-17 it also read `SimTrafficImmediate` and refused a nonzero
+   value here; since P5-17 the lanes read and decide it, and `beginServerSimNet` or `beginClientSimNet` logs a refusal, §18.1),
+   then the backend's `buildWorld` (the adapters, §3).
 8. The role branch.
    * **Authority:** registry slot 0 (a `checkf` if it is taken) (§9.2); the router logger lambda (`RouteOGMessage`); the
      integration layer; `Game::emplaceSystems` (`UESimulationSession-guards.md` G-01); the manager, without prediction; the
@@ -1684,7 +1741,9 @@ the walk reads the registered channels. The table above is P5-5's state.
 
 **No file but this header named the session's coordinator member since P5-5.** The Chaos host's test of it became
 `hasServerTierWiring()` and its reap `afterAuthorityBatch`. The tick-driver binding never named the member: it called
-`getReceptionCoordinator()`, which the component binding's RPC tail still calls (§9.7).
+`getReceptionCoordinator()`, which the component binding's RPC tail still called then (§9.7). Since og-input-latency
+task P5-7 the accessor returns og-sim-net's server's coordinator (§16), and since P5-8 deleted the RPC tail no file in this
+tree calls it.
 
 **The slot doors.** Both take the owner as an `AActor&` and the host's slot key (`TickDriverBackendUImpl::slotKeyOf`), which
 neither reads yet; the parameter is for the switch, which records the authority's slot in the session by that key and
@@ -1747,10 +1806,15 @@ factory (the brawler's `makeBrawlerSimNetLanes`), which makes `UESimNetLanes<Tra
   (`setOnRegisteredRemoved`), its stop handler, and `bindClientSession(*this)`, which binds the host, replays the latched
   floor and tier, and seeds the bindings from the roster mirror before any registration (`SimNetBindings-rationale.md` §6).
 - **The proof line**, once per session, from `logSimNetHostLine`:
-  `[Warning][SimNet.Host] role=<server|client> immediate=0 rttSource=EnginePing driver=<OGNet|detached> inbox=2048`.
-  `immediate=0` is the frame-locked mode; `rttSource=EnginePing` names WIRE's source (the connection's FNetPing, D13).
-- **`[OGNetcode] SimTrafficImmediate`** is read by `readSessionKnobs` on both roles, the game ini first, then the engine ini.
-  A nonzero value logs an `Error` (`immediate sim traffic needs Ph4's code`) and the session runs frame-locked anyway.
+  `[Warning][SimNet.Host] role=<server|client> immediate=<0|1> rttSource=EnginePing driver=<OGNet|detached> inbox=2048`.
+  `immediate=0` is the frame-locked mode (the only one until og-input-latency task P5-17, which made the digit the lanes'
+  decision, §18.1); `rttSource=EnginePing` is a fixed field that names WIRE's source (the connection's FNetPing, D13, which
+  the hosts read in `readRoundTripMs` and `readServerRoundTrip`, `UESimNetHost.h`). It is **not** the clock's RTT source:
+  that is `[OGNetcode] ClockRttSource` (§20), and the session reports it on its own line,
+  `[ClockSource.Config] clockRttSource=<Engine|SimClock> …`. Under `ClockRttSource=SimClock` the line still reads `EnginePing`
+  (og-input-latency task P3-10 part B F5).
+- **`[OGNetcode] SimTrafficImmediate`** was read by `readSessionKnobs` on both roles until P5-17, and a nonzero value logged an
+  `Error` and ran frame-locked. Since P5-17 the lanes read it and decide the mode at driver start (§18.1).
 - **The floor** is published through the server, `publishFloor`, at the end of `applySessionKnobs`, where the timing relay's
   write stood; the server sends it to every attached connection and to each one that attaches later.
 - **A detached session** is driven from `onPostPhysicsStep`: the lanes' `afterDispatch` and `onTickFlush`, after the clock's
@@ -1793,7 +1857,9 @@ the component.
 known: `Wait` (no roster entry yet: the hook answers `Retry`, inside the binding's 600 attempts), `Ready`, or, on a role
 mismatch, the `[Roster.BindMismatch]` line and a `checkf` (`Abandon` with checks off; P7's C-3). A detached client answers
 `Abandon` with one `Error`, so it does not wait into the 600-attempt `checkf` (Q1: no Fatal). The slot door answers from the
-roster entry: the game binding passes the pawn's storage key (its replicated sim id, 0 until that has arrived, which answers
+roster entry (since og-input-latency task P5-17 through the bindings' copy of it, `verdict(...).physicsSlot`, under their lock:
+the bindings hold every entry the mirror holds, fed by the same Add and Remove, so the answer is the same, and an immediate
+client's mirror is the step's to read, §18.3): the game binding passes the pawn's storage key (its replicated sim id, 0 until that has arrived, which answers
 "not yet" as the replicated slot property's absence did). At `Ready`, the channel is the client session's (`client.channel(simId)`); if the roster removed it between the
 gate and the bodies, the call stays `Pending`. A `checkf` compares the input provider's presence with the roster's local index,
 then the character registers, a local one gets the `Handed` callback, and the bindings mark the id registered.
@@ -1823,7 +1889,8 @@ the later `EndPlay` returns at its first statement (`⛔G-30`) and the line prin
 
 ### 16.6 Teardown
 
-`endPlay`, after the backend's `onEndPlayBegin` (`⛔G-20`): `detachFromSimNetLanes` (a server's frame functions unbound; a
+`endPlay`, after the backend's `onEndPlayBegin` (`⛔G-20`), and, on an immediate client, its teardown (§18.6):
+`detachFromSimNetLanes` (a server's frame functions unbound; a
 client's registered ids marked unregistered in the bindings, its Remove handler cleared and the client session unbound),
 then (`⛔G-21`) the server and its host reset, the two maps and the slot map cleared and the unregistered-id set cleared (since
 og-input-latency task P5-9; the session dies with the world, so the set held nothing a later call reads), then the tier
@@ -1842,3 +1909,475 @@ object only, never a `UObject`.
 - **The latched floor is applied as received** (`UESimNetHost-guards.md` G-05): it pays for an increase, as today's post-bind
   property arrival did, so the client's join keeps its `[RelayDelayFloor] floor = 6 ticks, UPWARD` stall line.
 - **The `[Roster.*]` lines** og-sim-net writes without a level token go out at `Warning` through the hosts (P5-4's F1).
+
+## §17 The display snapshot: what the game thread reads (og-input-latency task P5-16)
+
+The game thread draws the client's simulation from a snapshot, never from the storage, the input resolution or the
+reconciliation. The snapshot type is og-simulation's (`SimulationDisplaySnapshot-rationale.md`, in og-simulation's docs);
+this section is the session's half: where it is published, what the game thread keeps of it, and the doors that read it.
+
+### 17.1 The type and its sizes
+
+`DisplaySnapshot` is `SimulationDisplaySnapshotT<Simulatable, kMaxSimulatableSlots, kSessionDisplayWindowTicks,
+kSessionDisplayWindowTicks>`: one entry per stored simulatable, up to the body-slot capacity (`kMaxSimulatableSlots`,
+`BodySlotOccupancy.h`), with a capture window and an applied window of `kSessionDisplayWindowTicks` ticks each.
+`kSessionDisplayWindowTicks` is `kLocalInputCacheCapacityTicks`, the local input cache's capacity: the capture window can be
+no wider (the snapshot's own `static_assert`), and a game names its narrower poll windows itself. The session names no game
+constant, so a game asserts beside its reader that its windows fit (the brawler's input-history feed asserts its 64-tick
+capture poll and its 60-tick applied poll, `InputHistoryDisplay-rationale.md` §8.7 in OGBrawlerUnreal's docs).
+
+### 17.2 Publish: once per frame, after the step batch, on both roles
+
+`publishDisplaySnapshot_GameThread` runs in `onPostPhysicsStep` where the visualization refresh ran before (§10, step 6).
+A driver-scheduled backend calls `onPostPhysicsStep` once the frame's step tasks have completed (the tick driver's
+post-physics), so nothing steps while the fill reads the storage, the input resolution and the reconciliation. The brawler's
+Chaos backend, which this initiative neither builds nor runs, calls it from the engine's post-tick delegate while its physics
+thread may still step: the same unsynchronized read its visualization refresh made there before. The fill is og-simulation's `fillSimulationDisplaySnapshot`; the clock and the tier are
+read first:
+- **a predicting session** reads `readDisplayClock(getClientClock(), getNetworkEstimator())`, and, when the tier consumer
+  exists, `readDisplayTier(consumer, getTimeConfig(), the published effective delay)`; without a consumer the tier reading
+  stays default (no tier received);
+- **an authority** has no prediction clock (the manager's `getClientClock` terminates on one), so the session writes only the
+  simulation step: `predictionTick` and `stepDeltaSeconds` are the server clock's step, and every other clock field stays
+  zero. Every reader of those other fields is gated on `runsPrediction()` (the brawler's input-history lanes, its G-09 and
+  G-12), so the zeros are never shown.
+
+It returns at once while the manager does not exist. A `FreeRunning` authority (og-input-latency's authority loop) reaches
+`onPostPhysicsStep` on the frame thread while the runner steps, so this fill would read the storage across the runner. It
+never runs there: `onPostPhysicsStep` returns before it on the loop (§19.5), and the fill's first statement is a `checkf` that
+the loop is off (og-input-latency task P5-20, §21.4). The overlay below keeps the tick backend's `OG_CHECK`, which alone ran
+too late (after the fill, and only once an entry existed: P5-16's F6).
+
+**Heap.** The publisher's channel holds four snapshots, each up to `kMaxSimulatableSlots` entries with both relayed rings by
+value, so the session holds it through a `std::unique_ptr`, as it holds the game-thread copies below. The session object
+stays the size it was plus three pointers.
+
+### 17.3 The game-thread view: one snapshot held, its states copied and overlaid
+
+`refreshDisplayView_GameThread`, right after the publish, acquires the newest snapshot and then releases the one it held, if
+that is a different one: the channel marks a held snapshot with one bit, not a count, so releasing first and acquiring the
+same slot again would leave the reader on an unmarked slot. Acquiring first holds two for the instant between the calls,
+which is the reader's bound (`SimulationDisplayPublisher::kMaxHeldByReader`), and a publish never runs in that instant: both
+run on the game thread, in this order. Every reader in the frame shares the one held snapshot until the next pass.
+`endPlay` releases it.
+
+Then, for each entry, the session copies the entry's state into its own array of visualization states (index-aligned with
+the entries) and calls the backend's `overlayRenderPoses_GameThread(id, state)`. On a driver-scheduled backend that writes
+the presenter's rendered poses into every non-root body state (`TickDriverBackendUImpl-rationale.md`), exactly what the
+presenter wrote into the storage's visualization copy before; the brawler's Chaos backend writes nothing, as its refresh
+wrote only the plain copy. The snapshot itself stays as published: it is shared with the writer's channel, and the overlay is
+the game thread's.
+
+So the game thread now reads the state as of the end of the last step batch, plus this frame's poses. A reader that ran
+after a frame's steps but before its post-physics pass read the live caches before; it now reads them as of the previous
+pass, at most one step batch older (the task's DEV).
+
+### 17.4 The doors
+
+| door | answers from |
+|---|---|
+| `getDisplaySnapshot()` | the held snapshot, or a null pointer before the first publish |
+| `findDisplayEntry(id)` | the held snapshot's entry for `id`, or a null pointer |
+| `findDisplayVizState(id)` | the game-thread copy of that entry's state, with the poses overlaid |
+| `forEachDisplayVizState(f)` | `f(id, state)` for every entry, with the overlaid copies |
+| `getLastRelayedInput(id)` | the entry's last relayed input (none without an entry) |
+| `isLocallyControlledOnThisPeer(id)` | whether the entry has a local input cache (false without an entry) |
+| `getVizSlice<SliceT>(id)` | one slice of the overlaid copy (`⛔G-02`) |
+
+`getLastRelayedInput`, `isLocallyControlledOnThisPeer` and `getVizSlice` keep their names and signatures; only their source
+changed. `getLocalInputCache`, `getRelayedReadObservations`, `getRelayedInputArrivals`, `getStorage` and
+`editReconciliation` (both overloads) were deleted with their last game-thread callers: the entry carries the local
+captures, both relayed rings by value and the applied-capture window. `editStorage` stays for the brawler's Chaos backend,
+which steps on the physics thread. `getClientEffectiveInputDelayTicks` stays (the input resolution's atomic) but has no game
+caller since this task: the feed reads the published delay from the snapshot's tier reading.
+
+A game reads all of this through the doors, never the snapshot's channel: the session acquires and releases, so the hold
+bound is the session's to keep.
+
+## §18 Immediate mode on a client (og-input-latency task P5-17)
+
+With `[OGNetcode] SimTrafficImmediate=1` a client's og-sim-net session is drained on the step's thread at each step and sends
+its inputs at capture, and its registrations go through og-sim-net's lifecycle queue (`SimNetClient-rationale.md` §16–§18).
+The game's shipped `Config/DefaultEngine.ini` sets the knob to 1 since og-input-latency task P5-22 (after Ph4's gate), so a Jolt
+client is immediate by default. Frame-locked (the knob absent or 0, the default before P5-22) stays Chaos's mode and the
+attribution arm (design Q11), and is unchanged: every branch below tests `m_immediateClient`, which is false there.
+
+### 18.1 The mode and its lines
+
+- **Decided by the lanes**, at driver start (`UESimNetLanes-rationale.md` §11), because og-sim-net fixes the mode when the
+  transport is built. `beginClientSimNet` copies the lanes' `isImmediate()` into `m_immediateClient`, before any step runs and
+  never again, so the steps read a value nothing writes while they run.
+- **A refusal** (the server's lanes, a backend that does not step through the tick driver, `og.Sim.RunInline=1`, detached
+  lanes) is one Warning on `LogOGNet` from `logSimTrafficImmediateRefusal`, in `beginServerSimNet` or `beginClientSimNet`, naming
+  the knob's value and the reason. An absent or zero knob prints nothing. With the shipped knob (1, P5-22) the Warning is printed
+  on every session of a world where immediate cannot run: a Chaos client, a server without the authority loop (a listen server,
+  an in-editor PIE server), `og.Sim.RunInline=1`, detached lanes.
+- **The proof line** carries the mode: `[SimNet.Host] role=client immediate=1 …`; a server's is `immediate=1` exactly when its
+  authority loop runs (§19.1), else `immediate=0`.
+- **The lifecycle binding.** An immediate client binds og-sim-net's lifecycle queue to the session's storage, reconciliation,
+  input resolution and net sync (`bindLifecycle`) before `bindClientSession`, so before any registration. The server binds its
+  own in `beginServerSimNet`, after the server exists. A frame-locked server enqueues nothing, so the bind changes nothing there;
+  on the authority loop the server's `drain()` takes the lifecycle queue first (§19.3).
+
+### 18.2 The step hooks: the drain at the step's start, the send at capture
+
+An immediate, bound client's step reaches the session twice, on the step's thread. Both entries return at once on a
+frame-locked client, on the server and before the world session is bound (`boundImmediateClient_Step()`).
+
+**At the step's start, the drain.** The game binding's `receiveForStep` (og-simulation's `TickDriverReceiveGame` hook, called
+from each client step's `beforeTick`, before the resimulation check and the collect; `BrawlerTickDriverGameUImpl-rationale.md`
+§9) calls `receiveForClientStep_Step()`, which does, in this order:
+
+1. **The queued unregistrations** the game thread asked for (§18.5).
+2. **The drain**, `drainClient_Step()` (`UESimNetLanes-rationale.md` §11): the lifecycle queue's jobs first, then every record,
+   then the disconnect request and the window line.
+
+**After the capture, the send.** The game binding's `onStepStarted` (each step's `beforePhysics`, after `onGameSimulation`'s
+capture and before the physics step) calls `afterClientCapture_Step()` after its latency stamp:
+`afterCaptureTick_Step(m_netSync, currentIntegratedTick(), timeConfig)`: og-sim-net opens the input set, NetSync sends each
+local character's bundle for the tick the step just captured, and the set goes to the endpoint at once
+(`SimNetClient-rationale.md` §17). The tick is the one the frame-locked send read (`currentStep()`, which on this path names the
+same step). `onPostSimulationGameThread` returns at once on an immediate client: the game thread's send would fail the
+transport's input-set owner check (`SimNetTransport-guards.md` G-07).
+
+**What the drain feeds.** Everything it delivers reaches the step it runs in: the step's resimulation check sees a correction
+it delivered, and the step's clock advance and collect read the clock samples, relay rings and inputs it delivered. A
+character it registers is in storage for that step's integrate, and one it unregisters is gone before it. This is the
+frame-locked order per step: the frame-locked client drains at the frame's start, before the frame's first step, while the
+immediate client drains before every step, so a step batch of several steps sees each step's own arrivals.
+
+**Before og-input-latency task P5-30** the drain followed the send in `onStepStarted` (`onClientStepStarted_Step()`), after
+the step's collect, clock advance and resimulation check, so everything it delivered reached the next step: H6c rose by one
+tick and N6 rose too (P5-17's finding F2).
+
+### 18.3 What the game thread no longer reads directly
+
+The drain writes on the step's thread what it wrote on the game thread frame-locked. Each game-thread reader moved:
+
+| state | the game thread's reader | since P5-17 on an immediate client |
+|---|---|---|
+| the server connection's round trip | the drain's `serverRttSeconds` read it | published each frame by the lanes (`publishServerRtt_GameThread`), read from atomics (`UESimNetHost-rationale.md` §5) |
+| the WIRE sample | `onTimingInfoReceived`'s `noteWireSample` (a game-thread door) | `noteWireSample_Internal`, through the latency mailbox |
+| the drain's latency stamps | the host's `stamp`, `stampAt`, `stampCorrectionReceived` | `stampClientReceived_Internal` (`UELatencyBudgetDiagnostics-rationale.md` §13) |
+| the tier receipt's display state | `publishDisplaySnapshot_GameThread`'s `readDisplayTier` over the tier consumer and the time config | `recomputeAndPublishEffectiveInputDelay` writes the same `DisplayTierReading` into a `TripleBuffer` (og-sim `Mailbox.h`) after each recompute; the publish reads the newest |
+| the roster bindings | `clientBindStep`, `tryRegister`, `forgetSimNetCharacter` | the same calls, through the bindings' lock (`UESimNetHost-rationale.md` §12) |
+| the roster mirror | `physicsSlotFor` | the bindings' copy of the entry, under the lock |
+
+- **The display tier.** The recompute runs at every tier and floor receipt and at the tier consumer's start, so the buffer holds
+  what the frame-locked read would have computed at that moment: the effective delay it reads is the value the recompute just
+  published, and the client's floor is only written right before a recompute. A frame-locked client writes the buffer too and
+  never reads it. Until the first recompute the snapshot's tier fields keep their defaults, as with no tier consumer.
+- **`bindClientSession`'s seed** (`seedFrom(roster())`) still reads the mirror on the game thread. It runs in `beginClientSimNet`,
+  before the backend starts stepping, while the game thread is the lanes' drain (`UESimNetLanes-rationale.md` §11), so it reads
+  the mirror on its writer's thread.
+- **The session-setup writers** of the state the drain and the send read (the tier consumer's start, `applySessionKnobs`'s
+  floor on the server, `applyLatencyKnobs`' `setRedundancyFrames` and `setRelayResendEntries`, the resim policy) all run in
+  `beginPlay` before `startStepping`, so before the first step and its drain. The backend's task dispatch orders them. A knob
+  changed at run time while steps run would be a plain race; nothing in the tree does that.
+
+### 18.4 Registration through the lifecycle queue
+
+`tryRegister`'s client branch, on an immediate client, goes to `tryRegisterQueued` after the bodies exist and are resolvable:
+
+1. **The gate** is the bindings' verdict, asked and marked in one hold (`markRegisteredIfReady`): `Wait` stays `Pending`, a role
+   mismatch is the frame-locked `checkf`, `Ready` marks the id registered. The client session's channel map is the drain's, so
+   the gate does not read it (the frame-locked branch still does).
+2. **The enqueue**: `registerCharacter(simId, simulatable, provider, applied)` with the latency-wrapped provider. The record keeps
+   no simulatable after this (`queued`), and every later call goes to `finishQueuedRegistration` first.
+3. **The apply**, on the drain's thread: og-sim-net registers the character with its channel as the owner, then calls `applied`
+   (`onQueuedRegisterApplied_Step`), which sets a local character's `Handed` callback (posting through the mailbox), notifies the
+   systems executor (`⛔G-32`), and posts `RegisterApplied` to the game thread. A refusal (`noChannel`, `registered`) posts
+   `RegisterRefused`.
+4. **The finish**, on the game thread, at the binding's next attempt: `collectLifecycleOutcomes_GameThread` reads the posted
+   outcomes (under a mutex; the session also collects them once a frame, in `onPostPhysicsStep`). On `RegisterApplied`, the
+   frame-locked branch's host work: the registered-component map, the `tryRegister: registered` line, the game's `afterRegistered`
+   and the backend's `onRegistered_GameThread`, then `Ready`. On a refusal, or a roster Remove before the finish, the bindings are
+   marked unregistered, an `Error` names the id, and `Refused` (the simulatable died in the job; the pawn's `EndPlay` releases its
+   bodies).
+
+**The order, against frame-locked.** The executor's notify runs before the game's `afterRegistered`, on the step, right after the
+character entered storage (G-25's condition, in storage and before `Ready`, holds). The channel map (`m_simChannelsById`) is not
+written: the game thread never touches an immediate client's channel. A local character's input sample is published from the
+frame after `Ready` (`sampleInput` walks the registered map), so its first one or two steps after the apply read the neutral
+input; a frame-locked character's first step after `Ready` already had a sample.
+
+### 18.5 Unregistration
+
+- **The pawn's `EndPlay`** (`unregisterFromNewFramework`, after `⛔G-30`) calls `requestQueuedUnregister_GameThread`. An id that
+  never reached the queue (no queued record, not registered) runs the frame-locked host work at once, bodies included
+  (`unregisterCharacterHostOnly`); nothing of it is in og-sim. Otherwise the game thread erases the pending record, posts the id to
+  the step, holds the component (`TStrongObjectPtr`) and runs the host work except the bodies' release (`⛔G-33`): the maps and
+  the bindings (`forgetSimNetCharacter`), the game's `onUnregistered`, the latency forget and the `NewFramework: unregistered`
+  line.
+- **The step** takes the posted ids at its start, before its drain (`applyUnregisterRequests_Step`, in
+  `receiveForClientStep_Step`): for each it notifies the systems executor while the character is still in storage (`⛔G-31`, the queue's form of `⛔G-26`) and enqueues `unregisterCharacter`, which the
+  same step's drain applies at its top. `applied` clears the channel's `Handed` callback and posts `UnregisterApplied`; the game
+  thread then runs the backend's `onUnregistered_GameThread` on the held component and lets it go. The bodies are released only
+  after the character has left storage, so no step integrates a character whose bodies are unbound.
+- **A queued registration not yet applied** is unregistered by the same request: the queue is FIFO, the register applies, and its
+  `applied` sees the pending unregister and does not notify the executor, so the executor never holds the character.
+- **A roster Remove** of a registered id: og-sim-net unregisters a queue-registered character inside the drain before it calls
+  the host (`SimNetClient-guards.md` G-12), and the host's handler reaches `onSimNetRegisteredRemoved` on the step, which posts
+  `RosterRemoved`. The game thread runs the host work with the release and records the id (`⛔G-30`), as frame-locked. If the
+  pawn's request is already pending, its own completion does the release; if the registration has not finished, it ends
+  `Refused`. **Known gap:** og-sim-net calls no host hook before its own unregister, so the systems executor is not notified for a
+  character removed this way, and a system that keeps a pointer into storage (the brawler's hit routing) keeps it past the
+  character's removal (the task's notes, finding F1).
+
+### 18.6 Teardown
+
+`teardownImmediateClient_GameThread` runs once, from whichever comes first: the lanes' stop handler (`onSimNetLanesStopping`,
+before its own loop, which then finds nothing registered) or `endPlay` (after `onEndPlayBegin`, before `detachFromSimNetLanes`).
+
+1. **The steps stop first** (`⛔G-34`): `m_physicsBackend.onEndPlayBegin()` stops the tick driver and waits for its step tasks;
+   it is idempotent, so `endPlay`'s own call after it does nothing. From here the game thread is the only thread that touches the
+   simulation.
+2. **Everything queued or registered is unregistered through the queue**: the posted requests, every queued record and every
+   registered character, each with its executor notify; then one game-thread drain (`drainClientWhileStopped_GameThread`) applies
+   them. So og-sim-net's client holds no registered character and no pending job that points into this session's storage, and
+   the session can die before the lanes (review_P2-17 N2).
+3. **The game thread finishes**: the outcomes are collected, every held component's bodies released, every registered
+   character's host work run with its id recorded (`⛔G-30`: the pawn's later `EndPlay` returns at once), and the queued records
+   erased with their bindings unmarked. The session's later registrations stay `Pending` (`m_immediateStepsStopped`).
+
+### 18.7 What frame-locked keeps
+
+On a frame-locked client the only differences are the lock around the bindings, the display tier's unread buffer, and
+`physicsSlotFor` reading the bindings' copy of the roster entry; the start-up lines are the same, `immediate=0` included.
+
+## §19 The authority loop: the server on its runner (og-input-latency task P5-19)
+
+With `og.Sim.AuthorityLoop=1` (the default since og-input-latency task P5-22) on a Jolt dedicated server the authority steps on
+its own thread, `OGSimAuthority`, which also services og-net's server endpoint (P11, design K14; `UEAuthorityRunner-rationale.md`
+§1 has the defaults). Every branch below tests `m_authorityLoop`, which is false on every other world, so the inline server (the
+knob 0, the attribution arm), every client and Chaos are unchanged.
+
+### 19.1 The decision
+
+- **The lanes decide**, at the driver's `InitBase` (`UESimNetLanes-rationale.md` §12): og-net fixes the servicing thread at its
+  first service, before any world exists. `beginPlay` copies the answer (`decideAuthorityLoop`, before the world build, only when
+  the engine has a world host): the server's lanes' `authorityLoop()`. A detached world (no og-net driver) has no lanes; with the
+  knob set it logs `[SimHost.Runner] og.Sim.AuthorityLoop=<n> refused: this world has no og-net sim lanes (detached); …` at
+  Warning and steps inline. Chaos and listen servers are refused by the lanes (their Warning), so the session never sees the loop
+  there.
+- **Proof lines** with the loop on: `[OGNet.Driver] start … mode=hostServiced` (the driver), `[SimHost.Runner] priority=AboveNormal
+  nice=… highResWait=…` and `[SimHost.Runner] startLatch waitMs=…` (the runner), `[SimHost.Mode] role=Authority stepping=runner
+  viz=none` and `[SimHost.Frame] role=Authority stepping=runner …` (og-simulation), `[SimNet.Host] role=server immediate=1 …`.
+
+### 19.2 Start: the session is configured on the runner
+
+`beginPlay` keeps its order; only the thread changes. Its configuration, everything from the role branch (manager, systems,
+og-sim-net server, knobs, tier consumer, loggers) to the `[SimHost.Backend]` line, is the lambda `configureSession`. Inline,
+`beginPlay` calls it between `buildWorld` and `startStepping`, as before. On the loop it is the runner's `afterBuild`
+(`TickDriverBackendUImpl-rationale.md` §15): the game thread imports the statics, starts the runner and waits on its latch; the
+runner builds the world (the adapters exist only after that), runs `configureSession`, builds the driver and releases the latch.
+The game thread is parked for all of it, so the configuration's writes race nothing, and the latch orders them before every
+later game-thread read. Nothing in the configuration needs the game thread: it reads no console variable (`readSessionKnobs` ran
+before) and touches no `UObject` but the world's driver, which it only reads.
+
+### 19.3 og-sim-net on the runner
+
+- **Immediate, and no frame points.** The lanes build an immediate transport for the loop, so og-sim-net's server is immediate
+  (a `checkf` in `beginServerSimNet` compares the two). The session binds no frame points (og-sim-net refuses `dispatchFrame` and
+  `flushFrame` of an immediate session); it binds the runner's two lanes functions instead (`bindAuthorityRunner`: the RTT publish
+  and the join, `UESimNetLanes-rationale.md` §12).
+- **The game binding's hooks** (`BrawlerTickDriverGameUImpl-rationale.md` §10):
+  - `idleUntil(deadline)` is og-sim-net's `SimNetIdle` over the lanes' endpoint (`m_simNetIdle`), one `serviceUntil` per call:
+    og-net's handlers, the SimClock answer and the relay at receipt run there, on the runner (P2-19);
+  - `beforePump` runs the runner requests (§19.4), then the server's `drain()` (the lifecycle queue first, then the inbox);
+  - `afterInlineBatch` writes the batch's corrections (`SimulationManager::onPostSimulationGameThread`, which on an authority
+    only calls `sendCorrectionAll`), publishes the clock with the server tick, and calls og-sim-net's `afterInlineBatch` with the
+    tick the driver passes (the corrections, the clock, the reap, the window; P2-19 F1);
+  - `onStepEnded` publishes the server tick to the SimClock server after every authority step (`afterStep_Step`), on the loop and
+    inline alike (P2-20 F2).
+- **The first batch reports tick 0** (the driver publishes its offset after a tick ran, P2-19 F2), and a capture reaped against
+  it would be refused by the coordinator's domain gate. On the loop it cannot happen: og-net is serviced only by the runner's
+  idle, after its first batch, so no connection is attached at that batch. A `checkf` in `afterAuthorityBatch` states it.
+- **The host off the game thread.** og-sim-net calls the server host from the runner: its `rttMs` reads the RTT table the game
+  thread fills each frame, and its probe stamps go through the latency mailbox (`UESimNetLanes-rationale.md` §12; §21.5).
+- **The frame probes on the runner** (PROBE A per stepping wake, PROBE 6 retired) are §21.1 and §21.2.
+
+### 19.4 Registration and unregistration on the runner
+
+The tick backend refuses binds, releases and registrations off the runner in `FreeRunning`, and the Jolt world checks its caller,
+so on the loop a server character's registration crosses to the runner. The game thread keeps every `UObject` read and the game's
+hooks; the runner does every simulation and world write. Requests travel in `m_runnerRequests` (closures under
+`m_lifecycleBridgeMutex`), drained at the top of `beforePump`; outcomes come back as `LifecycleOutcome`s, collected on the game
+thread in `onPostPhysicsStep` and at each `tryRegister` call.
+
+`tryRegisterOnRunner`, one step per call (the component calls `tryRegister` each frame until it is not `Pending`):
+1. **Bodies.** The simulatable moves into a shared pointer (the runner's requests hold it, so a pawn that leaves cannot free it
+   under them). `makeBodyRequest_GameThread` captures the slot request; the runner's request binds the bodies
+   (`createBodies_Runner`) and answers `BodiesBound` with the slot, or `BodiesPending` (no slot yet: the game thread asks again).
+   The component's static data is read by pointer, and the component is held by `m_componentsHeldForRunner` until that answer
+   arrives (the static data is not copyable).
+2. **After the bodies,** on the game thread: the slot is recorded (`recordAuthoritativeSlot`), the fold check runs, and the game's
+   `afterBodiesCreated`, as inline.
+3. **Register.** The game thread reads the roster facts from the pawn (owner connection, local index, name); the runner's request
+   checks that the bodies resolve (`bodiesResolvable_Runner`; `BodiesUnresolvable` makes the game thread ask again) and enqueues
+   `SimNetServer::registerCharacter`, which the server's drain right after applies (`addCharacter`, then the facade with the
+   channel as both owners). Its `applied` callback (`onRunnerRegisterApplied_Runner`) notifies the executor and records the id
+   (G-36), and the tick backend's `onRegistered` (the occupancy push and the presenter's ring); on a refusal it releases the bodies.
+4. **Finish,** on the game thread at the next call after `RegisterApplied`: the component map, the `tryRegister: registered` line,
+   the game's `afterRegistered`, the render target. A refusal logs the same Error as inline and returns `Refused`.
+
+`requestRunnerUnregister_GameThread` (the pawn's `EndPlay`, and the lanes' stop for every registered character): the game thread
+does the host's half at once (the maps, the game's `onUnregistered`, the latency forget, the render target, the
+`NewFramework: unregistered` line); when bodies may be held it posts a runner request that unregisters through og-sim-net's queue
+once a registration was posted (G-37) and releases the bodies in its `applied` callback. og-sim-net calls the host's
+`onLifecycleUnregistering` before the facade, which the session answers with the executor's notify while the character is in
+storage (G-35; the same answer serves an immediate client's roster Removes, og-input-latency P5-17's F1). After the runner has
+stopped nothing is posted: the simulation and its world are destroyed whole.
+
+### 19.5 The game thread on the loop
+
+`onPostPhysicsStep` (the frame thread's `endFrame` in `FreeRunning`) runs the test hitch, the presenter (`present` drains the
+tick backend's registration ring J9, then the snapshot), the outcomes, the authority presentation (§21.3) and the latency
+probe's tick, and returns. It does not run the correction write or the clock publish (both on the runner, §19.3), the
+display-snapshot publish and refresh (they read storage, and the overlay is refused in `FreeRunning`: §17.2, §21.4), or the
+game's `afterVisualization` (the brawler's ring-out score push reads the score system the runner writes; on the loop the push
+reads the authority presentation snapshot instead, §21.3). The 200 ms test hitch therefore stalls only the game thread: the
+runner keeps stepping (the gate's hitch arm, which delays the hitch into steady state with
+`og.Sim.TestGameThreadHitchAfterSeconds`, §10).
+
+### 19.6 Stop
+
+- **`endPlay`:** `onEndPlayBegin` unregisters the tick functions, joins the runner and stops the driver
+  (`TickDriverBackendUImpl-rationale.md` §15); `m_runnerStopped` is set; the rest is as before, with the idle and the clock-server
+  pointer cleared before og-sim-net's server.
+- **The driver first** (a map load destroys the net driver before the world's `EndPlay`): the lanes' `beforeStop` joins the runner
+  first (`UESimNetLanes-guards.md` G-03, the session's `onAuthorityRunnerJoined_GameThread`), then calls the stop handler, which
+  unregisters every character host-side (§19.4: nothing is posted once the runner stopped) and releases og-sim-net's server.
+- A pawn whose `EndPlay` comes after either is unregistered host-side only.
+
+## §20 The clock's RTT source: SimClock samples, the knob, the shadow line (og-input-latency task P3-10)
+
+- **Two feeds, one estimator, one thread.** The engine's round trip arrives in `onTimingInfoReceived` (once per drain that
+  delivers a clock tick, §9.6) and goes to `NetworkTimeEstimator::noteEngineRttSample`. A SimClock sample arrives in
+  `onSimClockSample`, from the client host's `onClockSample` (`UESimNetLanes-rationale.md` §13); it is copied field by field
+  into og-simulation's `SimClockRttSample` (og-simulation names no og-sim-net type) and goes to `noteSimClockSample`. Both run on
+  the client session's drain thread, the estimator's writer: the game thread frame-locked, the step's thread immediate. Which
+  feed moves the estimate is the estimator's rule (og-simulation `TimeConfig-rationale.md` §15): the engine until the first valid
+  SimClock sample under `ClockRttSource=SimClock`, which switches it once without a reset, and the SimClock after that.
+- **The knob.** `[OGNetcode] ClockRttSource=Engine|SimClock` (case-insensitive, surrounding blanks trimmed), read by
+  `readSessionKnobs` on both roles, as `RecentreSettleSamples` is (§9.8): it acts only on a predicting client, which reads its
+  own ini. `applyClockRttSource` runs at the end of `applyLatencyKnobs` and calls `SimulationManager::setClockRttSource`. An
+  unrecognised value is reported (`[ClockSource.Config] ini [OGNetcode] ClockRttSource='…' unrecognised (expected Engine or
+  SimClock), keeping the compiled default`) and the compiled default kept, never read as either value. The proof line,
+  `[ClockSource.Config] clockRttSource=<Engine|SimClock> (<ini|compiled>) jitterMultiplier engine=<m> simClock=<m> (<ini|compiled>)`
+  (the `jitterMultiplier` field since og-input-latency task P3-13, below), is unconditional, at `Warning`, read back from
+  `TimeConfig`, once per session on every peer. The setter runs before any sample can reach the estimator: `configureSession`
+  runs before `startStepping`, so an immediate client's step drain has not started, and a frame-locked client drains on the
+  game thread that runs it (the setter's one-shot rule, og-simulation `SimulationManager-rationale.md` §16).
+- **The jitter knob** (og-input-latency task P3-13). `[OGNetcode] JitterMultiplier=<number>`, read by `readSessionKnobs` on
+  both roles (`GConfig->GetDouble`, the game ini first, as every knob here) and applied in `applyLatencyKnobs` after
+  `RecentreSettleSamples`, before `applyClockRttSource`. One value sets **both** sources' multipliers through
+  `SimulationManager::setJitterMultiplier`: `TimeConfig::jitterMultiplier` (the engine ping's) and `simClockJitterMultiplier`
+  (the SimClock's), whose compiled defaults differ (og-simulation `TimeConfig-rationale.md` §17). The key exists so the
+  multiplier's measured choice ran every value on one binary. A value that is not a finite number is reported
+  (`[ClockSource.Config] ini [OGNetcode] JitterMultiplier is not a finite number, keeping the compiled defaults`) and both
+  compiled defaults kept; one outside `clockJitter::clampJitterMultiplier`'s 0 to 4 is reported as `… out of range, clamped
+  to …` and clamped. The result is printed on the `[ClockSource.Config]` line rather than a line of its own, so no new tag
+  joins the start-up lines; its trailing token is `ini` only when the key was applied. The setter runs where
+  `setClockRttSource` runs, before `startStepping`, so before the clock reads the offset (the setter's one-shot rule,
+  og-simulation `SimulationManager-rationale.md` §17).
+- **The shadow line**, `[ClockSource.Window]` on `LogOGNet` at `Warning`, once per 10 s of `FPlatformTime`
+  (og-sim-net's `kSimNetWindowSeconds`), checked from either feed on the drain's thread, on a predicting client only; the first
+  call starts the window, so a client that receives neither feed logs nothing. Its fields:
+  - `source=` the estimator's active source (`getActiveRttSource`);
+  - `engineRttMs=` the session's own EMA of the engine readings above 0, at `rttSmoothingAlpha` and with no plausibility gate.
+    While the engine is the active source this is the estimator's arithmetic without its gate; after the switch the estimator
+    drops engine readings, so this is the only engine figure left to compare against. `-1.000` before the first reading above
+    0 (the engine ping reads 0 for its first second, og-input-latency task P5-28);
+  - `simClockRttMs=` the estimator's shadow EMA of the SimClock RTT (no gate); `-1.000` before the first sample;
+  - `ackSrttMs=` og-net's smoothed ack round trip to the server, published by the lanes each frame (`UESimNetLanes-rationale.md`
+    §13); a cross-check only: og-net's ack RTT includes the peer's ack delay. `-1.000` without a reading;
+  - `minRttOffsetUs=` the offset of the minimum-RTT sample among the last 8 (NTP's clock filter): the server clock minus the
+    client clock, which on a link with unequal one-way delays is off by half their difference, `(up − down) / 2`
+    (`SimNetClock-rationale.md` §1);
+  - `owdVarUs=<up>/<down>` the RFC 3550 interarrival jitter of `t1 − t0` (up) and `t3 − t2` (down), microseconds;
+  - `smoothedRttMs=` the estimator's estimate, from the active source, through its gate;
+  - `samples=` and `invalid=` the estimator's SimClock sample counts, and `pings=` and `pongs=` the clock client's, all
+    cumulative.
+- **Reading it.** SimClock leaves out the server's frame turnaround that the engine's ack round trip carries (og-input-latency
+  task P5-27), so on one link `simClockRttMs` is expected at or below `engineRttMs` by about one server frame. That comparison is
+  what the switch's flip rests on (og-simulation `TimeConfig-rationale.md` §15).
+
+## §21 The game-thread paths off the authority (og-input-latency task P5-20)
+
+With `og.Sim.AuthorityLoop=1` (§19) the game thread of a dedicated server touches no simulation state: every read of storage,
+the systems, og-sim-net's channels or the probe's step-side state is on the runner, and what the game thread needs it reads
+from a copy the runner publishes. The P11-6 entry checks (the Jolt world's caller check) and the `checkf`s below hold that
+over a session. Every branch tests `m_authorityLoop`, so with the loop off every line and path is as before.
+
+### 21.1 PROBE A per stepping wake
+
+On the loop the tick driver calls `onFrameStepsDue` once per stepping wake, on the runner (P11 design §7). PROBE A's
+"frame" is then a wake: `noteFrame` takes `++m_authorityWakes_Runner` (a runner-only counter) instead of `GFrameCounter`, which
+is the game thread's frame count and has no meaning on the runner. Every sample is one wake after the last, so the cadence line
+reads `dFrame0=0 dFrameGt1=0`, `meanTicksPerFrameX100` and the percentiles are sim ticks per stepping wake, and `meanFrameUs` is
+the mean wall time between stepping wakes. The line keeps its text, `[RelayProbe.Frame] role=Server`; the server's
+`[SimHost.Mode] … stepping=runner` line tells the two readings apart.
+
+### 21.2 PROBE 6 retired on the loop
+
+PROBE 6 (`[RelayProbe.Budget]`, `[PacketBudget]`) reads the `UNetDriver`'s client connections, which are game-thread state.
+`onFrameStepsDue` returns
+before it while the loop runs, and its first statement after that return is a `checkf(IsInGameThread())`, so a PROBE 6 that
+ran on the runner (the return deleted) fails at its first wake instead of racing the driver. Inline Jolt and Chaos call
+`onFrameStepsDue` on the game thread (the tick-driver binding at `TG_StartPhysics`, the Chaos host's `InjectInputs_External`),
+so the check holds there and PROBE 6 is unchanged.
+
+### 21.3 The authority presentation snapshot (the ring-out score)
+
+The brawler's ring-out score is sim-derived presentation that only the authority computes (P7 design D2): its score system is
+authority-only, and the replicated score property is the scoreboard's source. Inline, `Game::afterVisualization` reads the
+score system on the game thread after the frame's steps (§10). On the loop the runner writes it, so:
+
+- **The snapshot.** `AuthorityPresentation` is `entryCount` and up to `kMaxSimulatableSlots` entries, each a sim id and the
+  game's `AuthorityPresentationSlice` (a game type; the brawler's is its score and whether the score system holds an entry,
+  `BrawlerSessionGameUImpl-rationale.md` §8 in OGBrawlerUnreal's docs). It travels in a `TripleBuffer` (og-sim's
+  `Mailbox.h`, one writer and one reader), held through a `std::unique_ptr` like the display tier's.
+- **The runner fills it** in `publishAuthorityPresentation_Runner`, the last statement of `afterAuthorityBatch` on the loop:
+  one entry per simulatable in storage, from the game's `authorityPresentationSlice_Step(systems, id)`, then `publish()`.
+- **The game thread applies it** in `presentAuthority_GameThread`, from `onPostPhysicsStep`'s loop branch before the latency
+  tick (where `afterVisualization` sits inline): the newest snapshot, one `Game::presentAuthoritySlice(session, id, slice)` per
+  entry. The brawler's finds the registered component for the id and writes the score property, so clients see the score
+  through the same `OnRep` as inline.
+- **The two hooks are checked** by a `static_assert` in `publishAuthorityPresentation_Runner` and are in the name-clash probe
+  (`ueSimulationSessionHookNames`, §12).
+- **Why not the display snapshot.** The display snapshot (§17) is og-sim's, per entry the simulatable's state; the score lives
+  in the systems executor, which og-sim's snapshot does not read, and a loop-on server publishes no display snapshot (§21.4).
+
+### 21.4 The dedicated server's visualization gate
+
+A free-running authority has no game-thread viz world (`viz=none`), and the tick backend refuses `registerVizVolume`,
+`editVizQuery`, `getVizReader` and `overlayRenderPoses` (`TickDriverBackendUImpl-rationale.md` §15). The session answers the
+question for every caller: `hasGameThreadVizWorld()`, public, is `!m_authorityLoop`. The character component asks it before it
+registers its viz volume and before it draws (`OGBrawlerSimulatableComponent-rationale.md` §24, in OGBrawlerUnreal's docs).
+The session itself publishes no display snapshot on the loop (§19.5), and `publishDisplaySnapshot_GameThread` opens with a
+`checkf` that the loop is off: the fill reads storage, the reconciliation and the input resolution, all the runner's. So every
+reader of the display snapshot (the component, the input-history feed, the scoreboard) sees none on a loop-on server.
+
+### 21.5 The probe stamps through the mailbox
+
+The latency probe's state is the game thread's; the step thread posts events through its mailbox (`UELatencyBudgetDiagnostics-
+rationale.md` §6). On the loop the server's three game-thread stamp sites are the runner's, each with a mailbox door
+(`UELatencyBudgetDiagnostics-rationale.md` §14):
+
+- og-sim-net's `stampServerReceived` and `stampHanded`, which the lanes' server host forwards (`UESimNetLanes-rationale.md` §12);
+- the corrections' `Handed`, which `tick_GameThread` stamps inline by walking `forEachAuthorityCorrectionTick`. That walk reads
+  the session's channel map (the game thread's) and each channel's correction buffer (the runner's), so on the loop the game
+  thread skips it, and the runner's `stampCorrectionsHanded_Runner`, after og-sim-net's `afterInlineBatch` has flushed the
+  batch's corrections, reads each simulatable's channel from og-sim-net itself (`SimNetServer::channel`) and posts the tick it
+  carries. Both walks read the tick with `correctionTickOf(channel)`.
+
+The per-connection round trip comes the other way, from the game thread to the runner, through the lanes' RTT table, which the
+game thread fills each frame (`UESimNetLanes-rationale.md` §12).
+
+### 21.6 What the game thread still does on the loop
+
+`onPostPhysicsStep`: the test hitch, the presenter's `present` (J9's registrations, then the render snapshot), the lifecycle
+outcomes (§19.4), the authority presentation (§21.3) and the latency tick, whose server part on the loop is the mailbox drain,
+the pending stamps and the window lines. The lanes' `afterDispatch` publishes the RTT table. Registration's game-thread half
+reads only `UObject`s and the session's own maps (§19.4).

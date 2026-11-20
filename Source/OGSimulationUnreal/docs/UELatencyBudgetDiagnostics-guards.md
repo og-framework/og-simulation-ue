@@ -75,12 +75,17 @@ duplicate in `[LatencyBudget.Window]`.
 tag).
 
 **The prohibition.** ⛔ Do not erase, clear or otherwise touch `m_seenReads_Physics` here, or anywhere else on the
-game thread, however natural it looks beside the erase above it.
+game thread, however natural it looks beside the erase above it. The same holds for `m_lastHandedCorrectionTick_Runner`
+(og-input-latency task P5-20): it is the authority runner's twin of the erased map above, and the erase must not be
+copied to it.
 
 **The consequence.** `forgetCharacter` runs on the game thread. `m_seenReads_Physics` is read and written only by
 `postRelayedReads_Internal`, on the step's thread, with no lock and no mailbox. An erase here races a client step
 that is inserting into or iterating the same `std::unordered_map`: a crash on a rehash, not a wrong number. The
-map's size is bounded on the step's thread instead (rationale §11).
+map's size is bounded on the step's thread instead (rationale §11). `m_lastHandedCorrectionTick_Runner` is read and
+written only by `stampCorrectionHanded_Internal`, on the authority runner, so an erase here races the runner the same
+way; it holds at most one entry per sim id (1..255), and a stale entry costs at most one `Handed` stamp for a new
+character that reuses the id and whose first correction carries the remembered tick (rationale §14).
 
 **What breaks if the tag moves.** Nothing mechanical; the threads table is rationale §6.
 

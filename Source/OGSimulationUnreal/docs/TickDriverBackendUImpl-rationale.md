@@ -90,7 +90,7 @@ and the UImpl lost its last `OG_PHYSICS_BACKEND_CHAOS`.
   latency diagnostics call it, `DiagnosticsConventions.md` §1). The others call the
   functions that held the Jolt arms before (`startStepping` calls `startDriverStepping`; since og-tickdriver task 9
   `beforePresent_GameThread` and `updateVisualization_GameThread` call og-simulation's presenter's two game-thread
-  doors, §5; since og-tickdriver task 10 `buildWorld` imports the statics and calls the world host's `build`, and the
+  doors, §5, the second replaced by `overlayRenderPoses_GameThread` in og-input-latency task P5-16; since og-tickdriver task 10 `buildWorld` imports the statics and calls the world host's `build`, and the
   three visualization doors forward to the world host's, §3), or are the old arms themselves (`onEndPlayBegin`,
   `createBodies_GameThread`, `onRegistered_GameThread`, `onUnregistered_GameThread`).
 * **The header has no `#if`.** Only `PhysicsBackendHostUImpl.h` includes it, in the Jolt configuration. Since
@@ -227,7 +227,7 @@ client on a worker task.
 **One frame on a worker client**, in order:
 
 1. `TG_StartPhysics`, game thread: pump the scheduler with the world's delta time. When steps are due,
-   call `onFrameStepsDue_GameThread` with the frame's first upcoming tick (the dispatch counter plus the
+   call `onFrameStepsDue_Step` with the frame's first upcoming tick (the dispatch counter plus the
    offset the step publishes, J3) and dispatch one task with the batch (J4), chained after the previous
    frame's.
 2. The task, for each step: take the world mutex (J2) and run the driver's `runTick`. `beforeTick` drains
@@ -235,7 +235,8 @@ client on a worker task.
    (J7), then takes the latency start time; after the step,
    `afterTick` stamps the step end, publishes the render snapshot (J5), hands the saved state slot to the
    shadow world, and publishes the tick offset (J3).
-3. `TG_EndPhysics`, game thread: wait for earlier frames' task, then the session's `onPostPhysicsStep` (the owner's
+3. `TG_EndPhysics`, game thread: wait for earlier frames' task (on an immediate client also for this frame's when
+   it holds one step, §16), then the session's `onPostPhysicsStep` (the owner's
    `OnPostPhysicsStep` until og-ue-simulationcomponentandmanagersplit task 27a), whose
    first backend call is `beforePresent_GameThread`: restore the
    shadow world from the newest slot, blend the render pose two steps behind the host time, add what
@@ -442,7 +443,9 @@ og-simulation-jolt's `JoltTickWorldHost`, held in `m_physicsBackendWorlds` (§1,
   read. Task 8 had made the same call from this class's stepping-mode decision; task 10 moved it into `build`.
 * **`startDriverStepping`**, at the end of `BeginPlay` (design §9.1 steps 7–9), through the seam's `startStepping`
   (where the Chaos configuration registers its callback): it reads `og.Sim.MaxCatchUpSteps` once and calls the tick
-  backend's `start` with `dt`, the role and that cap (§11). `start` hands the world host the manager as the contact
+  backend's `start` with `dt`, the role, that cap and the frame wait: `ThisFramesSingleStep` on an immediate client,
+  `EarlierFrames` otherwise (§16). A `checkf` first refuses a client whose og-sim-net lanes are not bound yet, since
+  the lanes decide whether it is immediate (§11). `start` hands the world host the manager as the contact
   records' tick source (`bindIntegratedTickSource`, §9), builds the presenter (§5) with the role, `dt` and the world
   host's root declaration index, then the driver with `dt`, the role, the threading (`Inline` when the world host's
   context steps inline, else `FrameBounded`) and the cap (the driver's constructor builds the hooks and the step
@@ -538,9 +541,14 @@ and condition below is the presenter's transcription of this class's old code. T
   for the brawler ("Why it is not cosmetic" below).
 * **The two game-thread doors.** `beforePresent_GameThread` calls the tick backend's `present` with the controls and
   the table, and `present` calls the presenter's `present_GameThread` with the tick driver as the clock, the controls,
-  the table and the world host (`host` in `m_physicsBackendWorlds`); `updateVisualization_GameThread` calls the tick
-  backend's `updateVisualization`, which calls the presenter's `updateVisualization_GameThread` with the game
-  binding's storage, the owner's.
+  the table and the world host (`host` in `m_physicsBackendWorlds`); `overlayRenderPoses_GameThread(id, vizState)`
+  calls the tick backend's `overlayRenderPoses`, which calls the presenter's
+  `overlayRenderPoses_GameThread`: the rendered poses go onto one character's visualization state, a game-thread copy
+  the session owns. Until og-input-latency task P5-16 this door was `updateVisualization_GameThread`, which called the
+  tick backend's `updateVisualization` and so the presenter's `updateVisualization_GameThread` with the game binding's
+  storage: it copied every stored simulatable's state on the game thread before the overlay. The session now takes that
+  copy from its display snapshot (`UESimulationSession-rationale.md` §17), and `VizState` names its type: the simulatable's
+  `getAllState()` type, unqualified.
 
 * **Why it is not cosmetic.** The capsule is the mouse-aim plane point: the input component's
   `updateGameThreadCache` projects the mouse onto the plane through the capsule's world translation
@@ -711,11 +719,11 @@ results manager). This configuration now does the same (design D §8).
     target and block-prediction queries of the next frame then find the bodies where they are drawn, as
     Chaos's queries found its interpolated game-thread copy (design OQ10). An `OG_CHECK` demands that the
     restore ran this frame first: a restore after the overwrite would put the newest tick back;
-  * the visualization copy (the presenter's `updateVisualization_GameThread`, called by this class's door of the
-    same name): after
-    `updateVisualizationAll` it writes the pose into the body states of every declaration except the
-    root (the weapon axis, the guard, the projectile pool), so those drawings follow the rendered
-    character. The root body keeps the newest tick (`OGBrawlerSimulatableComponent-rationale.md` §10, "The
+  * the visualization copy (the presenter's `overlayRenderPoses_GameThread`, called by this class's door of the
+    same name on the session's display copy of each character's state; the presenter's `updateVisualization_GameThread`
+    over the storage until og-input-latency task P5-16): it writes the pose into the body states of every
+    declaration except the root (the weapon axis, the guard, the projectile pool), so those drawings follow the
+    rendered character. The root body keeps the newest tick (`OGBrawlerSimulatableComponent-rationale.md` §10, "The
     movement draw and the input-history poll").
   * Inline roles (the authority, and a client under `og.Sim.RunInline`) have no shadow: their
     visualizations query the step world between steps, at the newest tick. A dedicated server draws
@@ -990,14 +998,14 @@ the same type this class's own presenter alias named before.
 | this class | the tick backend | what runs, in this order |
 |---|---|---|
 | `buildWorld`, after the import, the split and the configuration | `build` | the world host's `build` with the same arguments |
-| `startDriverStepping`, after the `m_physicsBackendWorlds` row and the persistent-level `checkf` | `start` | `bindIntegratedTickSource` with the manager; the presenter; the driver; returns the driver to `m_frameHost.begin` |
+| `startDriverStepping`, after the `m_physicsBackendWorlds` row, the persistent-level `checkf` and the client-lanes `checkf` (§16) | `start` | `bindIntegratedTickSource` with the manager; the presenter; the driver; returns the driver to `m_frameHost.begin` |
 | `onEndPlayBegin`, after `unregisterTickFunctions` | `stop` | the driver's `stop()`, when it was built |
 | `createBodies_GameThread`, inside `callWithSlotRequest`, after the capsule check | `acquireAndBind` | the world host's `acquire`, then, with a slot, its `bind` with the driver's `noteWorldLockWait` |
 | `onRegistered_GameThread`, before the character cast and `registerTarget` | `onRegistered` | the world host's `slotOf`, an `OG_CHECK` that there is a slot, the driver's `pushBodySlotOccupancy(slot, true)`, the presenter's `onRegistered` |
 | `onUnregistered_GameThread`, first | `forgetPresenterTarget` | the presenter's `onUnregistered` with the slot (or 0), when the presenter was built |
 | `onUnregistered_GameThread`, after `unregisterTarget`, when the component has an owner | `releaseSlot` | the world host's `release` with the driver's `pushBodySlotOccupancy` |
 | `beforePresent_GameThread` | `present` | the presenter's `present_GameThread` with the driver as the clock and the world host |
-| `updateVisualization_GameThread` | `updateVisualization` | the presenter's `updateVisualization_GameThread` with the game binding's storage |
+| `overlayRenderPoses_GameThread` (`updateVisualization_GameThread` until og-input-latency task P5-16) | `overlayRenderPoses` | the presenter's `overlayRenderPoses_GameThread` on the one state passed in |
 | the three visualization doors | `editVizQuery`, `getVizReader`, `registerVizVolume` | the world host's doors of the same names |
 
 **What stays here** (the Unreal and brawler half, BUSL-1.1 until og-tickdriver task 15e; §12 says which part of it
@@ -1132,3 +1140,112 @@ session. Because the row names the session's members, it renamed with them in og
 task 35 (`m_backendWorlds` < `m_backend` became `m_physicsBackendWorlds` < `m_physicsBackend`; its message too), with the
 session's (`UESimulationSession-rationale.md` §14). Two assertion messages name the session now. The rows of §1's table that were the owner's are the session's
 `compositionContractsHold` rows.
+
+## §15 The authority loop: the world on the runner (og-input-latency task P5-19)
+
+With `og.Sim.AuthorityLoop=1` on a Jolt dedicated server (the session decides, `UESimulationSession-rationale.md` §19), the
+authority's world is built, stepped and torn down by the runner thread `OGSimAuthority` (`UEAuthorityRunner-rationale.md`),
+following P11 design D7's start and stop table. Every other world keeps the paths above, unchanged.
+
+**Start.**
+
+| # | game thread | runner |
+|---|---|---|
+| 1 | `buildWorld(world, dt, true, /*freeRunning=*/true)`: the static import, the split and the configuration as always, then `config.freeRunning = true` (`JoltTickWorldHostConfig::freeRunning`), and the configuration and the statics are kept for the runner instead of building | — |
+| 2 | `runAuthorityLoop_GameThread(world, dt, highResWait, slack, afterBuild)`: makes the runner, starts it, waits on its start latch | — |
+| 3 | — | the tick backend's `runAuthorityLoop`: `build` (the world host configures its thread context on this thread, so the runner is the owner thread; `[SimHost.Mode] … stepping=runner viz=none`), then `afterBuild` (the session's configuration, §19 there), then `start` (the driver; `[SimHost.Frame] … stepping=runner`) |
+| 4 | — | `afterStart`: the driver's address is stored (an atomic, release) and the latch released |
+| 5 | `m_frameHost.begin(owner, level, driver)`: the tick functions are registered with the driver the runner built. In `FreeRunning` `startFrame` returns at once and `endFrame` runs only `onPostPhysics` | the loop (`runAuthorityLoop` of the driver) |
+
+The statics are moved into the runner's packet and freed when it leaves the build scope; the configuration's `runInline` was
+read on the game thread at step 1, and the catch-up cap and the slack are read there too, so the runner reads no console
+variable. A `static_assert` at step 1 checks that the world host's configuration has `freeRunning`, the only world host that builds
+`FreeRunning` (Jolt's).
+
+**Stop.** `onEndPlayBegin` unregisters the tick functions, then joins the runner (`stopAuthorityLoop_GameThread`: the stop
+flag, the loop's return at its next wake, the thread's exit), then calls the tick backend's `stop()` under G-01. The join is a
+wait like G-01's and sits with it; its order is enforced at run time, so it has no tag of its own: the driver's `stop()`
+`OG_CHECK`s that the loop has returned, and the runner's destructor `checkf`s that its thread was joined. The lanes may have
+joined the runner already (`UESimNetLanes-guards.md` G-03, when the driver is destroyed first); the join is idempotent. The
+member-order row in `compositionContractsHold` keeps `m_runner` after `m_tickBackend`, so the runner goes first.
+
+**Bodies on the runner.** In `FreeRunning` the tick backend refuses `acquireAndBind`, `onRegistered`, `forgetPresenterTarget`
+and `releaseSlot` off the runner (its `OG_CHECK`s), so the session reaches them through new members split by thread:
+
+| member | thread | what it does |
+|---|---|---|
+| `makeBodyRequest_GameThread(owner, character, id)` | game | the capsule check, then `callWithSlotRequest` captured into a `BodyRequest` (key, name, role, replicated slot), not called |
+| `createBodies_Runner(request, simulatable, staticData, id)` | runner | `acquireAndBind` with the request; the slot is read back with the world host's `slotOf` |
+| `onRegistered_Runner(key, id)` | runner | the tick backend's `onRegistered` (the occupancy push, and the presenter registration through its ring J9) |
+| `onRegisteredHost_GameThread(owner, id)` | game | the render target, the half of `onRegistered_GameThread` that is the game thread's |
+| `releaseBodies_Runner(key, id)` | runner | `forgetPresenterTarget` then `releaseSlot`, as `onUnregistered_GameThread` orders them |
+| `onUnregisteredHost_GameThread(id)` | game | the render target's removal |
+
+`slotKeyFor(actor)` exposes the slot key so the session can name a body set after its actor is gone.
+
+**No game-thread viz world.** A free-running authority has none (`viz=none`), and the tick backend refuses `registerVizVolume`,
+`editVizQuery`, `getVizReader` and `overlayRenderPoses` (its `OG_CHECK`s). This class forwards all four unchanged: nothing on a
+loop-on server calls them. The callers ask the session first (`hasGameThreadVizWorld()`, false exactly while the loop runs,
+`UESimulationSession-rationale.md` §21.4): the character component registers no viz volume and skips its visualization
+(`OGBrawlerSimulatableComponent-rationale.md` §24, in OGBrawlerUnreal's docs), and the session publishes no display snapshot,
+so the overlay is never reached. A new caller that forgets to ask fails loudly on the tick backend's check. (From
+og-input-latency task P5-19 until P5-20, `registerVizVolume` here answered `QueryVolumeId{}` while the runner existed, through
+a `freeRunning()` member; both are gone.)
+
+## §16 The immediate client's frame wait (og-input-latency task P5-35)
+
+`startDriverStepping` hands the tick backend's `start` the frame wait `FrameWait::ThisFramesSingleStep` when the session
+is an immediate client (`m_owner.m_immediateClient`, which `beginClientSimNet` sets inside the session's configuration,
+before `startStepping`), and `EarlierFrames` otherwise: the authority, and a client whose sim traffic is frame-locked. A
+`checkf` refuses a client whose og-sim-net lanes are not bound yet, because before the bind the flag still reads false. With
+it, a worker client's end of physics waits for the step its own frame dispatched when that frame dispatched exactly one step
+(`SimulationTickDriver-rationale.md` §4; the frame host still passes `og.Sim.BlockMode`, `UETickDriverHost-rationale.md` §2).
+
+**Why: one frame, and the race it held.**
+1. `TG_StartPhysics` dispatches the frame's step task (§2's frame, step 1).
+2. `TG_EndPhysics` runs `endFrame`. Under block mode 0 it waits only for earlier frames' task, then runs the session's
+   `onPostPhysicsStep` at once. That pass is what the frame shows: the render apply from the presenter's newest
+   published snapshots (`beforePresent_GameThread`), then the display snapshot's fill and acquire
+   (`publishDisplaySnapshot_GameThread`, `refreshDisplayView_GameThread`; both on the game thread inside the pass, so
+   the snapshot is not the late hop), and last the latency probe's game-thread tick, which stamps H7's `Rendered` point on
+   the newest pending step end.
+3. The step's `afterTick` stamps the step end and then publishes the render snapshot (J5). An immediate client's step
+   also carries og-sim-net's drain (`receiveForStep`) and the send at capture (`onStepStarted`); a frame-locked client
+   runs both on the game thread outside this window.
+
+So whether the pass shows the frame's step is a race between the worker step and the game thread's short way from the
+dispatch to the end of physics.
+
+**Measured on shape (b)** (two rendered clients at 100 fps, Ph4's F arm, shaped b0; one client's 10 s windows):
+* **Before (the current tree minus P5-35):** `[LatencyBudget] role=Client hop=H7 p50=9.948 p95=10.040 … n=1200`, beside
+  `[SimHost.Window] … frames=1000 frameMs=10.00/10.10/10.18 … endWaits=0 endWaitUs=- postPhysicsUs=89.3/134.6/297.8 steps=600
+  maxStepsPerFrame=1 … stepUs=125.7/160.7/202.2`.
+  * H7 is one frame period less 0.05–0.07 ms in every window of both clients: each step ended just after the pass that would
+    have shown it, and the next frame's pass stamped it.
+* **After:** `hop=H7 p50=0.106 p95=0.131 p99=0.161 max=0.275`, beside `endWaits=600 endWaitUs=163.7/230.1/265.9`.
+  * The end of physics now waits on every frame with a step.
+  * At the end of physics the step still had ~0.16 ms to run (p50), about its whole measured cost: the game thread
+    reaches `TG_EndPhysics` about when the worker starts the step.
+* **Frame-locked clients won the same race at the median, but not reliably.** H7 p50 0.056 ms and p95 20 ms on Ph3's (b)
+  reference: the probe stamps only the newest pending step end, so a step that loses and is then overtaken by the next
+  one is stamped a frame later still. On Ph4's (c) reference runs one run lost every window (p50 ~10 ms) and the other
+  some.
+* Moving the read later or the publish earlier would only move the race. After the pass, the game thread's remaining
+  frame work is as short, and the step cannot end sooner than its cost.
+
+**The cost**, P5-35's two post runs against its pre run (both clients, steady windows; the window prints frame time as
+p50/p99/max, not p95):
+
+| | H7 p50 | H7 p95 | frameMs p50 | frameMs p99 | frames / 10 s | endWaitUs p50 (p99 max) | postPhysicsUs p50 |
+|---|---|---|---|---|---|---|---|
+| pre | 9.944 | 10.047 | 10.00 | 10.10–10.18 | 1000 | – (no wait) | 90.2 |
+| post 1 | 0.105 | 0.134 | 10.00 | 10.11–10.15 | 1000–1001 | 161 (199–276) | 88.4 |
+| post 2 | 0.106 | 0.141 | 10.00 | 10.10–10.13 | 1000 | 161 (203–298) | 85.8 |
+
+The wait (p50 ~0.16 ms, at most 0.47 ms in any window) fits inside the 100 fps frame's idle time. The frame time is unchanged
+and the frame count stays at the cap. The display gains one frame period (~9.8 ms at p50).
+
+**What it leaves alone.** Frame-locked clients keep `EarlierFrames`. They are the reference arm of Ph4's gate, and the
+same wait would make their display deterministic too: that is a decision for the lead, not taken here. A catch-up frame (two
+or more steps) is not waited for (`SimulationTickDriver-guards.md` G-10). `og.Sim.RunInline=1` steps inline, where the
+setting changes nothing. The Chaos configuration does not use this class.

@@ -67,6 +67,18 @@ the consequence of ignoring it.
   a test runner that reports a failed check as a failed case, so no test reaches the fallback and its deletion passes every
   test.
 
+## G-07 — the fallback after the input-set owner check stays
+
+- **Site:** the `if (!owned)` after the `OG_CHECK` in `withInputSet`, the one door of `appendInputBundle` and `endInputSends`.
+- **Prohibition:** do not delete the `if` and its return as dead code behind the check, and do not route an append or a set end
+  around `withInputSet`.
+- **Consequence:** it runs only where `OG_CHECK` is compiled out (a Shipping build, and the standalone build with `NDEBUG`).
+  There an immediate transport's input set is written by the thread that opened it, the client's step, while a bundle or a set
+  end from another thread (the game thread's send, which an immediate host no longer makes) would write the same buffer and
+  length at the same time: a torn set on the wire, or a bundle appended into the middle of the step's set. The return drops
+  that call instead, counted in `unwindowedRefused`. Where the check is live it stops the program, or ends the case in a test
+  runner that reports a failed check as a failed case, so no test reaches the fallback and its deletion passes every test.
+
 ## §R Retired ids
 
 - **G-05** (2026-11-15) forbade giving a freed slot to a new connection before its tag held no undrained message. The rule was

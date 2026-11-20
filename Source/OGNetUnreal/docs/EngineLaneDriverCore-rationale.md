@@ -36,7 +36,8 @@ The header holds the licence, the docs pointer, code, five guard tags and these 
   `m_handlerMutex`.
 - **The sim endpoint (§12)** is the other door. Its `send`, `broadcastExcept` and `disconnect` are og-net's own, which take any
   thread; its `noteDelivered` adds to the window's atomic residence counters (`NetWindow.cpp`, `NetWindow::noteDelivered`); its two
-  handler setters run only inside `start`, from the attach.
+  handler setters run only inside `start`, from the attach. In `HostServiced` mode its `serviceUntil` (the core's) runs on the
+  host's servicing thread, never the tick thread, and `hasHighResolutionWait` reads only what `start` wrote (§13).
 - **No allocation after `start`.** The record table, the pre-connect buffer and the batch are allocated by `start`; `tick` and
   `send` only index into them.
 - **Teardown.** The destructor resets the endpoint first. `ognet::EndpointCore`'s destructor calls `stop`, which in own-thread mode
@@ -54,7 +55,8 @@ The header holds the licence, the docs pointer, code, five guard tags and these 
 | `tick(nowSeconds, clientConnectionPending)` | in order: the handler queue (§5), the ring (§6), the drained closes (§7), the `[OGNet.Window]` close (§11). `clientConnectionPending` is whether the engine still waits for its server connection. |
 | `engineClosed(id, nowSeconds)` | the engine has cleaned up its connection: §7. |
 | `stop(nowSeconds, drainSeconds)` | §8. |
-| `serviceUntil(deadline)` | `HostServiced` mode only (`OGNET_CHECK`): the caller services the endpoint, as og-net's mode B. |
+| `serviceUntil(deadline)` | `HostServiced` mode only (`OGNET_CHECK`): the caller services the endpoint, as og-net's mode B (§13). |
+| `hasHighResolutionWait()` | the backend's `hasHighResolutionWait()` when `BackendT` has one (`if constexpr` on a `requires`), else false; false before `start` (§13). |
 | `stats()` | `DriverStats`, the core's counters (§9). |
 | `connectionStats(id)`, `endpointStats()`, `engineLaneStats()`, `localAddress()` | og-net's own figures, passed through; `localAddress` exists when the backend reports one (`ognet::ReportsLocalAddress`). |
 | `isStarted()`, `isStopped()`, `mode()`, `serverConnection()` | state; `serverConnection()` is the client's og-net id once it is up, else 0. |
@@ -282,7 +284,9 @@ inside `start`. So the sim side (og-sim-net's `SimNetTransport`, in a host such 
   - `setConnectionHandler`: stores the **forward target**, only inside `beforeStart` (an `OGNET_CHECK`). og-net has one connection
     handler, and the core's must stay installed for §5;
   - `noteDelivered`: into the window (§11), once it exists;
-  - `config()`: the config `start` was given, set before the attach runs.
+  - `config()`: the config `start` was given, set before the attach runs;
+  - `serviceUntil` and `hasHighResolutionWait`: the core's own (§13), so a host's runner holding only the sim endpoint can service
+    a host-serviced core and read its backend's wait resolution (task P5-18).
 - **The forward.** The core's connection handler first passes **every** event, any kind and any id, to the forward target, and only
   then applies its own filter (id-0 `Disconnected` into the handler queue, §5). The sim transport needs the real connections' events
   (its per-connection slots and its inbox's `Connected`/`Disconnected`), which the core's own filter drops; and it needs them in
@@ -291,7 +295,8 @@ inside `start`. So the sim side (og-sim-net's `SimNetTransport`, in a host such 
   `SimNetTransport::onConnectionEvent` only pushes into its inbox).
 - **Lifetime.** The forward target and the lane handlers' contexts must outlive og-net's servicing thread. In `OwnThread` mode the
   thread is joined when the endpoint is destroyed (§1), so the host destroys whatever owns them after the core
-  (`OGNetDriver-rationale.md` §13).
+  (`OGNetDriver-rationale.md` §13). In `HostServiced` mode the servicing thread is the host's own, which joins it before the
+  core's `stop` (§13).
 
 Tests (`SimLaneSeamTest.cpp`, `[OGNet][EngineLaneDriver]`, §10's rig with the attach added):
 
@@ -304,3 +309,35 @@ Tests (`SimLaneSeamTest.cpp`, `[OGNet][EngineLaneDriver]`, §10's rig with the a
 | `EngineLaneDriver.AnAttachedSimNetTransportReceivesEachSimLaneIntoItsInboxWithConnectedFirst` | a `SimNetTransport<SimLaneEndpoint, 128>` sized from `config()` and installed through the attach: each side's inbox drains its `Connected` first, then one message per lane; the server's sends go through the transport's frame hold |
 | `EngineLaneDriver.NoteDeliveredOnTheSimEndpointWritesTheSimLaneRxLineOfTheCoresWindow` | seven `noteDelivered(SimInput, now - 20 ms, now)` give one `[OGNet.Window.Rx] role=Server lane=SimInput` line with 7 samples, `residenceP99Us=32000` |
 | the nine `EngineLaneDriver.WithAndWithoutAnAttach.*` cases | P4-3's nine scenarios (§4 to §8 and §10's emulator and steady cases), each run without an attach and with a recording one; with it, the forward also sees the scenario's connection events |
+
+## §13 `HostServiced` mode: a host's thread services the endpoint (task P5-18)
+
+Ph4's server runs its simulation on a runner thread of its own and services og-net from it, so the runner, not the tick thread's
+frame, decides when datagrams are read (design P5 K14, og-net's mode B). The core already took the mode at `start`; task P5-18 lets a host that holds only
+the sim endpoint (§12) do the servicing.
+
+- **What `start` does.** In `HostServiced` mode `start` does not call `startOwnThread`: no og-net thread exists, and nothing
+  services the endpoint until the host calls `serviceUntil`. Everything else is the same as in `OwnThread` mode: the tick thread's
+  `tick` still polls the engine lane (§6), and every other member still runs on the tick thread (§1).
+- **One servicing thread.** og-net fixes the servicing thread at the first `serviceUntil` and aborts on a call from any other
+  thread afterwards (`EndpointCore.cpp`, `EndpointCore::fixServicingThread`, an `OGNET_CHECK`). So one host thread services the
+  endpoint for its whole life, and the tick thread never does. That thread is also where the connection handler, the forward
+  (§12) and the lane handlers run.
+- **The sim endpoint's two operations.** `SimLaneEndpoint::serviceUntil` is the core's `serviceUntil` (the mode check included);
+  `SimLaneEndpoint::hasHighResolutionWait` is the core's `hasHighResolutionWait`, which reads the backend the core was started with.
+  Over the Unreal driver's `SwitchableBackend<BsdDatagramBackend>` that is the BSD backend's answer, forwarded by the switch
+  (`SwitchableBackend-rationale.md` §2); a backend without the member reports false. The backend pointer is written by `start`,
+  before any host thread can hold the sim endpoint.
+- **Stop.** `stop` does not drain in this mode (§8), and og-net's `stop`, called on the tick thread, aborts if `serviceUntil` is
+  running on another thread at that moment (`EndpointCore.cpp`, `EndpointCore::stop`). The host therefore joins its servicing
+  thread before calling `stop`. og-net's `stop` then closes each live connection on the calling thread, so the forward target sees
+  their `Disconnected(LocalClose)` on the tick thread, after every earlier event on the servicing thread.
+
+Tests (`SimLaneSeamTest.cpp`, `[OGNet][EngineLaneDriver]` unless stated):
+
+| Case | What |
+|---|---|
+| `EngineLaneDriver.AHostServicedServerServicedOnlyByARunnerThreadDeliversEngineAndSimLaneTraffic` | real threads on the steady network: a `HostServiced` server whose only servicing is a runner thread calling `SimLaneEndpoint::serviceUntil` in 2 ms slices, and an `OwnThread` client. One engine packet and one sim message cross each way (engine both ways, SimInput up, SimState down); the server's `Connected` and SimInput arrive on the runner thread; the runner never saw `stopped`. After the runner has joined, the server's `stop` on the test thread delivers `Disconnected(LocalClose)` on the test thread. The backend (`VirtualBackend`) has no high-resolution wait. |
+| `EngineLaneDriver.Death.ASecondThreadsServiceUntilOnAHostServicedEndpointAborts` (`[.][OGSimDeath]`, hidden) | a runner thread services once and joins; the test thread's `serviceUntil` then aborts on og-net's "called from a second thread" check |
+| `EngineLaneDriver.TheSimEndpointReportsTheBackendsHighResolutionWaitThroughTheSwitch` | over a test backend that reports `true` (then `false`) behind `SwitchableBackend`, the core and the sim endpoint both report it |
+| `EngineLaneDriver.TheDetachedEndpointServicesNothingAndHasNoHighResolutionWait` | `SimLaneEndpoint-rationale.md` §3 |

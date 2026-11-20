@@ -102,8 +102,10 @@ After the base InitBase (which has read the URL's timeout and packet-simulation 
   - default admission, and no server static key (key pinning is optional through Ph3).
 - **The emulator intake** (§4) runs before the endpoint opens its socket, because the switchable backend can enable og-net's
   emulator only before open.
-- The core starts in own-thread mode: og-net runs its I/O on its own thread (`OGNet`, above normal priority), so its timers
-  keep running through game-thread hitches and map loads. If the core cannot start (an occupied port, an invalid
+- The core starts in own-thread mode unless the sim lanes ask otherwise (§13: `ioMode`, task P5-18): og-net runs its I/O on its
+  own thread (`OGNet`, above normal priority), so its timers keep running through game-thread hitches and map loads. In
+  host-serviced mode og-net starts no thread, and the game thread still never services the endpoint: `TickDispatch` polls the
+  engine lane only (`core.tick`, §6), and the lanes' own thread calls `serviceUntil`. If the core cannot start (an occupied port, an invalid
   configuration) InitBase logs an Error and fails. There is no port walk: IpNetDriver tries up to 512 further ports
   (BaseEngine.ini, MaxPortCountToTry), og-net binds the one port it is given.
 - `LocalAddr` is a platform address `0.0.0.0` with the port og-net bound, so the engine and the session log read the real
@@ -198,7 +200,9 @@ run on the game thread, after og-net's poll has returned:
   nothing to it.
 - **`LowLevelDestroy`** runs the base, then (not for the class default object) calls the sim lanes' `beforeStop` (§13), stops
   the core with a 0.2 s drain on the host's clock, destroys the endpoint, which joins og-net's thread, destroys the sim lanes, and
-  logs the `stop` line with the core's counters. The
+  logs the `stop` line with the core's counters. In host-serviced mode there is no og-net thread and no drain
+  (`EngineLaneDriverCore-rationale.md` §8): `beforeStop` has joined the lanes' servicing thread, and the core's stop closes the
+  connections on the game thread (`OGNetSimLanes-rationale.md` §2). The
   engine destroys a driver with SetWorld, Shutdown, then LowLevelDestroy, and defers it while the driver ticks
   (UnrealEngine.cpp, lines 14620-14630). An engine connection cleaned up after that finds no endpoint and does nothing.
 - **The destructor** stops an endpoint that is still running, with no drain, then destroys the endpoint and the sim lanes, in
@@ -215,7 +219,7 @@ The core's `stop` compares the time it is given with its host's clock.
 
 | line | when |
 |---|---|
-| `[OGNet.Driver] start role= mode=ownThread handler=off port= maxPacket=1024 overhead=28 budget= idle= emulator=ognet\|engine\|off` | the endpoint started |
+| `[OGNet.Driver] start role= mode=ownThread\|hostServiced handler=off port= maxPacket=1024 overhead=28 budget= idle= emulator=ognet\|engine\|off` | the endpoint started; `mode` is the core's (§13) |
 | `[OGNet.Driver] emulator out(loss= lag=min..max dup=) in(loss= lag=min..max) seed= ignored=` | the intake mapped or ignored anything |
 | `[OGNet.Emulator] profile=<canonical text>` | og-net's emulator is on |
 | `[OGNet.Driver] ignored <setting>=<value>: …` (Warning) | per ignored setting |
@@ -264,7 +268,10 @@ with the same log lines.
   thread (InitBase reads it there); it is called once; and no `UOGNetDriver::InitBase` has run before it, because a driver that
   started without lanes would carry no sim traffic for its whole life. The game registers it at start-up (task P5-7).
 - **`InitBase`** creates the lanes object with `factory(driver, bIsServer)` just before the core's `start`, after the emulator
-  intake, and passes the attach whose `beforeStart` calls the object's `beforeStart` with the core's sim endpoint. After a
+  intake, asks it for the I/O mode (`ioMode(bIsServer)`, task P5-18; own-thread without a lanes object), starts the core in that
+  mode, and passes the attach whose `beforeStart` calls the object's `beforeStart` with the core's sim endpoint. The `start` line
+  prints the mode the core started in (§10). A `static_assert` checks that the interface's default, `IoMode{}`, is `OwnThread`
+  (`OGNetSimLanes-rationale.md` §1). After a
   successful start and the `start` line it calls `afterStart`. When the start fails, the endpoint is destroyed and then the lanes
   object, without `afterStart`.
 - **The frame points are the driver's own overrides**, not world delegates:
@@ -289,6 +296,11 @@ with the same log lines.
 - **`FindConnection(OGNetId)`** (game thread, a `checkf`) returns the engine connection bound to an og-net id, from the pimpl's
   map, or null: the sim side's way from a sim connection id (which is og-net's id) to the engine's connection, for the RTT read and
   the server's owner lookup (design P5 §3.3).
+- **`GetSmoothedRttSeconds(OGNetId)`** (game thread, a `checkf`) returns og-net's smoothed ack round trip for that connection,
+  in seconds, from the core's published connection statistics, or −1.0 when the endpoint is gone, the id is not a published
+  connection, or og-net has no sample yet. A plain `double`, so this reflected header names no og-net type (G-01). Its one
+  caller is the client lanes' publish for the session's `[ClockSource.Window]` cross-check (og-input-latency task P3-10;
+  `UESimNetLanes-rationale.md` §13).
 
 ## §14 The held join: UE's hello leaves after the frame that opened the connection (task P4-13)
 

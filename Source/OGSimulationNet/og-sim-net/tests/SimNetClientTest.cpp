@@ -972,9 +972,10 @@ TEST_CASE("SimNetClient.AFrameSendsOneHeldSetAndDropsEmptyBundles", "[NetTranspo
 	Script immediate(SimNetConfig{true});
 	immediate.connect();
 	immediate.roster(snapshotMsg(1u, {RosterEntry{kSimA, 0u, 0u}}));
-	immediate.drain();
+	immediate.client->drain();
+	immediate.transport->beginInputSends();
 	immediate.client->channel(kSimA)->sendLocalInputToAuthority(queue, 22u, 3u);
-	immediate.client->endInputSends();
+	immediate.transport->endInputSends();
 	CHECK(immediate.endpoint.on(ognet::Lane::SimInput).size() == 1u);
 }
 

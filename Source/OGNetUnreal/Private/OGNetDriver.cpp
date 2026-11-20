@@ -50,6 +50,14 @@ static_assert(kEngineLaneMaxConnections >= 8 && kEngineLaneMaxConnections <= ogn
 	"'maxConnections 16 (>= the 8-player cap)'");
 static_assert(kStopDrainSeconds == ognetunreal::kDrainedCloseSeconds,
 	"the stop drain waits as long as a drained close: the Engine lane's age limit. Was P4-4's 'core.stop(now, 0.2)'");
+static_assert(ognetunreal::IoMode{} == ognetunreal::IoMode::OwnThread,
+	"IOGNetSimLanes::ioMode's default returns IoMode{}, which must be OwnThread: a lanes object that does not choose keeps og-net on "
+	"its own thread. Was task P5-18's 'ioMode (default OwnThread)'");
+
+const TCHAR* IoModeName(ognetunreal::IoMode Mode)
+{
+	return Mode == ognetunreal::IoMode::HostServiced ? TEXT("hostServiced") : TEXT("ownThread");
+}
 
 const char* DisconnectReasonName(ognet::DisconnectReason Reason)
 {
@@ -499,8 +507,9 @@ bool UOGNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, const 
 	{
 		Lanes = GSimLanesFactory(*this, !bInitAsClient);
 	}
+	const ognetunreal::IoMode Mode = Lanes.IsValid() ? Lanes->ioMode(!bInitAsClient) : ognetunreal::IoMode::OwnThread;
 	const ognetunreal::SimLaneAttach Attach{.ctx = Lanes.Get(), .beforeStart = &SimLanesBeforeStart};
-	if (!Self.Core.start(Self.Host, Self.Backend, Config, ognetunreal::IoMode::OwnThread, Callbacks, Lanes.IsValid() ? &Attach : nullptr))
+	if (!Self.Core.start(Self.Host, Self.Backend, Config, Mode, Callbacks, Lanes.IsValid() ? &Attach : nullptr))
 	{
 		Error = FString::Printf(TEXT("OGNetDriver: og-net could not start the %s endpoint on UDP port %d"), RoleName(Self.Role), Config.bind.port);
 		UE_LOG(LogOGNetTransport, Error, TEXT("[OGNet.Driver] %s"), *Error);
@@ -517,8 +526,8 @@ bool UOGNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, const 
 	LocalAddr->SetPort(BoundPort);
 
 	UE_LOG(LogOGNetTransport, Log,
-		TEXT("[OGNet.Driver] start role=%s mode=ownThread handler=off port=%d maxPacket=%d overhead=%d budget=%u idle=%g emulator=%s"),
-		RoleName(Self.Role), BoundPort, ognetunreal::kEngineMaxPacketBytes, ognetunreal::kEnginePacketOverheadBytes, Config.budget.bytesPerSecond,
+		TEXT("[OGNet.Driver] start role=%s mode=%s handler=off port=%d maxPacket=%d overhead=%d budget=%u idle=%g emulator=%s"),
+		RoleName(Self.Role), IoModeName(Self.Core.mode()), BoundPort, ognetunreal::kEngineMaxPacketBytes, ognetunreal::kEnginePacketOverheadBytes, Config.budget.bytesPerSecond,
 		Config.timings.idleTimeoutSeconds, EmulatorName);
 	if (SimLanes.IsValid())
 	{
@@ -751,4 +760,17 @@ UOGNetConnection* UOGNetDriver::FindConnection(uint32 OGNetId) const
 	}
 	const TWeakObjectPtr<UOGNetConnection>* Found = Endpoint->Connections.Find(OGNetId);
 	return Found != nullptr ? Found->Get() : nullptr;
+}
+
+double UOGNetDriver::GetSmoothedRttSeconds(uint32 OGNetId) const
+{
+	checkf(IsInGameThread(),
+		TEXT("UOGNetDriver::GetSmoothedRttSeconds off the game thread: the endpoint behind the pimpl is created and destroyed on the "
+			 "game thread"));
+	if (!Endpoint.IsValid())
+	{
+		return -1.0;
+	}
+	const ognet::ConnectionStats Stats = Endpoint->Core.connectionStats(OGNetId);
+	return Stats.id == OGNetId && Stats.hasRttSample ? Stats.smoothedRttSeconds : -1.0;
 }
