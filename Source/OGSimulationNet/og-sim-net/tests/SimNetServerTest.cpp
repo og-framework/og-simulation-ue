@@ -25,6 +25,7 @@
 #include "OGSimulation/SimulationFieldDescriptors.h"
 #include "OGSimulation/SimulationQueues.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -180,6 +181,7 @@ constexpr std::uint8_t kSimA0 = 3u;
 constexpr std::uint8_t kSimB1 = 4u;
 constexpr std::uint8_t kSimOther = 7u;
 constexpr std::uint8_t kSimUnknown = 9u;
+constexpr double kPushSeconds = 1.5;
 
 TimeConfig testTimeConfig()
 {
@@ -237,7 +239,7 @@ struct Fixture
 
 	void connect(SimConnectionId conn) { transport->inbox().pushEvent(InboundKind::Connected, conn, ogsimnet::kNoReceiveSeconds); }
 	void disconnect(SimConnectionId conn) { transport->inbox().pushEvent(InboundKind::Disconnected, conn, ogsimnet::kNoReceiveSeconds); }
-	void push(SimConnectionId conn, const std::vector<std::byte>& bytes, double recvSeconds = 1.5)
+	void push(SimConnectionId conn, const std::vector<std::byte>& bytes, double recvSeconds = kPushSeconds)
 	{
 		REQUIRE(transport->inbox().pushMessage(conn, SimLane::SimInput, recvSeconds, bytes));
 	}
@@ -317,11 +319,12 @@ struct Reference
 	ogsimnet::SimNetConnectionHandle handle(SimConnectionId conn) const { return liveness.handleFor(conn); }
 
 	template <class SimT>
-	void bundle(SimConnectionId conn, std::uint8_t simId, std::uint8_t localIndex, const std::vector<Slot>& slots, std::int32_t tick, double rttMs)
+	void bundle(SimConnectionId conn, std::uint8_t simId, std::uint8_t localIndex, const std::vector<Slot>& slots, std::int32_t tick, double rttMs,
+		double recvSeconds = kPushSeconds)
 	{
 		const InputBundleBuffer wire = bundleOf(slots);
 		coordinator.noteRttSample(handle(conn), simId, tick, rttMs, sinks);
-		coordinator.receiveInputBundle<SimT>(simId, handle(conn), localIndex, wire, sinks, sinks);
+		coordinator.receiveInputBundle<SimT>(simId, handle(conn), localIndex, wire, sinks, sinks, recvSeconds);
 	}
 
 	void release(std::int32_t firstTick, std::int32_t numSteps)
@@ -537,6 +540,26 @@ TEST_CASE("SimNetServer.ABundleForACharacterOfAnotherConnectionIsRefusedAndCount
 	f.server->dispatchFrame();
 	CHECK(f.server->coordinator().claimCount() == 1u);
 	CHECK(f.linesWith("[Park]").size() == 1u);
+}
+
+TEST_CASE("SimNetServer.EachServerReceiveLineEndsWithItsRecordsReceiveTime", "[NetTransport][SimNetServer]")
+{
+	Fixture f;
+	f.connect(kConnA);
+	f.addRecorded<SimA>(kSimA0, 0u, kConnA, 0u);
+	f.host.tick = 100;
+
+	f.push(kConnA, inputSet({{kSimA0, {{100u, 1}, {99u, 2}}}}), 16777300.25);
+	f.push(kConnA, inputSet({{kSimA0, {{101u, 3}}}}), 16777300.5);
+	f.server->dispatchFrame();
+
+	std::vector<std::string> lines = f.linesWith("[ServerReceive]");
+	std::sort(lines.begin(), lines.end());
+	CHECK(lines == std::vector<std::string>{
+		"[ServerReceive] id=3 tick=100 recvSeconds=16777300.250000",
+		"[ServerReceive] id=3 tick=101 recvSeconds=16777300.500000",
+		"[ServerReceive] id=3 tick=99 recvSeconds=16777300.250000",
+	});
 }
 
 TEST_CASE("SimNetServer.TheTierGoesOncePerConnectionChangeAndTierZeroIsNeverAFirstValue", "[NetTransport][SimNetServer]")

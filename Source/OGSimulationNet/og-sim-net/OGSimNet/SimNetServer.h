@@ -370,7 +370,10 @@ public:
 
 	bool immediate() const { return m_immediate; }
 
-	void releaseForStep(int32_t firstTick, int32_t numSteps) { (releaseFor<SimTs>(firstTick, numSteps), ...); }
+	void releaseForStep(int32_t firstTick, int32_t numSteps, std::optional<double> stepSeconds = std::nullopt)
+	{
+		(releaseFor<SimTs>(firstTick, numSteps, stepSeconds), ...);
+	}
 
 	void afterBatch(int32_t serverTick) { m_coordinator.reapConnections(serverTick); }
 
@@ -794,7 +797,7 @@ private:
 		// ⛔G-02  docs/SimNetServer-guards.md
 		m_coordinator.noteRttSample(handle, simId, m_host.receptionTick(), m_host.rttMs(record.conn), *this);
 		const uint8_t localIndex = m_roster.localIndexOf(simId).value_or(kRosterNotLocal);
-		m_coordinator.template receiveInputBundle<SimT>(simId, handle, localIndex, m_bundle, *this, *this);
+		m_coordinator.template receiveInputBundle<SimT>(simId, handle, localIndex, m_bundle, *this, *this, record.recvSeconds);
 		if (m_immediate)
 			flushRelays(simId);
 	}
@@ -819,7 +822,7 @@ private:
 	}
 
 	template <class SimT>
-	void releaseFor(int32_t firstTick, int32_t numSteps)
+	void releaseFor(int32_t firstTick, int32_t numSteps, std::optional<double> stepSeconds)
 	{
 		m_coordinator.template releaseDelayedInputs<SimT>(firstTick, numSteps,
 			[this](unsigned int id, uint32_t captureTick, const typename SimT::InputType& input) -> bool {
@@ -829,7 +832,8 @@ private:
 					return false;
 				target->deliverDelayedRemoteInput(captureTick, input);
 				return true;
-			});
+			},
+			stepSeconds);
 	}
 
 	RosterMessage takeRemove(uint8_t simId, RosterRemoveReason reason)

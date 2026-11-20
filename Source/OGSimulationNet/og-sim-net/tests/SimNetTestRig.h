@@ -380,13 +380,24 @@ inline bool sessionOnly(const std::string& line)
 	return line.find("[SimNet.Window]") != std::string::npos || line.find("[Roster.") != std::string::npos;
 }
 
+inline std::string withoutReceiveTime(std::string line)
+{
+	if (line.rfind("[ServerReceive]", 0) == 0)
+	{
+		const std::size_t field = line.find(" recvSeconds=");
+		if (field != std::string::npos)
+			line.erase(field);
+	}
+	return line;
+}
+
 inline std::vector<std::string> takeLines(std::vector<std::string>& lines)
 {
 	std::vector<std::string> out;
 	for (std::string& line : lines)
 	{
 		if (!sessionOnly(line))
-			out.push_back(std::move(line));
+			out.push_back(withoutReceiveTime(std::move(line)));
 	}
 	lines.clear();
 	return out;

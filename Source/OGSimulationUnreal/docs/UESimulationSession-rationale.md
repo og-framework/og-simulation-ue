@@ -81,12 +81,14 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
   in this session and the lanes' client session; registration through the roster; and the two early unregistration paths.
   Where an earlier section describes the relays, the listeners, the session's own coordinator or its component map, §16 is
   what replaced it.
-* **§17** is og-input-latency task P5-16: the display snapshot the game thread draws from, where it is published, the
-  game-thread view of it, and the doors that read it.
+* **§17** is og-input-latency task P5-16: the display snapshot the game thread draws from, where it is published (after
+  the step batch on the step's thread for a Jolt client since og-input-latency task P5-36), the game-thread view of it, and
+  the doors that read it.
 * **§18** is og-input-latency task P5-17: immediate mode on a client (`SimTrafficImmediate=1`), its lines, the step hooks,
   registration through og-sim-net's lifecycle queue, unregistration, teardown, and what frame-locked keeps.
 * **§19** is og-input-latency task P5-19: the authority loop (`og.Sim.AuthorityLoop=1`), the dedicated server stepping on its
-  runner: the decision, start, og-sim-net and registration on the runner, the game thread on the loop, and stop.
+  runner: the decision, start, og-sim-net and registration on the runner, the game thread on the loop, and stop; and
+  task P5-37's step time on the runner's `[AuthoritySimulation]` and `[Release]` lines (§19.7).
 * **§20** is og-input-latency task P3-10: the clock's RTT source, its two feeds, the `ClockRttSource` knob and the shadow line;
   and task P3-13's `JitterMultiplier` knob, on the same proof line.
 * **§21** is og-input-latency task P5-20: the game-thread paths off the authority on the loop: PROBE A per stepping wake,
@@ -800,7 +802,7 @@ re-pointed (§16.3):
 |---|---|
 | `ReceptionCoordinator`, `getReceptionCoordinator`, `hasServerTierWiring` | og-sim-net's server's coordinator and its presence |
 | `getServerReceptionTick` | unchanged; the server host answers og-sim-net's `receptionTick()` with it |
-| `releaseDelayedInputsForStep` | `[ReleaseBatch]`, then the server's `releaseForStep` |
+| `releaseDelayedInputsForStep` | `[ReleaseBatch]`, then the server's `releaseForStep` (with the step's time since P5-37, §19.7) |
 | `afterAuthorityBatch` | the server's `afterBatch` (the reap) |
 | `forEachAuthorityCorrectionTick` | the walk of the registered channels |
 
@@ -1196,8 +1198,9 @@ Nothing resets the manager, the composition or the backend: they live until the 
 3. The manager's post-simulation pass, `onPostSimulationGameThread()` (§8).
 4. The authority's server-clock publish, `publishServerClock_GameThread()` (§9.6).
 5. For a session on its own detached lanes only (§16.2): the lanes' `afterDispatch` and `onTickFlush`.
-6. `publishDisplaySnapshot_GameThread()`, then `refreshDisplayView_GameThread()` (§17.2, §17.3). Until og-input-latency
-   task P5-16 this step was the backend's visualization refresh, which copied every stored simulatable's state into its
+6. `publishDisplaySnapshot_GameThread()` unless the session publishes after its batch on the step's thread
+   (`publishesDisplayOnStep()`, since og-input-latency task P5-36), then `refreshDisplayView_GameThread()` (§17.2, §17.3).
+   Until og-input-latency task P5-16 this step was the backend's visualization refresh, which copied every stored simulatable's state into its
    visualization copy on the game thread and overlaid the rendered poses there.
 7. `Game::afterVisualization(*this)`, the game's hook, at the position of the game statement it replaced.
 8. The latency member's `tick_GameThread`, with the backend's diagnostics view (`UELatencyBudgetDiagnostics-rationale.md`).
@@ -1926,13 +1929,46 @@ no wider (the snapshot's own `static_assert`), and a game names its narrower pol
 constant, so a game asserts beside its reader that its windows fit (the brawler's input-history feed asserts its 64-tick
 capture poll and its 60-tick applied poll, `InputHistoryDisplay-rationale.md` §8.7 in OGBrawlerUnreal's docs).
 
-### 17.2 Publish: once per frame, after the step batch, on both roles
+### 17.2 Publish: after the step batch, on the thread that ran it
 
-`publishDisplaySnapshot_GameThread` runs in `onPostPhysicsStep` where the visualization refresh ran before (§10, step 6).
-A driver-scheduled backend calls `onPostPhysicsStep` once the frame's step tasks have completed (the tick driver's
-post-physics), so nothing steps while the fill reads the storage, the input resolution and the reconciliation. The brawler's
-Chaos backend, which this initiative neither builds nor runs, calls it from the engine's post-tick delegate while its physics
-thread may still step: the same unsynchronized read its visualization refresh made there before. The fill is og-simulation's `fillSimulationDisplaySnapshot`; the clock and the tier are
+**A predicting session on a driver-scheduled backend** (`publishesDisplayOnStep()`: the engine traits have a world host,
+the manager exists and runs prediction) publishes in `publishDisplaySnapshot_Step`, which the tick-driver game binding's
+`publishForDisplay()` calls once after each client batch, on the thread that ran the batch (a worker task, or the game
+thread for a client stepping inline), under the world lock (`TickDriverConcepts-rationale.md` §11, in og-simulation's
+docs). Nothing steps there, so the fill reads the storage, the input resolution, the reconciliation and the clock as the
+batch left them. `onPostPhysicsStep` does not fill for such a session; it only acquires (§17.3).
+
+Until og-input-latency task P5-36 every role filled in `onPostPhysicsStep`, on the game thread, on the claim that the tick
+driver's post-physics ran once the frame's step tasks had completed. It did not: `FrameWait::EarlierFrames` (a frame-locked
+client) waits only for earlier frames' tasks, and `ThisFramesSingleStep` (an immediate client) only for a one-step frame's,
+so the fill could read the storage while the frame's own batch stepped on a worker (og-input-latency's design review P5-31,
+L5; `SimulationTickDriverDisplayFillTest.cpp` in og-simulation-tests reproduces it).
+
+**What the step-thread fill reads, per mode.**
+- **Immediate** (§18): og-sim-net drains on the step's thread, so the relay stores, the arrival rings, the tier receipt and
+  the registrations are written there too. The fill reads every source on its writer's thread. The tier comes from
+  `m_displayTier`, the `TripleBuffer` the tier receipt (`recomputeAndPublishEffectiveInputDelay`) writes.
+- **Frame-locked** (§16): the drain runs on the game thread, so four of the fill's sources are written there: the tier, the
+  relay stores, the arrival rings and the registrations. The tier still comes from `m_displayTier`, whose writer is then the
+  game thread; `beginClientSimNet` seeds it with the consumer's reading before any step, so the display before the first
+  tier is the consumer's default reading, as before. The relay fields (each entry's last relayed input and arrival ring)
+  come from a stage: `onFrameStepsDue_Step` (on the game thread, before the batch is dispatched) copies them for every
+  stored character with og-simulation's `stageDisplayRelay` into `m_displayRelay`, a `TripleBuffer`, and the fill reads
+  the newest stage (`SimulationDisplaySnapshot-rationale.md` §3, in og-simulation's docs). A stage always exists when a
+  frame-locked batch fills (a `checkf`). What the game thread still writes under the fill (the correction landings, the
+  relay stores the collect reads, a registration's storage insert) is what the step's own sweeps already read across
+  threads, the netcode's accepted crossings (`ThreadingCrossings.md` rows 1, 2 and 11, in og-simulation's docs).
+
+**Every other session** publishes in `publishDisplaySnapshot_GameThread`, in `onPostPhysicsStep` where the visualization
+refresh ran before (§10, step 6):
+- an authority stepping inline steps on the game thread inside the frame's start of physics, so its fill in the
+  post-physics pass runs after its steps on the same thread: there is no race there;
+- an authority on the loop never fills (below);
+- the brawler's Chaos backend, which this initiative neither builds nor runs, calls `onPostPhysicsStep` from the engine's
+  post-tick delegate while its physics thread may still step: the same unsynchronized read its visualization refresh made
+  there before. It has no batch hook.
+
+The fill is og-simulation's `fillSimulationDisplaySnapshot`; in `publishDisplaySnapshot_GameThread` the clock and the tier are
 read first:
 - **a predicting session** reads `readDisplayClock(getClientClock(), getNetworkEstimator())`, and, when the tier consumer
   exists, `readDisplayTier(consumer, getTimeConfig(), the published effective delay)`; without a consumer the tier reading
@@ -1954,11 +1990,13 @@ stays the size it was plus three pointers.
 
 ### 17.3 The game-thread view: one snapshot held, its states copied and overlaid
 
-`refreshDisplayView_GameThread`, right after the publish, acquires the newest snapshot and then releases the one it held, if
+`refreshDisplayView_GameThread`, in the post-physics pass, acquires the newest snapshot and then releases the one it held, if
 that is a different one: the channel marks a held snapshot with one bit, not a count, so releasing first and acquiring the
 same slot again would leave the reader on an unmarked slot. Acquiring first holds two for the instant between the calls,
-which is the reader's bound (`SimulationDisplayPublisher::kMaxHeldByReader`), and a publish never runs in that instant: both
-run on the game thread, in this order. Every reader in the frame shares the one held snapshot until the next pass.
+which is the reader's bound (`SimulationDisplayPublisher::kMaxHeldByReader`). On a Jolt client a publish may run in that
+instant, on the step's thread: the channel's writer then recycles the oldest snapshot the reader does not hold, and with
+two of four held one is always free (`SimulationDisplaySnapshot-rationale.md` §5). On every other session the publish runs
+just before, on the game thread. Every reader in the frame shares the one held snapshot until the next pass.
 `endPlay` releases it.
 
 Then, for each entry, the session copies the entry's state into its own array of visualization states (index-aligned with
@@ -1970,7 +2008,9 @@ the game thread's.
 
 So the game thread now reads the state as of the end of the last step batch, plus this frame's poses. A reader that ran
 after a frame's steps but before its post-physics pass read the live caches before; it now reads them as of the previous
-pass, at most one step batch older (the task's DEV).
+pass, at most one step batch older (the task's DEV). On a Jolt client the pass reads the newest batch published before it
+(since og-input-latency task P5-36): an immediate client's one-step frame waits for its batch, fill included, so it shows
+that batch; a frame that does not wait shows the newest batch that finished before the pass.
 
 ### 17.4 The doors
 
@@ -2059,7 +2099,7 @@ The drain writes on the step's thread what it wrote on the game thread frame-loc
 | the server connection's round trip | the drain's `serverRttSeconds` read it | published each frame by the lanes (`publishServerRtt_GameThread`), read from atomics (`UESimNetHost-rationale.md` §5) |
 | the WIRE sample | `onTimingInfoReceived`'s `noteWireSample` (a game-thread door) | `noteWireSample_Internal`, through the latency mailbox |
 | the drain's latency stamps | the host's `stamp`, `stampAt`, `stampCorrectionReceived` | `stampClientReceived_Internal` (`UELatencyBudgetDiagnostics-rationale.md` §13) |
-| the tier receipt's display state | `publishDisplaySnapshot_GameThread`'s `readDisplayTier` over the tier consumer and the time config | `recomputeAndPublishEffectiveInputDelay` writes the same `DisplayTierReading` into a `TripleBuffer` (og-sim `Mailbox.h`) after each recompute; the publish reads the newest |
+| the tier receipt's display state | `publishDisplaySnapshot_GameThread`'s `readDisplayTier` over the tier consumer and the time config | `recomputeAndPublishEffectiveInputDelay` writes the same `DisplayTierReading` into a `TripleBuffer` (og-sim `Mailbox.h`) after each recompute; the publish reads the newest (since og-input-latency task P5-36 a Jolt client's publish reads it in both modes, on the step's thread, §17.2) |
 | the roster bindings | `clientBindStep`, `tryRegister`, `forgetSimNetCharacter` | the same calls, through the bindings' lock (`UESimNetHost-rationale.md` §12) |
 | the roster mirror | `physicsSlotFor` | the bindings' copy of the entry, under the lock |
 
@@ -2249,6 +2289,27 @@ runner keeps stepping (the gate's hitch arm, which delays the hitch into steady 
   first (`UESimNetLanes-guards.md` G-03, the session's `onAuthorityRunnerJoined_GameThread`), then calls the stop handler, which
   unregisters every character host-side (§19.4: nothing is posted once the runner stopped) and releases og-sim-net's server.
 - A pawn whose `EndPlay` comes after either is unregistered host-side only.
+
+### 19.7 The step's time on the runner's lines (og-input-latency task P5-37)
+
+A dedicated server has no log thread. A line logged on another thread is queued, and it is stamped when the game thread
+next flushes the queue, so on the loop the runner's `[AuthoritySimulation]` and `[Release]` lines carry stamps up to one
+server frame late (the Ph4 gate measured 6.3 to 7.2 ms on average). Both lines therefore carry the step's own time:
+
+- **`noteAuthorityStepTime_Step()`** reads `FPlatformTime::Seconds()` once, keeps it for the release that follows, and
+  hands it to the manager for the step that follows (`SimulationManager-rationale.md` §18). The brawler's tick-driver
+  binding calls it first in `releaseInputsForAuthorityTick`, on the thread that steps the authority (the runner on the loop,
+  the game thread otherwise), immediately before `releaseDelayedInputsForStep(tick, 1)`.
+- **`releaseDelayedInputsForStep`** takes the kept time (and clears it) before its server test, and passes it to og-sim-net's
+  `releaseForStep`, which appends it to each `[Release]` line (`ServerReceptionCoordinator-rationale.md` §8).
+- **The lines:** `[AuthoritySimulation] tick=<t> stepSeconds=<s>` and `[Release] id=… late=<n> stepSeconds=<s>`, the same
+  value on both for one step; the clock is the latency probe's (`FPlatformTime::Seconds()`, the same on every process of
+  one machine). Everything before the field is unchanged.
+- **Loop on and loop off alike.** Off the loop the stamps are already prompt; the field is written anyway, so the gate tools
+  read one timeline on every arm.
+- **Not on Chaos.** The Chaos configuration releases a frame's batch from `InjectInputs_External` on the game thread and steps
+  on the physics thread. It never calls `noteAuthorityStepTime_Step`, so its lines are as before, and nothing written on one
+  thread is read on the other.
 
 ## §20 The clock's RTT source: SimClock samples, the knob, the shadow line (og-input-latency task P3-10)
 

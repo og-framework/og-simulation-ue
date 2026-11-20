@@ -1208,7 +1208,9 @@ it, a worker client's end of physics waits for the step its own frame dispatched
    published snapshots (`beforePresent_GameThread`), then the display snapshot's fill and acquire
    (`publishDisplaySnapshot_GameThread`, `refreshDisplayView_GameThread`; both on the game thread inside the pass, so
    the snapshot is not the late hop), and last the latency probe's game-thread tick, which stamps H7's `Rendered` point on
-   the newest pending step end.
+   the newest pending step end. Since og-input-latency task P5-36 a client's fill runs instead after its batch, on the
+   step's thread (`UESimulationSession-rationale.md` §17.2); the pass only acquires, and a one-step frame's wait covers the
+   fill.
 3. The step's `afterTick` stamps the step end and then publishes the render snapshot (J5). An immediate client's step
    also carries og-sim-net's drain (`receiveForStep`) and the send at capture (`onStepStarted`); a frame-locked client
    runs both on the game thread outside this window.

@@ -407,6 +407,8 @@ private:
 
 	void receiveForClientStep_Step();
 
+	void publishDisplaySnapshot_Step();
+
 	void applyUnregisterRequests_Step(typename SimNetLanes::Client& client);
 
 	void enqueueQueuedUnregister_Step(typename SimNetLanes::Client& client, unsigned int id);
@@ -491,7 +493,13 @@ private:
 
 	void publishDisplaySnapshot_GameThread();
 
+	bool publishesDisplayOnStep() const;
+
+	void stageDisplayRelay_GameThread();
+
 	void refreshDisplayView_GameThread();
+
+	void noteAuthorityStepTime_Step();
 
 	void releaseDelayedInputsForStep(int32 firstTick, int32 numSteps);
 
@@ -561,6 +569,7 @@ private:
 	bool m_detachedClientAbandonLogged = false;
 	bool m_authorityLoop = false;
 	bool m_runnerStopped = false;
+	std::optional<double> m_releaseStepSeconds_Step;
 	std::unordered_map<unsigned int, uint64> m_runnerBodyKeysById;
 	uint64 m_authorityWakes_Runner = 0u;
 
@@ -658,6 +667,8 @@ private:
 	std::unordered_map<unsigned int, TStrongObjectPtr<typename TraitsT::Component>> m_pendingUnregisters;
 	std::unordered_map<unsigned int, TStrongObjectPtr<typename TraitsT::Component>> m_componentsHeldForRunner;
 	std::unique_ptr<TripleBuffer<DisplayTierReading>> m_displayTier = std::make_unique<TripleBuffer<DisplayTierReading>>();
+	using DisplayRelay = DisplayRelayStage<typename Simulatable::InputType, kMaxSimulatableSlots>;
+	std::unique_ptr<TripleBuffer<DisplayRelay>> m_displayRelay = std::make_unique<TripleBuffer<DisplayRelay>>();
 
 	static constexpr bool compositionContractsHold()
 	{
@@ -1060,6 +1071,12 @@ void UESimulationSession<TraitsT>::beginClientSimNet(UWorld& world)
 	if (m_immediateClient)
 		lanes->client()->bindLifecycle(m_storage, m_reconciliation, m_inputResolution, m_netSync);
 	lanes->bindClientSession(*this);
+	if (!m_immediateClient)
+	{
+		m_displayTier->write() = readDisplayTier(*m_replicatedTierConsumer, m_manager->getTimeConfig(),
+			m_inputResolution.getClientEffectiveInputDelayTicks());
+		m_displayTier->publish();
+	}
 	logSimTrafficImmediateRefusal(lanes->immediateDecision());
 	logSimNetHostLine(/*isServer=*/false, detached, m_immediateClient);
 }
@@ -1613,6 +1630,8 @@ void UESimulationSession<TraitsT>::maybeLogClockSourceWindow()
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::onFrameStepsDue_Step(int32 firstUpcomingSimTick, int32 numSteps)
 {
+    if (publishesDisplayOnStep() && !m_immediateClient)
+        stageDisplayRelay_GameThread();
     static_assert(kFrameHealthProbeWindowSamples == kResimGateProbeWindowSamples,
         "PROBE A's window must stay the same length as ResimGateProbe's, so one [ResimProbe.Frame] "
         "window lines up against the surrounding [ResimProbe.Gate] windows without a resim-tick "
@@ -1759,14 +1778,24 @@ OGSIM_OPTIMIZE_ON
 OGSIM_OPTIMIZE_OFF
 
 template <typename TraitsT>
+void UESimulationSession<TraitsT>::noteAuthorityStepTime_Step()
+{
+    const double stepSeconds = FPlatformTime::Seconds();
+    m_releaseStepSeconds_Step = stepSeconds;
+    if (m_manager.has_value())
+        m_manager->noteAuthorityStepSeconds(stepSeconds);
+}
+
+template <typename TraitsT>
 void UESimulationSession<TraitsT>::releaseDelayedInputsForStep(int32 firstTick, int32 numSteps)
 {
+    const std::optional<double> stepSeconds = std::exchange(m_releaseStepSeconds_Step, std::nullopt);
     if (!m_simNetServer.has_value())
         return;
 
     OG_LOG_ROUTED(LogOGNet, TEXT("[ReleaseBatch] first=%d numSteps=%d"), firstTick, numSteps);
 
-    m_simNetServer->releaseForStep(firstTick, numSteps);
+    m_simNetServer->releaseForStep(firstTick, numSteps, stepSeconds);
 }
 
 template <typename TraitsT>
@@ -2238,7 +2267,8 @@ void UESimulationSession<TraitsT>::onPostPhysicsStep()
 		m_detachedSimNetLanes->onTickFlush();
 	}
 
-	publishDisplaySnapshot_GameThread();
+	if (!publishesDisplayOnStep())
+		publishDisplaySnapshot_GameThread();
 
 	refreshDisplayView_GameThread();
 
@@ -2284,6 +2314,51 @@ void UESimulationSession<TraitsT>::publishDisplaySnapshot_GameThread()
 	{
 		fillSimulationDisplaySnapshot(snapshot, m_storage, m_inputResolution, m_reconciliation, clock, tier);
 	});
+}
+
+template <typename TraitsT>
+bool UESimulationSession<TraitsT>::publishesDisplayOnStep() const
+{
+	return EngineTraits::kHasWorldHost && m_manager.has_value() && m_manager->runsPrediction();
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::publishDisplaySnapshot_Step()
+{
+	checkf(publishesDisplayOnStep(),
+		TEXT("UESimulationSession::publishDisplaySnapshot_Step is the driver-scheduled client's display publish, after its step "
+			 "batch on the step thread; an authority publishes on its own thread in onPostPhysicsStep, and Chaos has no batch "
+			 "hook. Was the game-thread fill racing the worker step (og-input-latency task P5-36)"));
+
+	const DisplayClockReading clock = readDisplayClock(m_manager->getClientClock(), m_manager->getNetworkEstimator());
+	DisplayTierReading tier;
+	if (const DisplayTierReading* const published = m_displayTier->acquireLatest())
+		tier = *published;
+
+	if (m_immediateClient)
+	{
+		m_displayPublisher->publish_Step([&](DisplaySnapshot& snapshot)
+		{
+			fillSimulationDisplaySnapshot(snapshot, m_storage, m_inputResolution, m_reconciliation, clock, tier);
+		});
+		return;
+	}
+
+	const DisplayRelay* const staged = m_displayRelay->acquireLatest();
+	checkf(staged != nullptr,
+		TEXT("UESimulationSession::publishDisplaySnapshot_Step: a frame-locked client's batch ended before any relay stage. "
+			 "onFrameStepsDue_Step stages the game thread's relay fields before every batch is dispatched"));
+	m_displayPublisher->publish_Step([&](DisplaySnapshot& snapshot)
+	{
+		fillSimulationDisplaySnapshot(snapshot, m_storage, m_inputResolution, m_reconciliation, clock, tier, *staged);
+	});
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::stageDisplayRelay_GameThread()
+{
+	stageDisplayRelay<Simulatable>(m_displayRelay->write(), m_storage, m_inputResolution);
+	m_displayRelay->publish();
 }
 
 template <typename TraitsT>

@@ -240,8 +240,10 @@ thread touches it (G-05). On a dedicated server the step thread is the game thre
 mailbox is pushed and drained by one thread: a legal degenerate case of single-producer, single-consumer.
 
 **The hop masks.** `begin` creates the probe with the role's hops and, since og-input-latency task P5-7, the role's og-net
-hops ORed in: `kServerHops | kServerNetHops` (adds `N4`) on the authority, `kClientHops | kClientNetHops` (adds `N6`, `N6c`) on
-a client. The og-net hosts stamp `NetReceived` at the datagram's receive time (`stampAt`), which those hops start from
+hops ORed in: `kServerHops | kServerNetHops` (adds `N4`) on the authority, `kClientHops | kClientNetHops` (adds `N6`, `N6c`,
+and since og-input-latency task P5-37 `N6u`) on a client. `N6u` ends at the `Consumed` stamp `postRelayedReads_Internal`
+already makes for a relayed capture at the start of the step that read it (`stampAfterStep_Internal`'s `stepStartSeconds`,
+taken after that step's drain), so it needed no new stamp here. The og-net hosts stamp `NetReceived` at the datagram's receive time (`stampAt`), which those hops start from
 (`LatencyBudgetProbe-rationale.md`).
 
 **Lifetime.** `begin` creates the probe and the two mailboxes; nothing resets them before the template is destroyed, so

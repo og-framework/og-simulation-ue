@@ -124,8 +124,10 @@ For each `(simId, bundle)` of an accepted set, in the set's order:
 3. **One ServerReceived stamp per slot**, `stampServerReceived(simId, captureTick, recvSeconds)`, with the receive time the
    transport recorded for the whole message. The host turns that into its ServerReceived and NetReceived points.
 4. **One RTT sample per bundle** (G-02): `noteRttSample(handle, simId, host.receptionTick(), host.rttMs(sender), *this)`.
-5. **`receiveInputBundle<SimT>(simId, handle, localIndex, bundle, *this, *this)`**, with the local index from the roster
-   and the session as both the delivery and the relay sink.
+5. **`receiveInputBundle<SimT>(simId, handle, localIndex, bundle, *this, *this, recvSeconds)`**, with the local index from
+   the roster, the session as both the delivery and the relay sink, and the message's receive time, which the coordinator
+   appends to each `[ServerReceive]` line as ` recvSeconds=` (`ServerReceptionCoordinator-rationale.md` §8; og-input-latency
+   P5-38). It is the value step 3 stamps.
 
 Steps 3 to 5 are the order of the engine's input path, `UESimulatableOwnerBinding::receiveRemoteMoveBundle`: the
 ServerReceived stamps per slot, then the RTT sample, then `receiveInputBundle` with the session as both sinks. Three things
@@ -165,6 +167,9 @@ does. The decision-equivalence test drives that sink through the coordinator dir
 For a one-type game (the brawler) that is today's single drain. For more types, each drain walks every claim and dequeues only
 its own type's queue; the drain-tick marker it sets is an assignment, and `[DelayShift]` logs only when a wire's delay
 changes, so the repeated walk adds no line and changes no decision. The `[ReleaseBatch]` line stays the host's.
+An optional third argument, `stepSeconds`, is the host's time of the release; it is passed unchanged to every drain, and the
+coordinator appends it to each `[Release]` line as ` stepSeconds=` (`ServerReceptionCoordinator-rationale.md` §8). Without
+it the lines are as before (og-input-latency P5-37).
 
 ## §7 The reap
 
