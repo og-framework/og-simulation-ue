@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +23,7 @@
 
 namespace ogsimnet
 {
+inline constexpr uint8_t kClockWireVersion = 2u;
 inline constexpr double kClockPingIntervalSeconds = 1.0 / 20.0;
 inline constexpr uint32_t kNoServerTick = std::numeric_limits<uint32_t>::max();
 
@@ -31,6 +33,7 @@ struct SimNetClockPong
 	double t1 = 0.0;
 	double t2 = 0.0;
 	uint32_t serverTick = kNoServerTick;
+	uint32_t serverTickAgeUs = 0;
 };
 
 struct SimNetClockSample
@@ -38,6 +41,7 @@ struct SimNetClockSample
 	double rttSeconds = 0.0;
 	double thetaSeconds = 0.0;
 	uint32_t serverTick = kNoServerTick;
+	double serverTickAgeSeconds = 0.0;
 	double t0 = 0.0;
 	double t1 = 0.0;
 	double t2 = 0.0;
@@ -61,9 +65,9 @@ namespace simNetClock
 {
 	inline constexpr size_t kStampBytes = sizeof(uint64_t);
 	inline constexpr size_t kPingBytes = simEnvelope::kHeaderBytes + kStampBytes;
-	inline constexpr size_t kPongBytes = simEnvelope::kHeaderBytes + 3u * kStampBytes + sizeof(uint32_t);
-	inline constexpr uint8_t kSampleRecordVersion = 0u;
-	inline constexpr size_t kSampleRecordBytes = simEnvelope::kHeaderBytes + 6u * kStampBytes + sizeof(uint32_t);
+	inline constexpr size_t kPongBytes = simEnvelope::kHeaderBytes + 3u * kStampBytes + 2u * sizeof(uint32_t);
+	inline constexpr uint8_t kSampleRecordVersion = 2u;
+	inline constexpr size_t kSampleRecordBytes = simEnvelope::kHeaderBytes + 6u * kStampBytes + 2u * sizeof(uint32_t);
 
 	static_assert(sizeof(double) == sizeof(uint64_t) && std::numeric_limits<double>::is_iec559,
 		"simNetClock: a stamp travels as the 64 bits of an IEEE 754 double, so both ends read the same seconds");
@@ -73,9 +77,9 @@ namespace simNetClock
 	static_assert(!simEnvelope::hasBodyLayout(SimMessageKind::ClockPing) && !simEnvelope::hasBodyLayout(SimMessageKind::ClockPong),
 		"simNetClock: simEnvelope::decode refuses a ping and a pong, so the SimClock lane's own handler is their only reader and "
 		"none reaches a session's drain as a clock message");
-	static_assert(kPingBytes == 10u && kPongBytes == 30u && kPongBytes <= 40u,
-		"simNetClock: a ping is the header and t0 (10 B), a pong the header, t0, t1, t2 and the server tick (30 B), inside the "
-		"40 B the envelope table gives kinds 5 and 6");
+	static_assert(kPingBytes == 10u && kPongBytes == 34u && kPongBytes <= 40u,
+		"simNetClock: a ping is the header and t0 (10 B), a pong the header, t0, t1, t2, the server tick and its age (34 B since "
+		"og-time-dilation task 2, clock wire version 2; 30 B without the age), inside the 40 B the envelope table gives kinds 5 and 6");
 	static_assert(kSampleRecordVersion != kSimEnvelopeVersion,
 		"simNetClock: a clockSample record's version byte is one no envelope carries, so a message from the wire never reads as "
 		"a record and a record never decodes as a message");
@@ -109,12 +113,24 @@ namespace simNetClock
 			putLe(out, offset, std::bit_cast<uint64_t>(seconds), kStampBytes);
 		}
 
-		constexpr uint32_t tickAt(std::span<const std::byte> bytes, size_t offset)
+		constexpr uint32_t u32At(std::span<const std::byte> bytes, size_t offset)
 		{
 			return static_cast<uint32_t>(u64LeAt(bytes, offset, sizeof(uint32_t)));
 		}
 
-		constexpr void putTick(std::span<std::byte> out, size_t offset, uint32_t tick) { putLe(out, offset, tick, sizeof(uint32_t)); }
+		constexpr void putU32(std::span<std::byte> out, size_t offset, uint32_t value) { putLe(out, offset, value, sizeof(uint32_t)); }
+
+		constexpr double secondsOfMicroseconds(uint32_t microseconds) { return static_cast<double>(microseconds) * 1e-6; }
+
+		constexpr uint32_t microsecondsOfSeconds(double seconds)
+		{
+			const double microseconds = seconds * 1e6;
+			if (!(microseconds > 0.0))
+				return 0u;
+			if (!(microseconds < static_cast<double>(std::numeric_limits<uint32_t>::max())))
+				return std::numeric_limits<uint32_t>::max();
+			return static_cast<uint32_t>(microseconds + 0.5);
+		}
 
 		constexpr bool hasHeader(std::span<const std::byte> bytes, uint8_t version, SimMessageKind kind)
 		{
@@ -169,7 +185,8 @@ namespace simNetClock
 		detail::putStamp(out, offset, pong.t0);
 		detail::putStamp(out, offset += kStampBytes, pong.t1);
 		detail::putStamp(out, offset += kStampBytes, pong.t2);
-		detail::putTick(out, offset += kStampBytes, pong.serverTick);
+		detail::putU32(out, offset += kStampBytes, pong.serverTick);
+		detail::putU32(out, offset += sizeof(uint32_t), pong.serverTickAgeUs);
 		return kPongBytes;
 	}
 
@@ -182,7 +199,8 @@ namespace simNetClock
 		pong.t0 = detail::stampAt(bytes, offset);
 		pong.t1 = detail::stampAt(bytes, offset += kStampBytes);
 		pong.t2 = detail::stampAt(bytes, offset += kStampBytes);
-		pong.serverTick = detail::tickAt(bytes, offset += kStampBytes);
+		pong.serverTick = detail::u32At(bytes, offset += kStampBytes);
+		pong.serverTickAgeUs = detail::u32At(bytes, offset += sizeof(uint32_t));
 		return pong;
 	}
 
@@ -192,6 +210,7 @@ namespace simNetClock
 		sample.rttSeconds = (t3 - pong.t0) - (pong.t2 - pong.t1);
 		sample.thetaSeconds = ((pong.t1 - pong.t0) + (pong.t2 - t3)) / 2.0;
 		sample.serverTick = pong.serverTick;
+		sample.serverTickAgeSeconds = detail::secondsOfMicroseconds(pong.serverTickAgeUs);
 		sample.t0 = pong.t0;
 		sample.t1 = pong.t1;
 		sample.t2 = pong.t2;
@@ -211,7 +230,8 @@ namespace simNetClock
 		detail::putStamp(out, offset += kStampBytes, sample.t1);
 		detail::putStamp(out, offset += kStampBytes, sample.t2);
 		detail::putStamp(out, offset += kStampBytes, sample.t3);
-		detail::putTick(out, offset += kStampBytes, sample.serverTick);
+		detail::putU32(out, offset += kStampBytes, sample.serverTick);
+		detail::putU32(out, offset += sizeof(uint32_t), detail::microsecondsOfSeconds(sample.serverTickAgeSeconds));
 		return kSampleRecordBytes;
 	}
 
@@ -227,7 +247,8 @@ namespace simNetClock
 		sample.t1 = detail::stampAt(bytes, offset += kStampBytes);
 		sample.t2 = detail::stampAt(bytes, offset += kStampBytes);
 		sample.t3 = detail::stampAt(bytes, offset += kStampBytes);
-		sample.serverTick = detail::tickAt(bytes, offset += kStampBytes);
+		sample.serverTick = detail::u32At(bytes, offset += kStampBytes);
+		sample.serverTickAgeSeconds = detail::secondsOfMicroseconds(detail::u32At(bytes, offset += sizeof(uint32_t)));
 		return sample;
 	}
 
@@ -240,7 +261,7 @@ namespace simNetClock
 
 	namespace selfCheck
 	{
-		inline constexpr SimNetClockPong kPong{1.0, 1.75, 1.875, 4242u};
+		inline constexpr SimNetClockPong kPong{1.0, 1.75, 1.875, 4242u, 4321u};
 		inline constexpr double kT3 = 1.25;
 
 		constexpr bool pongRoundTrips()
@@ -250,7 +271,8 @@ namespace simNetClock
 				return false;
 			const std::optional<SimNetClockPong> read = readPong(wire);
 			return read && read->t0 == kPong.t0 && read->t1 == kPong.t1 && read->t2 == kPong.t2 && read->serverTick == kPong.serverTick
-				&& !readPong(std::span<const std::byte>(wire).first(kPongBytes - 1u)) && !readPing(wire);
+				&& read->serverTickAgeUs == kPong.serverTickAgeUs && !readPong(std::span<const std::byte>(wire).first(kPongBytes - 1u))
+				&& !readPing(wire);
 		}
 
 		constexpr bool pingRoundTrips()
@@ -265,7 +287,8 @@ namespace simNetClock
 		constexpr bool sampleIsTheNtpPair()
 		{
 			const SimNetClockSample sample = sampleOf(kPong, kT3);
-			return sample.rttSeconds == 0.125 && sample.thetaSeconds == 0.6875 && sample.serverTick == 4242u && sample.t3 == kT3;
+			return sample.rttSeconds == 0.125 && sample.thetaSeconds == 0.6875 && sample.serverTick == 4242u && sample.t3 == kT3
+				&& sample.serverTickAgeSeconds > 0.0043209 && sample.serverTickAgeSeconds < 0.0043211;
 		}
 
 		constexpr bool sampleRecordRoundTripsAndNeverDecodes()
@@ -278,8 +301,28 @@ namespace simNetClock
 			const DecodedSimMessage decoded =
 				simEnvelope::decode<simEnvelope::Shape<4u, 4u>>(SimLane::SimClock, SimDirection::ServerToClient, record);
 			return read && read->rttSeconds == sample.rttSeconds && read->thetaSeconds == sample.thetaSeconds
-				&& read->serverTick == sample.serverTick && read->t0 == sample.t0 && read->t1 == sample.t1 && read->t2 == sample.t2
-				&& read->t3 == sample.t3 && !isPong(record) && decoded.refusal == DecodeRefusal::Version;
+				&& read->serverTick == sample.serverTick && read->serverTickAgeSeconds == sample.serverTickAgeSeconds
+				&& read->t0 == sample.t0 && read->t1 == sample.t1 && read->t2 == sample.t2 && read->t3 == sample.t3
+				&& !isPong(record) && decoded.refusal == DecodeRefusal::Version;
+		}
+
+		constexpr bool sampleRecordCarriesEveryAgeExactly()
+		{
+			for (const uint32_t ageUs : {0u, 1u, 4321u, 999999u, 1000000u, 4294967294u, 4294967295u})
+			{
+				SimNetClockPong pong = kPong;
+				pong.serverTickAgeUs = ageUs;
+				const SimNetClockSample sample = sampleOf(pong, kT3);
+				std::array<std::byte, kSampleRecordBytes> record{};
+				if (writeSampleRecord(record, sample) != kSampleRecordBytes)
+					return false;
+				const std::optional<SimNetClockSample> read = readSampleRecord(record);
+				if (!read || read->serverTickAgeSeconds != sample.serverTickAgeSeconds
+					|| detail::microsecondsOfSeconds(read->serverTickAgeSeconds) != ageUs)
+					return false;
+			}
+			return detail::microsecondsOfSeconds(-1.0) == 0u && detail::microsecondsOfSeconds(std::numeric_limits<double>::quiet_NaN()) == 0u
+				&& detail::microsecondsOfSeconds(1e10) == std::numeric_limits<uint32_t>::max();
 		}
 
 		static_assert(pongRoundTrips(), "simNetClock: a pong reads back as written, and a short pong or a pong read as a ping is refused");
@@ -288,6 +331,9 @@ namespace simNetClock
 			"simNetClock::sampleOf: RTT = (t3 - t0) - (t2 - t1) and theta = ((t1 - t0) + (t2 - t3)) / 2, the pair P3 section 7.1 names");
 		static_assert(sampleRecordRoundTripsAndNeverDecodes(),
 			"simNetClock: a clockSample record reads back as written, is not a pong, and simEnvelope::decode refuses it (Version)");
+		static_assert(sampleRecordCarriesEveryAgeExactly(),
+			"simNetClock: a clockSample record carries the pong's server tick age as the same uint32 microseconds, bit for bit over "
+			"the whole range, and an age below 0, NaN or past the range writes 0 or the maximum");
 	} // namespace selfCheck
 } // namespace simNetClock
 
@@ -302,7 +348,13 @@ namespace simNetClockDetail
 	inline void count(std::atomic<uint64_t>& counter) { counter.fetch_add(1u, std::memory_order_relaxed); }
 
 	inline uint64_t read(const std::atomic<uint64_t>& counter) { return counter.load(std::memory_order_relaxed); }
+
+	inline uint32_t microsecondsLow32(double seconds) { return static_cast<uint32_t>(static_cast<uint64_t>(std::llround(seconds * 1e6))); }
 } // namespace simNetClockDetail
+
+static_assert(std::atomic<uint64_t>::is_always_lock_free,
+	"SimNetClockServer: the published tick and its step's start time (the low 32 bits of its microseconds) are one lock-free "
+	"64-bit atomic, so a pong's tick and its age always come from the same publish (og-time-dilation tasks 2 and 2b)");
 
 template <class TransportT, class ClockT>
 class SimNetClockServer
@@ -322,8 +374,13 @@ public:
 	SimNetClockServer(SimNetClockServer&&) = delete;
 	SimNetClockServer& operator=(SimNetClockServer&&) = delete;
 
-	void publishServerTick(uint32_t tick) { m_serverTick.store(tick, std::memory_order_release); }
-	uint32_t publishedServerTick() const { return m_serverTick.load(std::memory_order_acquire); }
+	void publishServerTick(uint32_t tick, double tickStartSeconds)
+	{
+		m_published.store((static_cast<uint64_t>(tick) << 32u) | simNetClockDetail::microsecondsLow32(tickStartSeconds),
+			std::memory_order_release);
+	}
+
+	uint32_t publishedServerTick() const { return static_cast<uint32_t>(m_published.load(std::memory_order_acquire) >> 32u); }
 
 	SimNetClockStats stats() const
 	{
@@ -363,8 +420,11 @@ private:
 		SimNetClockPong pong;
 		pong.t0 = *t0;
 		pong.t1 = recvSeconds;
-		pong.serverTick = m_serverTick.load(std::memory_order_acquire);
+		const uint64_t published = m_published.load(std::memory_order_acquire);
+		pong.serverTick = static_cast<uint32_t>(published >> 32u);
 		pong.t2 = m_clock.nowSeconds();
+		if (pong.serverTick != kNoServerTick)
+			pong.serverTickAgeUs = static_cast<uint32_t>(simNetClockDetail::microsecondsLow32(pong.t2) - static_cast<uint32_t>(published));
 		std::array<std::byte, simNetClock::kPongBytes> out{};
 		const size_t size = simNetClock::writePong(out, pong);
 		m_transport.sendClockNow(conn, std::span<const std::byte>(out.data(), size));
@@ -373,7 +433,7 @@ private:
 
 	TransportT& m_transport;
 	ClockT& m_clock;
-	std::atomic<uint32_t> m_serverTick{kNoServerTick};
+	std::atomic<uint64_t> m_published{static_cast<uint64_t>(kNoServerTick) << 32u};
 	std::atomic<uint64_t> m_pingsAnswered{0};
 	std::atomic<uint64_t> m_pingsRefused{0};
 	std::atomic<uint64_t> m_pingsMalformed{0};

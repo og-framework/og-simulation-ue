@@ -27,6 +27,9 @@
 <!-- lint-external-ref: getDelayedInputComponentsById -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
 <!-- lint-external-ref: m_delayedInputComponentsById -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
 <!-- lint-external-ref: m_backendWorlds -- RENAMED by og-ue-simulationcomponentandmanagersplit task 35 to m_physicsBackendWorlds; kept in the task-24a seen-failing record of §2 and in §14's record of the rename -->
+<!-- lint-external-ref: beforeAuthorityPump_Runner -- RENAMED by og-time-dilation task 8 to beforePump_Owner; kept in §22.3's record of the rename -->
+<!-- lint-external-ref: onClientStepStarted_Step -- SPLIT by og-input-latency task P5-30 into receiveForClientStep_Step and afterClientCapture_Step; kept in §18.2's record of the old order -->
+<!-- lint-external-ref: onFrameStepsDue_GameThread -- RENAMED by og-input-latency task P5-33 to onFrameStepsDue_Step; kept in §7's provenance and in §9.9's record of the rename -->
 <!-- lint-external-ref: UNetConnection::Tick -- Unreal Engine method, outside every scan root (§9.9) -->
 <!-- lint-external-ref: UNetConnection::IsNetReady -- Unreal Engine method, outside every scan root (§9.9) -->
 <!-- lint-external-ref: UDataStreamChannel::Tick -- Unreal Engine method, outside every scan root (§9.9) -->
@@ -88,12 +91,17 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
   registration through og-sim-net's lifecycle queue, unregistration, teardown, and what frame-locked keeps.
 * **§19** is og-input-latency task P5-19: the authority loop (`og.Sim.AuthorityLoop=1`), the dedicated server stepping on its
   runner: the decision, start, og-sim-net and registration on the runner, the game thread on the loop, and stop; and
-  task P5-37's step time on the runner's `[AuthoritySimulation]` and `[Release]` lines (§19.7).
+  task P5-37's step time on the runner's `[AuthoritySimulation]` and `[Release]` lines (§19.7); and og-time-dilation task
+  2b's publish of the server tick to the SimClock server with that same step time (§19.8).
 * **§20** is og-input-latency task P3-10: the clock's RTT source, its two feeds, the `ClockRttSource` knob and the shadow line;
   and task P3-13's `JitterMultiplier` knob, on the same proof line.
 * **§21** is og-input-latency task P5-20: the game-thread paths off the authority on the loop: PROBE A per stepping wake,
   PROBE 6 retired, the authority presentation snapshot, the visualization gate, the probe stamps, and what the game thread
   still does.
+* **§22** is og-time-dilation task 8: clock dilation on a client in `Off` and `Shadow`: the server tick on the SimClock sample,
+  the `ClockDilation` knob and its `[Dilation.Config]` line, `beforePump_Owner` and its two roles, the stage's threading and its
+  two clocks, the `[Dilation.Window]` line, and why `Shadow` cannot change the rate; og-time-dilation task 11 accepts `On`
+  (§22.6), adds the four dev doors and their clamps (§22.8) and the authority's `[Dilation.Authority]` line (§22.9).
 
 ---
 
@@ -834,7 +842,7 @@ og-input-latency task 4 added two more keys, read by the same intake, and a four
 | `readSessionKnobs(worldIsAuthority)` | the intakes (`⛔G-14`, `⛔G-15`, `⛔G-16`, and since og-input-latency task 4 `⛔G-27`); it reaches no session state and returns the requests in a `SessionKnobs` value | after the latency member's begin, before the backend builds its world: both roles |
 | `applySessionKnobs(knobs)` | the floor's clamp, set, ini line and advisory; the rotation width's clamp and set; the rotation width's proof line; the floor's publish through og-sim-net's server (`publishFloor`, since og-input-latency task P5-7; onto the timing relay before) | in the authority branch, after the neutral input and the og-sim-net server's start, before the tier consumer's start |
 | `applyResimTriggerPolicy(knobs)` | the policy's parse, apply and proof line (`⛔G-17`) | after both role branches |
-| `applyLatencyKnobs(knobs)` (og-input-latency task 4) | the two latency knobs' clamp and set, and their one proof line; since og-input-latency task 27 also the re-centre window's clamp, set and proof line | after both role branches, directly after `applyResimTriggerPolicy` |
+| `applyLatencyKnobs(knobs)` (og-input-latency task 4) | the two latency knobs' clamp and set, and their one proof line; since og-input-latency task 27 also the re-centre window's clamp, set and proof line; since og-input-latency tasks P3-10 and P3-13 the clock's RTT source and jitter multiplier (§20); since og-time-dilation task 8, last, `applyClockDilation` (§22), which since og-time-dilation task 11 also applies the four dev doors (§22.8) | after both role branches, directly after `applyResimTriggerPolicy` |
 
 The statements moved unchanged: the intake's locals are returned in a `SessionKnobs` value, and the two apply functions
 read the same four fields from it (as task 26b left it; `applyLatencyKnobs` reads only the four fields og-input-latency
@@ -2086,7 +2094,7 @@ character it registers is in storage for that step's integrate, and one it unreg
 frame-locked order per step: the frame-locked client drains at the frame's start, before the frame's first step, while the
 immediate client drains before every step, so a step batch of several steps sees each step's own arrivals.
 
-**Before og-input-latency task P5-30** the drain followed the send in `onStepStarted` (`onClientStepStarted_Step()`), after
+**Before og-input-latency task P5-30** the drain followed the send in `onStepStarted` (`onClientStepStarted_Step`), after
 the step's collect, clock advance and resimulation check, so everything it delivered reached the next step: H6c rose by one
 tick and N6 rose too (P5-17's finding F2).
 
@@ -2224,12 +2232,13 @@ before) and touches no `UObject` but the world's driver, which it only reads.
 - **The game binding's hooks** (`BrawlerTickDriverGameUImpl-rationale.md` §10):
   - `idleUntil(deadline)` is og-sim-net's `SimNetIdle` over the lanes' endpoint (`m_simNetIdle`), one `serviceUntil` per call:
     og-net's handlers, the SimClock answer and the relay at receipt run there, on the runner (P2-19);
-  - `beforePump` runs the runner requests (§19.4), then the server's `drain()` (the lifecycle queue first, then the inbox);
+  - `beforePump` runs the runner requests (§19.4), then the server's `drain()` (the lifecycle queue first, then the inbox): the
+    authority path of the session's `beforePump_Owner` (§22.3);
   - `afterInlineBatch` writes the batch's corrections (`SimulationManager::onPostSimulationGameThread`, which on an authority
     only calls `sendCorrectionAll`), publishes the clock with the server tick, and calls og-sim-net's `afterInlineBatch` with the
     tick the driver passes (the corrections, the clock, the reap, the window; P2-19 F1);
   - `onStepEnded` publishes the server tick to the SimClock server after every authority step (`afterStep_Step`), on the loop and
-    inline alike (P2-20 F2).
+    inline alike (P2-20 F2), with that step's start time since og-time-dilation task 2b (§19.8).
 - **The first batch reports tick 0** (the driver publishes its offset after a tick ran, P2-19 F2), and a capture reaped against
   it would be refused by the coordinator's domain gate. On the loop it cannot happen: og-net is serviced only by the runner's
   idle, after its first batch, so no connection is attached at that batch. A `checkf` in `afterAuthorityBatch` states it.
@@ -2242,7 +2251,7 @@ before) and touches no `UObject` but the world's driver, which it only reads.
 The tick backend refuses binds, releases and registrations off the runner in `FreeRunning`, and the Jolt world checks its caller,
 so on the loop a server character's registration crosses to the runner. The game thread keeps every `UObject` read and the game's
 hooks; the runner does every simulation and world write. Requests travel in `m_runnerRequests` (closures under
-`m_lifecycleBridgeMutex`), drained at the top of `beforePump`; outcomes come back as `LifecycleOutcome`s, collected on the game
+`m_lifecycleBridgeMutex`), drained at the top of `beforePump`'s authority path (§22.3); outcomes come back as `LifecycleOutcome`s, collected on the game
 thread in `onPostPhysicsStep` and at each `tryRegister` call.
 
 `tryRegisterOnRunner`, one step per call (the component calls `tryRegister` each frame until it is not `Pending`):
@@ -2311,12 +2320,64 @@ server frame late (the Ph4 gate measured 6.3 to 7.2 ms on average). Both lines t
   on the physics thread. It never calls `noteAuthorityStepTime_Step`, so its lines are as before, and nothing written on one
   thread is read on the other.
 
+### 19.8 The SimClock server's tick and its step's start time (og-time-dilation task 2b)
+
+After every authority step `afterStep_Step` publishes the server tick to og-sim-net's SimClock server
+(`SimNetClockServer::publishServerTick`), and each pong carries that tick with its age, the server's time from the tick to the
+pong (og-sim-net's `SimNetClock-rationale.md` §5). Since og-time-dilation task 2b the publish passes the time the tick's step
+started, and the age is measured from it:
+
+- **Which tick, which time.** On Jolt the authority steps one tick per `SimulationStepDriver::runAuthorityTick`, also inside a
+  batch. Its `beforeTick` releases the inputs for the upcoming tick T through the brawler's binding, which first calls
+  `noteAuthorityStepTime_Step` (§19.7); the step then advances the server clock to T and prints
+  `[AuthoritySimulation] tick=T stepSeconds=<s>`; its `afterTick` reaches `afterStep_Step` through the binding's `onStepEnded`,
+  where `getServerClock().getTick()` is T. So the publish carries T, and the time that belongs to T in the
+  `[AuthoritySimulation]` numbering is the stamp of T's own `beforeTick`. Each tick of a batch has its own stamp, so no
+  batch-start offset is needed.
+- **The kept stamp.** `noteAuthorityStepTime_Step` keeps the stamp a second time, in `m_clockTickStartSeconds_Step`, because
+  `releaseDelayedInputsForStep` takes and clears `m_releaseStepSeconds_Step` in the same `beforeTick`. `afterStep_Step` takes it
+  (and clears it) on every call, then returns on a client or without a clock server, as before. On an authority with a clock
+  server a `checkf` states the stamp is there: every authority step's `beforeTick` takes it. Both members are written and read
+  on the thread that steps the authority (the runner on the loop, the game thread otherwise).
+- **Why.** A time read at the publish is a step's duration D after the start. The truth the dilation sensor is judged against
+  (the lead-split tool's G3, og-time-dilation task 1) is each tick's `stepSeconds`, so with the publish time every client's
+  `Ŝ` read D · f low; with the start time that part is 0 by construction. G-39 forbids putting a time read at the publish
+  back. og-simulation's `ClockDilationController-rationale.md` §15 is the convention on the sensor's side.
+- **How large D is.** D is at most the server's `[SimHost.Window]` `preUs` + `stepUs` (the stamp is taken after `preUs`'s
+  origin, the publish is at `stepUs`'s end). Each of those fields is a p50/p99/max triple. On the brawler's shaped b0 smokes
+  (`T8_shadow`, `T8_on`, `T2b_shadow`, 17 windows each) the median window's p50 sum was 70–75 µs (about 0.0045 tick at 60 Hz),
+  its p99 sum 115–128 µs, and the largest max sum 237 µs (0.014 tick): D is typically about 0.0045 tick and at most 0.014.
+  ⚠ So task 8's sensor bias (`bias sHat` −0.100, −0.108, −0.040 on `T8_shadow`; −0.059, −0.079, −0.057 on `T8_on`) was
+  **not** D · f, though task 8 attributed it to D: it is 3 to 8 times the worst D · f and 9 to 24 times the typical one.
+  Task 2b's own smoke (`T2b_shadow`, with the start time) reads −0.048, −0.054 and −0.071. `sHat − sHatNoAge`, which the
+  start time opens by D · f, read +0.002, −0.008 and −0.001 there, and −0.028 to +0.042 per client over four runs before and
+  after: run-to-run noise is larger than the ≈ 0.0045 tick the change moves. The rest of the bias is outside the publish: the
+  estimator's per-sample error is half the difference of the pong's and the ping's one-way delays
+  (`ServerTickEstimator-rationale.md` §4), and on one PC the SimClock window line reads `minRttOffsetUs=-12617` where the two
+  clocks are the same clock.
+- **A candidate for the rest (not established).** The b0 shaper delivers in order (`reorder=0` on both directions in its
+  `[Shaper.Start]` line): og-net's emulated backend releases each packet at the later of its own due time and the previous
+  packet's (`EmulatedBackend.h`, its `enqueue`), so the denser direction waits longer. On `T2b_shadow` the downlink carries
+  about 165 packets a second against the uplink's about 120. A model of that clamp at those rates (task 2b's review,
+  `clamp_sim.py`) lengthens the downlink by 1.2–1.8 ms more than the uplink, which reads Ŝ −0.035 to −0.053 tick: the sign and
+  about the size of the post-change bias. If so, the bias is a property of the shaping proxy, not of the sensor. G-DIL-0
+  checks it (a smoke with `reorder=1`, or with matched rates).
+- **The client's t3 is not frame-bound.** The pong's receive time t3 is og-net's: `EndpointCore::onDatagram` takes `now()`
+  when the datagram leaves the socket, on og-net's own thread on a client (`ioMode` gives `OwnThread` unless the authority
+  loop is on; the client logs `[OGNet.Driver] start role=client mode=ownThread`), and `SimNetClockClient::onMessage` builds
+  the sample from that `recvSeconds` (`sampleOf`, t3 = `recvSeconds`). Only the finished sample record passes the inbox that
+  is drained at step start, so the drain adds no delay to any stamp.
+- **Off is unchanged.** Only the pong's `serverTickAgeUs` changes (larger by D). A client's estimator feeds it to its server-tick
+  estimator in every mode (§22.1), but under `ClockDilation=Off` nothing reads that estimate: only the dilation stage does,
+  and `Off` does not run it (§22.7). The publish runs whatever the mode, as before. Chaos never calls `afterStep_Step` (§19.7), so it publishes nothing, as before.
+
 ## §20 The clock's RTT source: SimClock samples, the knob, the shadow line (og-input-latency task P3-10)
 
 - **Two feeds, one estimator, one thread.** The engine's round trip arrives in `onTimingInfoReceived` (once per drain that
   delivers a clock tick, §9.6) and goes to `NetworkTimeEstimator::noteEngineRttSample`. A SimClock sample arrives in
   `onSimClockSample`, from the client host's `onClockSample` (`UESimNetLanes-rationale.md` §13); it is copied field by field
-  into og-simulation's `SimClockRttSample` (og-simulation names no og-sim-net type) and goes to `noteSimClockSample`. Both run on
+  into og-simulation's `SimClockRttSample` (og-simulation names no og-sim-net type; since og-time-dilation task 8 with the
+  server tick and its age, §22.1) and goes to `noteSimClockSample`. Both run on
   the client session's drain thread, the estimator's writer: the game thread frame-locked, the step's thread immediate. Which
   feed moves the estimate is the estimator's rule (og-simulation `TimeConfig-rationale.md` §15): the engine until the first valid
   SimClock sample under `ClockRttSource=SimClock`, which switches it once without a reset, and the SimClock after that.
@@ -2442,3 +2503,202 @@ game thread fills each frame (`UESimNetLanes-rationale.md` §12).
 outcomes (§19.4), the authority presentation (§21.3) and the latency tick, whose server part on the loop is the mailbox drain,
 the pending stamps and the window lines. The lanes' `afterDispatch` publishes the RTT table. Registration's game-thread half
 reads only `UObject`s and the session's own maps (§19.4).
+
+## §22 Clock dilation on a client: `Off`, `Shadow` and `On` (og-time-dilation tasks 8 and 11)
+
+og-simulation's `ClockDilationController.h` holds the rate controller (`ClockDilationController`), its per-frame stage
+(`clockDilation::beforeClientPump`) and its window statistics (`ClockDilationWindow`); its rationale has the law, the sensor and
+the stage's contract. This section is how the session runs them. `Off` runs nothing, `Shadow` runs the controller and logs what
+it would do without changing the step rate, and `On` (og-time-dilation task 11) runs the same controller and applies its scale
+through the tick driver's rate door. The compiled default stays `Off` until the user rules (og-time-dilation's design Q4).
+
+### 22.1 The server tick on the SimClock sample
+
+`onSimClockSample` copies og-sim-net's `SimNetClockSample` into og-simulation's `SimClockRttSample` field by field (§20), now with
+its last two fields: `serverTick`, the server tick the pong carried, and `serverTickAgeSeconds`, how long after that tick the server
+answered. `NetworkTimeEstimator::noteSimClockSample` feeds them to its `ServerTickEstimator`, the stage's sensor. Before this task
+the copy left both at their defaults (`kNoServerTick`, which the estimator ignores), so the sensor never moved.
+
+A `static_assert` at the copy checks that og-sim-net's `ogsimnet::kNoServerTick` and og-simulation's
+`SimClockRttSample::kNoServerTick` are one value: the copy passes the tick through unchanged, so a pong sent before the server's
+first tick reaches the estimator as "no tick" only while the two sentinels agree. Both are `0xFFFFFFFF` today.
+
+### 22.2 The knob and its proof line
+
+`[OGNetcode] ClockDilation=Off|Shadow|On`, case-insensitive, surrounding blanks trimmed. `readSessionKnobs` reads it on both roles
+(the game ini first, then the engine ini, as every knob in §9.8), and `applyClockDilation` applies it at the end of
+`applyLatencyKnobs`, after `applyClockRttSource`, so after both role branches and before `startStepping`.
+
+- **The authority** parses nothing and builds nothing: it prints `[Dilation.Config] mode=n/a` and returns. Its step rate is the
+  reference every client's lead is measured against (og-simulation's stage `OG_CHECK`s a predicting manager, and the tick driver
+  refuses an authority's `setRateScale`). A value on a server has no reader, so it is not reported either.
+- **A client** maps `Off`, `Shadow` and `On` to their modes. Any other value logs one Warning, `[Dilation.Config] ini
+  [OGNetcode] ClockDilation='…' unrecognised (expected Off, Shadow or On), running Off`, and runs the compiled default, `Off`,
+  never a guessed mode. (Until og-time-dilation task 11, `On` logged a Warning and ran `Shadow`.)
+- **The proof line**, unconditional, at `Warning` on `LogOGNet`, once per client session: `[Dilation.Config] mode=<Off|Shadow|On>
+  setpoint=OwnRtt gainPerTick=<g> maxDeviation=<d> (<ini|compiled>)`. Every value is read back from the controller's stored
+  `config()`, not the parsed request (§9.8's step 4). The trailing token is the mode's: `ini` when the `ClockDilation` key was
+  applied and `compiled` when it was absent or unrecognised. The line keeps task 8's exact shape, because og-time-dilation's
+  `lead_split.py` parses it (G4 reads its `maxDeviation`) with a pattern anchored at the token.
+- **The doors line** follows it, also unconditional on a client: `[Dilation.Config] doors gainPerTick=<g> (<src>) maxPercent=<p>
+  (<src>) targetOffsetTicks=<o> (<src>) setpoint=<s> (<src>)`, each value read back from the stored config with its own token
+  (§22.8).
+- **Every other `ClockDilationConfig` field** (the slew, the quantum, the change hysteresis, the two time constants, the guard's
+  edges, the resync freeze, the `Common` lead) is og-simulation's compiled default, which its `static_assert`s check. No door
+  reaches them, so those checks hold for the runtime config too.
+- **The controller and the window** (`m_clockDilation`, `m_clockDilationWindow`, both `std::optional`) are emplaced there, on
+  every client session, `Off` included, and on no authority. A client's `configureSession` runs on the game thread
+  (`decideAuthorityLoop` is false for a non-authority world), so they are built on the thread that later uses them.
+
+### 22.3 `beforePump_Owner`: one hook, two roles
+
+The tick driver calls the game binding's `beforePump(hostNowSeconds, rate)` on the scheduler's owning thread right before each
+pump (og-simulation's `TickDriverConcepts-rationale.md`), and the brawler's binding forwards both arguments to
+`beforePump_Owner(hostNowSeconds, rate)` (`BrawlerTickDriverGameUImpl-rationale.md` §10). The function was
+`beforeAuthorityPump_Runner`, which took neither argument; the owning thread is the runner on the authority loop and the game
+thread on a client, hence the new suffix.
+
+- **On a predicting client** (`m_manager` engaged and `runsPrediction()`), it runs the stage (`runClockDilation_GameThread`,
+  §22.4) and returns.
+- **Otherwise it is the authority path.** With a manager engaged it first notes the rate door for the `[Dilation.Authority]` line
+  (`noteAuthorityRateDoor_Owner`, §22.9; og-time-dilation task 11). Then, as before, it returns at once unless the authority loop
+  is on; on the loop it runs the runner requests (§19.4) and then og-sim-net's server `drain()` (§19.3). The client test cannot
+  change that path: a client's `m_authorityLoop` is false, so before task 8 a client returned at its first statement, as it now
+  returns after the stage.
+
+### 22.4 The stage on a client: the thread and the two clocks
+
+`runClockDilation_GameThread` returns at once in `Off`. In `Shadow` and `On` it calls `clockDilation::beforeClientPump(rate,
+hostNowSeconds, clockNowSeconds, *m_manager, *m_clockDilation, *m_clockDilationWindow)` once per frame; in `On` the stage sets
+the door's scale itself (§22.6).
+
+- **The thread.** A client's scheduler is owned by the game thread, which runs `startFrame` and so `beforePump`, frame-locked or
+  immediate: an immediate client steps on a worker, but the pump is the game thread's. The controller and the window are touched
+  only there. What the stage reads from other threads is og-simulation's contract (`ClockDilationController-rationale.md`):
+  the estimator's and the sensor's atomics, written by the drain (the game thread frame-locked, the step's thread immediate,
+  §20), the clock's published correction phase, and the door's tick offset.
+- **The two clocks** (`⛔G-38`). `hostNowSeconds` is the driver's host time, which places the prediction tick against the
+  scheduler's deadlines; on a client the driver runs `timeBase=worldDelta`, so it is the sum of the world's frame deltas.
+  `clockNowSeconds` is `FPlatformTime::Seconds()`, read once per call: the clock og-net stamps receive times with, and so the
+  clock the sensor's samples are on (og-sim-net's `SimNetClock-rationale.md`). The window is timed on it as well.
+
+### 22.5 The window line
+
+The stage notes every call in the window. When `isDue(clockNowSeconds)` (10 s of `FPlatformTime` since the window's start,
+og-simulation's `clockDilation::kWindowSeconds`; the start is the first call, and after a `restart()` the call that closed the
+previous window), the session logs `formatLine()` at `Warning` on `LogOGNet`, `%hs` of the
+window's own reserved buffer, and calls `restart()`. Logged directly, like the proof line, not through `RouteOGMessage`: the
+line is the session's, from the game thread. Its fields are og-simulation's (`ClockDilationController-rationale.md`), and
+og-time-dilation's `lead_split.py` parses it.
+
+Measured on the task's shaped Shadow smoke (`T8_shadow`, og-net's shaper b0, two clients and a rejoin): a window every 10.00 s on
+every client (14, 5 and 7 lines on client1, client2a and client2b), `calls=1000` (`1002` in the first), `sensorSamples=188` to
+`199`, `applied=0` and `rateScale=1.00000/1.00000` in every window, and no window on the server.
+
+### 22.6 Why `Shadow` cannot change the rate, and how `On` does
+
+The controller sets `apply` only when its mode is `On` and the scale differs from the door's, and the stage calls
+`setRateScale` only on `apply` (og-simulation's `ClockDilationController-guards.md` `G-05`). So in `Shadow` the door's scale
+stays `1.0` and the window's `rateScale` reads `1.00000/1.00000` with `applied=0`, while `wouldScale` reports the scale `On`
+would have set. (Until og-time-dilation task 11 this session also never built an `On` controller: it mapped `On` to `Shadow`.)
+
+In `On` the stage applies each change of the controller's quantized scale through the door the driver handed to
+`beforePump_Owner`, on the game thread that owns the client's scheduler (§22.4). The window's `applied` counts those
+`setRateScale` calls and `rateScale` reports the door's own minimum and maximum. The session adds nothing between the
+controller and the door: no second clamp (the controller's `maxDeviation` is the clamp, and the door's ceiling keeps it at
+2 % at most, §22.8) and no role test (the stage `OG_CHECK`s a predicting manager, and the driver's door refuses an
+authority's `setRateScale` and counts it, §22.9).
+
+### 22.7 What `Off` keeps
+
+In `Off` the stage is never called: no estimator read, no window, no line but the client's `[Dilation.Config]` lines (one until
+og-time-dilation task 11, two since: the proof line and the doors line). The one runtime change on an
+`Off` client is the copy of the two sample fields (§22.1), which feeds the sensor; the stage is its only production reader, so in
+`Off` nothing reads it. Task 8's start-up
+compare, the pre-task binary's warm-up (`T8_pre`) against the `Off` arm (`T8_off`), the same command lines: every one-shot LogOG*
+line up to `[SimHost.Backend]` is byte-identical on all four processes but the new `[Dilation.Config]` line and og-net's per-run
+connection ids and ports. Since task 11 the authority also prints `[Dilation.Authority]` (§22.9) in every client mode: the
+authority has no mode, and the line only reads the door.
+
+### 22.8 The dev doors and their clamps (og-time-dilation task 11)
+
+Four more `[OGNetcode]` keys, read by `readSessionKnobs` on both roles (the game ini first, then the engine ini) and applied
+only on a client, by `applyClockDilation`, into the config the controller and the window are built from. They apply in
+`Shadow` as in `On`, so a `Shadow` run projects the `On` that the same doors would run; `Off` never calls the controller.
+
+| key | config field | door |
+|---|---|---|
+| `ClockDilationGainPerTick` | `gainPerTick` | clamped to [0, 0.05] (`clockDilationDoors::clampGainPerTick`) |
+| `ClockDilationMaxPercent` | `maxDeviation` = percent / 100 | clamped to [0, 2] % (`clampMaxPercent`) |
+| `ClockDilationTargetOffsetTicks` | `targetOffsetTicks` | clamped to [−2, 2] ticks (`clampTargetOffsetTicks`) |
+| `ClockDilationSetpoint` | `setpoint` | only `OwnRtt`, case-insensitive; any other value, `Common` included, logs one Warning, `[Dilation.Config] ini [OGNetcode] ClockDilationSetpoint='…' is not accepted by this build (expected OwnRtt), running OwnRtt` (`Common` is og-time-dilation task 14's) |
+
+- **The three number doors** go through `applyClockDilationDoor`. A value that is not finite logs `[Dilation.Config] ini
+  [OGNetcode] <key> is not a finite number, keeping the compiled default` and keeps it (token `compiled`). An out-of-range value
+  logs `[Dilation.Config] ini [OGNetcode] <key>=<v> out of range, clamped to <c>` and runs the clamped value (token `ini`), as
+  the latency knobs do (§9.8).
+- **The doors line** (§22.2) reports what was applied: `gainPerTick=%.4f`, `maxPercent=%.3f` (`maxDeviation` · 100),
+  `targetOffsetTicks=%.3f` and `setpoint`, each with its own `(ini|compiled)` token. The proof line's `gainPerTick` and
+  `maxDeviation` are the same stored values; its token stays the mode's.
+- **The clamps are the controller's constraints in runtime form.** og-simulation's `ClockDilationConfig` `static_assert`s check
+  its compiled defaults only; the controller checks no runtime config. So the doors' bounds carry their own `static_assert`s:
+  - the ceiling of `ClockDilationMaxPercent` keeps `maxDeviation` under the render bracket's bound, 0.2, for every accepted
+    value (og-simulation's `ClockDilationController-rationale.md` §7): `kMaxMaxPercent / 100 < 0.2`;
+  - neither the gain nor the deviation door admits a negative value. A negative gain turns `1 − gainPerTick · error` into
+    positive feedback, and a negative `maxDeviation` gives `std::clamp` a low bound above its high one;
+  - each compiled default lies inside its own door, so writing the compiled value into the ini changes nothing.
+- **What no door reaches** keeps its compiled values, and with them their `static_assert`s, at runtime: `quantum > 0`; the
+  slew, `0 < slewPerCall` (0.002, a whole number of quanta, 20, by its value rather than by an assert); the change hysteresis,
+  `changeHysteresisQuanta ≥ 0.5` and `changeHysteresisQuanta · quantum ≤ slewPerCall` (2 today); and the guard's edges with
+  og-time-dilation task 7b's frame-aware low-edge asserts. None of those fields is exposed.
+- **One compiled check the door does not keep:** og-simulation's `slewPerCall ≤ maxDeviation`. The door goes down to 0 %, as
+  the task specifies, and `slewPerCall` is 0.2 %. Below it the slew no longer binds and the clamp does, so a change is still at
+  most the distance between two values inside `[1 − maxDeviation, 1 + maxDeviation]`. Below two quanta (0.02 %) the change
+  hysteresis holds the scale at exactly 1.0 (from 1.0, every slewed value is within `maxDeviation`, under 2 · `quantum`),
+  and 0 % turns the law off while the window still reports it; a gain of 0 does the same.
+- **The gain's ceiling, 0.05**, is ten times the default. At that gain the loop's per-frame step `f · K_p · Δt` is 0.10 at
+  30 fps and 0.03 at 100 fps, still small against 1 (og-simulation's `ClockDilationController-rationale.md` §8), and the
+  scale saturates at `maxDeviation` from 0.2 tick of error at the default 1 % (`maxDeviation / gainPerTick`).
+- **The offset's range, ±2 ticks**, is for og-time-dilation's G7 seen-failing arm (+0.5 tick). The guard still clamps the
+  shifted target into its band (og-simulation's `ClockDilationController-rationale.md` §5), so no offset can push the lead past
+  the clock's quiet band.
+
+### 22.9 The authority's refused rate changes: `[Dilation.Authority]` (og-time-dilation task 11)
+
+og-simulation's tick driver refuses `setRateScale` on an authority's door and counts each refusal in a plain field
+(`Diagnostics::refusedRateChanges()`, og-simulation's `SimulationTickDriver.h`). The field is written and read on the
+scheduler's owning thread with no synchronisation: on the authority loop that thread is the `OGSimAuthority` runner, so a read
+from the game thread would race the runner's writes.
+
+`beforePump_Owner`'s authority path reads it through the door the driver hands it (`TickRateDoor::refusedRateChanges()`, the
+same field), in `noteAuthorityRateDoor_Owner`, and logs at `Warning` on `LogOGNet`:
+
+`[Dilation.Authority] refusedRateChanges=<n> rateScale=<s>`
+
+- **When:** at the first pump the session sees, then every `clockDilation::kWindowSeconds` (10 s) of the driver's host time,
+  and at the next pump whenever the count has changed since the last line. `rateScale` is the authority scheduler's scale,
+  which a refused door leaves at 1.0.
+- **The thread holds by construction:** the session keeps no reference to the driver, and a `TickRateDoor` exists only inside
+  the driver's pump, on the owning thread (the runner on the loop, the game thread on an inline authority).
+- Nothing in the session calls `setRateScale` on the authority (§22.3: the stage runs only for a predicting manager), so the
+  count stays 0; the line is the evidence. On a client the path is never taken.
+
+### 22.10 What `On` measured (og-time-dilation task 11)
+
+Editor build, shape (a) (og-net's shaper b0, 100 fps, two clients and a rejoin, floor 6), one lock hold, in this order: a
+discarded `Off` warm-up, `Off`, `On`, `On` with `ClockDilationTargetOffsetTicks=0.5`, then the three again, then a short run
+with every door out of range (`T11_*` under `Saved/Profiling`). Every number is og-time-dilation's `lead_split.py`.
+
+- **`On` against `Off`** (`T11_on` / `T11_off`; the repeat `T11_on2` / `T11_off2`): `rateScale` within [0.9953, 1.0012] over
+  every window; steady `|err|` p5/p95 at most 0.055 (0.073), `errAbsMax` 0.067 (0.087); the clients' lead split `|ΔL|` p95
+  0.086 / 0.242 (0.178 / 0.159); 0 steady Skip, Stall or HardResync; steady `wouldScaleDevP99` at most 0.03 % (0.04 %);
+  0.20–0.65 door changes per second; the mean lead 2.323 against `Off`'s 2.235 (2.360 against 2.342).
+- **The controller holds its own target:** `target − stepLag` sits within 0.01 tick of each client's OwnRtt rule on every
+  `On` client, with the guard never bound, as og-time-dilation's review of task 10c predicted for b0 at 100 fps. The execution
+  lead sits 0.06–0.18 tick below it, about the sensor's constant `sHat` bias on b0 (−0.05 to −0.09).
+- **The offset arm** moves the controller's target by +0.50 tick (`target − stepLag − rule`, 0.499 and 0.497) and the mean
+  lead by +0.574 and +0.525 against the same build's `On`, +0.662 and +0.543 against `Off`.
+- **The authority** prints `mode=n/a` and `[Dilation.Authority] refusedRateChanges=0 rateScale=1.00000` on every line of
+  every run (18 in a 150 s run, the first 3 s after the server's log opens).
+- **The doors:** gain 0.2, 5 %, −9 ticks and `Common` log the four Warnings and run 0.05, 2 %, −2 ticks and `OwnRtt`; at ten
+  times the default gain the door changes 40 times a second (a dev door, not a setting).

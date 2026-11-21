@@ -1086,6 +1086,67 @@ character in the simulation.
 
 ---
 
+## G-38 — the dilation stage's sensor clock is `FPlatformTime::Seconds()`, never the driver's `hostNowSeconds`
+
+**Tag site:** `UESimulationSession.h`, `runClockDilation_GameThread`, directly above
+`const double clockNowSeconds = FPlatformTime::Seconds();` (og-time-dilation task 8).
+
+**The prohibition.** ⛔ Do not pass `hostNowSeconds` as the stage's `clockNowSeconds` (the third argument of
+`clockDilation::beforeClientPump`), and do not replace this read with any clock other than the one og-net stamps receive times
+with. The stage takes two times on purpose: `hostNowSeconds` places the prediction tick against the scheduler's deadlines, and
+`clockNowSeconds` is the time at which the server-tick sensor is read and the window is timed.
+
+**The consequence.** The sensor's samples are stamped with `FPlatformTime::Seconds()`: og-net's UE host clock is
+`FPlatformTime::Seconds()`, and the SimClock client reads `t0` from the clock that stamps `t3` (a `static_assert` in
+og-sim-net's `SimNetClock.h` says so). A client's `hostNowSeconds` is a different clock: its driver runs `timeBase=worldDelta`,
+so it is the sum of the world's frame deltas since the driver was built (og-simulation's `SimulationTickDriver.h`), with its own
+origin, and og-time-dilation task 9's `og.Sim.TestClientClockRatePpm` scales those deltas. Read at that time, the sensor's estimate of the server
+tick is wrong by the difference of the two origins (on the task's smoke host `sHatClock` read 16,833,176 s against a host time
+of under 200 s), so every lead and error on `[Dilation.Window]` is
+meaningless, and under `On` (accepted since og-time-dilation task 11) the law steers the rate with it. The drift gate is lost as well: the emulated clock-rate
+offset moves `hostNowSeconds` and `FPlatformTime` apart, which is exactly what the sensor has to see.
+
+**What breaks if the tag moves.** Nothing mechanical: both arguments are `double` seconds. A Shadow run still prints windows, with
+nonsense in `lead`, `err` and `sHat`.
+
+*R0, og-time-dilation task 8:* written with the code. Verified: `FOGNetUnrealHost::nowSeconds` and `FUEPlatformClock::nowSeconds`
+both return `FPlatformTime::Seconds()`; the client's `[SimHost.Frame]` line reads `timeBase=worldDelta` on the task's Shadow
+smoke (`T8_shadow`), the server's `timeBase=monotonic`.
+
+---
+
+## G-39 — the SimClock server's tick is published with its step's start time, never a time read at the publish
+
+**Tag site:** `UESimulationSession.h`, `afterStep_Step`, directly above
+`m_clockServer->publishServerTick(static_cast<uint32_t>(getServerClock().getTick()), *tickStartSeconds);`
+(og-time-dilation task 2b).
+
+**The prohibition.** ⛔ Do not replace the second argument, `*tickStartSeconds`, with `FPlatformTime::Seconds()` or any
+other time read in `afterStep_Step`. It is the stamp `noteAuthorityStepTime_Step` took at the start of the same authority
+step, the value that step's `[AuthoritySimulation] tick=<t> stepSeconds=<s>` line prints for the same tick (rationale §19.8).
+
+**The consequence.** og-sim-net's SimClock server measures each pong's `serverTickAgeUs` from this time, and a client's
+server-tick estimator places the tick at `t2 − age`. The function runs after the step, so a time read here is later than
+the step's start by the step's duration D, and every client's `Ŝ` then reads D · f ticks low against the server's own
+step-start timeline, the truth the G-DIL-0 sensor check compares it with. D grows with the server's load: on the brawler's
+smokes it is typically about 0.075 ms (0.0045 tick at 60 Hz) and at most 0.24 ms (0.014 tick; rationale §19.8), and a
+heavier step moves every client's estimate by its whole duration. Under `ClockDilation=On` the controller would hold each client's true lead D · f below its
+target.
+
+**What breaks if the tag moves.** Nothing mechanical: both are `double` seconds on the same clock, and every test passes. A
+Shadow smoke shows it, as a negative `bias sHat` in the lead-split tool's G3 sensor check.
+
+*R0, og-time-dilation task 2b:* written with the code. Verified: on Jolt the authority steps one tick per
+`SimulationStepDriver::runAuthorityTick`, whose `beforeTick` reaches `releaseInputsForAuthorityTick` (the stamp) and whose
+`afterTick` reaches `onStepEnded` → `afterStep_Step` (the publish); `getServerClock().getTick()` there is the tick that step's
+`[AuthoritySimulation]` line printed (`onGameSimulationAuthority` advances the clock once, before the print). D's bound is
+the server's `[SimHost.Window]` `preUs` + `stepUs` (p50/p99/max triples) on the `T8_shadow`, `T8_on` and `T2b_shadow` smokes:
+median p50 sum 70–75 µs, largest max sum 237 µs. ⚠ Task 8's measured sensor bias (−0.04 to −0.11 tick) is **not** D · f: it
+is 3 to 8 times the worst D · f (0.014), and task 2b's smoke still reads −0.05 to −0.07 with the start time (rationale
+§19.8, which names a candidate for the rest: the b0 shaper's in-order clamp, not established).
+
+---
+
 ## §R — Retired ids
 
 ⛔ **An id is never reused.** A retired id may be named in prose; it may never again appear as a `⛔G-nn` tag.

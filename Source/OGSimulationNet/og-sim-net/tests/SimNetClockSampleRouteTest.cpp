@@ -16,6 +16,7 @@
 #include "OGSimulation/SimulationFieldDescriptors.h"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -209,9 +210,61 @@ struct Rig
 
 bool sameBits(const SimNetClockSample& a, const SimNetClockSample& b)
 {
-	return a.rttSeconds == b.rttSeconds && a.thetaSeconds == b.thetaSeconds && a.serverTick == b.serverTick && a.t0 == b.t0
-		&& a.t1 == b.t1 && a.t2 == b.t2 && a.t3 == b.t3;
+	return a.rttSeconds == b.rttSeconds && a.thetaSeconds == b.thetaSeconds && a.serverTick == b.serverTick
+		&& a.serverTickAgeSeconds == b.serverTickAgeSeconds && a.t0 == b.t0 && a.t1 == b.t1 && a.t2 == b.t2 && a.t3 == b.t3;
 }
+
+using CsClockServer = ogsimnet::SimNetClockServer<CsTransport, ManualClock>;
+
+template <class ServerT, class... ArgsT>
+concept PublishesServerTickWith = requires(ServerT& server, ArgsT... args) { server.publishServerTick(args...); };
+
+static_assert(PublishesServerTickWith<CsClockServer, std::uint32_t, double> && !PublishesServerTickWith<CsClockServer, std::uint32_t>,
+	"SimNetClockServer::publishServerTick takes the tick's step-start time and has no one-argument form. Was "
+	"publishServerTick(tick), which read the server's clock at the publish, after the step (og-time-dilation task 2b)");
+
+constexpr SimConnectionId kClientConn = 33u;
+
+struct ServerRig
+{
+	ServerRig()
+	{
+		transport.installHandlers(endpoint);
+		transport.markEndpointStarted();
+		ognet::ConnectionEvent connected;
+		connected.kind = ognet::ConnectionEventKind::Connected;
+		connected.id = kClientConn;
+		transport.onConnectionEvent(connected);
+		REQUIRE(transport.hasClockHandler());
+	}
+
+	void publishAt(double tickStartSeconds, double callSeconds, std::uint32_t tick)
+	{
+		clock.now = callSeconds;
+		clockServer.publishServerTick(tick, tickStartSeconds);
+	}
+
+	ogsimnet::SimNetClockPong answer(double t0, double recvSeconds, double sendSeconds)
+	{
+		std::array<std::byte, ogsimnet::simNetClock::kPingBytes> ping{};
+		REQUIRE(ogsimnet::simNetClock::writePing(ping, t0) == ping.size());
+		const std::size_t sentBefore = endpoint.sent.size();
+		clock.now = sendSeconds;
+		endpoint.deliver(kClientConn, ognet::Lane::SimClock, ping, recvSeconds);
+		REQUIRE(endpoint.sent.size() == sentBefore + 1u);
+		const Sent& sent = endpoint.sent.back();
+		REQUIRE(sent.lane == ognet::Lane::SimClock);
+		REQUIRE(sent.bytes.size() == ogsimnet::simNetClock::kPongBytes);
+		const std::optional<ogsimnet::SimNetClockPong> pong = ogsimnet::simNetClock::readPong(sent.bytes);
+		REQUIRE(pong.has_value());
+		return *pong;
+	}
+
+	CapturingEndpoint endpoint;
+	ManualClock clock;
+	CsTransport transport{};
+	CsClockServer clockServer{transport, clock};
+};
 } // namespace simNetClockSampleRoute
 
 using namespace simNetClockSampleRoute;
@@ -280,4 +333,85 @@ TEST_CASE("SimNetClockSample.AHostWithoutTheHookStaysWellFormedAndItsSamplesAreC
 	CHECK(rig.session.stats().messages == 2u);
 	REQUIRE(rig.host.timing.size() == 1u);
 	CHECK(rig.host.timing[0] == std::make_pair(std::uint32_t{78u}, 0.084));
+}
+
+TEST_CASE("SimNetClockSample.ThePongCodecCarriesTheServerTickAgeRightAfterTheTickLittleEndian", "[NetTransport][SimNetClockSample]")
+{
+	const ogsimnet::SimNetClockPong pong{1.5, 2.25, 2.375, 0x01020304u, 0xA1B2C3D4u};
+	std::array<std::byte, ogsimnet::simNetClock::kPongBytes> bytes{};
+	REQUIRE(bytes.size() == 34u);
+	REQUIRE(ogsimnet::simNetClock::writePong(bytes, pong) == 34u);
+	const std::size_t ageOffset = simEnvelope::kHeaderBytes + 3u * ogsimnet::simNetClock::kStampBytes + sizeof(std::uint32_t);
+	CHECK(ageOffset == 30u);
+	CHECK(std::to_integer<std::uint32_t>(bytes[ageOffset - 4u]) == 0x04u);
+	CHECK(std::to_integer<std::uint32_t>(bytes[ageOffset + 0u]) == 0xD4u);
+	CHECK(std::to_integer<std::uint32_t>(bytes[ageOffset + 1u]) == 0xC3u);
+	CHECK(std::to_integer<std::uint32_t>(bytes[ageOffset + 2u]) == 0xB2u);
+	CHECK(std::to_integer<std::uint32_t>(bytes[ageOffset + 3u]) == 0xA1u);
+
+	const std::optional<ogsimnet::SimNetClockPong> read = ogsimnet::simNetClock::readPong(bytes);
+	REQUIRE(read.has_value());
+	CHECK(read->t0 == pong.t0);
+	CHECK(read->t1 == pong.t1);
+	CHECK(read->t2 == pong.t2);
+	CHECK(read->serverTick == pong.serverTick);
+	CHECK(read->serverTickAgeUs == pong.serverTickAgeUs);
+	CHECK_FALSE(ogsimnet::simNetClock::readPong(std::span<const std::byte>(bytes).first(30u)).has_value());
+}
+
+TEST_CASE("SimNetClockSample.ThePongsServerTickAgeRunsFromTheTicksStepStartToThePongsSendNotFromThePublishCallOrToThePingsReceipt", "[NetTransport][SimNetClockSample]")
+{
+	ServerRig rig;
+	rig.publishAt(10.000000, 10.001500, 600u);
+	const ogsimnet::SimNetClockPong pong = rig.answer(9.25, 10.004000, 10.004321);
+	CHECK(pong.serverTick == 600u);
+	CHECK(pong.t1 == 10.004000);
+	CHECK(pong.t2 == 10.004321);
+	CHECK(pong.serverTickAgeUs == 4321u);
+	CHECK(rig.clockServer.publishedServerTick() == 600u);
+	CHECK(rig.clockServer.stats().pingsAnswered == 1u);
+}
+
+TEST_CASE("SimNetClockSample.TheServerTickAgeWrapsWithTheLow32BitsOfTheMicroseconds", "[NetTransport][SimNetClockSample]")
+{
+	constexpr double kMicrosecondsPerWrap = 4294967296.0;
+	ServerRig rig;
+	rig.publishAt((kMicrosecondsPerWrap - 100.0) * 1e-6, (kMicrosecondsPerWrap - 100.0) * 1e-6, 7u);
+	const ogsimnet::SimNetClockPong pong = rig.answer(4000.0, (kMicrosecondsPerWrap - 50.0) * 1e-6, (kMicrosecondsPerWrap + 150.0) * 1e-6);
+	CHECK(pong.serverTick == 7u);
+	CHECK(pong.serverTickAgeUs == 250u);
+}
+
+TEST_CASE("SimNetClockSample.BeforeTheFirstPublishThePongCarriesNoServerTickAndAZeroAge", "[NetTransport][SimNetClockSample]")
+{
+	ServerRig rig;
+	const ogsimnet::SimNetClockPong pong = rig.answer(11.0, 12.345, 12.345678);
+	CHECK(pong.serverTick == ogsimnet::kNoServerTick);
+	CHECK(pong.serverTickAgeUs == 0u);
+	CHECK(rig.clockServer.publishedServerTick() == ogsimnet::kNoServerTick);
+}
+
+TEST_CASE("SimNetClockSample.TheSampleRecordCarriesTheServerTickAgeFromThePongToTheHostsHook", "[NetTransport][SimNetClockSample]")
+{
+	const ogsimnet::SimNetClockPong pong{5.0, 5.75, 5.7505, 900u, 4321u};
+	const SimNetClockSample sample = ogsimnet::simNetClock::sampleOf(pong, 5.051);
+	CHECK(sample.serverTickAgeSeconds == 4321.0 * 1e-6);
+	CHECK(std::abs(sample.serverTickAgeSeconds - 0.004321) < 1e-12);
+
+	std::array<std::byte, ogsimnet::simNetClock::kSampleRecordBytes> record{};
+	REQUIRE(record.size() == 58u);
+	REQUIRE(ogsimnet::simNetClock::writeSampleRecord(record, sample) == record.size());
+	const std::optional<SimNetClockSample> read = ogsimnet::simNetClock::readSampleRecord(record);
+	REQUIRE(read.has_value());
+	CHECK(sameBits(*read, sample));
+	CHECK(read->serverTickAgeSeconds == sample.serverTickAgeSeconds);
+
+	Rig<HookedClientHost> rig;
+	const double t0 = rig.ping(5.0);
+	const ogsimnet::SimNetClockPong routed{t0, 5.75, 5.7505, 900u, 4321u};
+	rig.pong(routed, 5.051);
+	rig.session.dispatchFrame();
+	REQUIRE(rig.host.samples.size() == 1u);
+	CHECK(sameBits(rig.host.samples[0], ogsimnet::simNetClock::sampleOf(routed, 5.051)));
+	CHECK(rig.host.samples[0].serverTickAgeSeconds == 4321.0 * 1e-6);
 }

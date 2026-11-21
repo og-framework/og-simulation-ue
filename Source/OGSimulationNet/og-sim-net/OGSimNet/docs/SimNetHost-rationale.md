@@ -96,7 +96,7 @@ header.
 
 | service | meaning |
 |---|---|
-| `onClockSample(const SimNetClockSample&)` | optional, client host only: one SimClock ping/pong measured by `SimNetClockClient` (`SimNetClock.h`: the RTT, theta, the server tick and the four stamps) was drained. Called by the client session on the drain's thread, ahead of the envelope decode, once per clockSample record, in drain order |
+| `onClockSample(const SimNetClockSample&)` | optional, client host only: one SimClock ping/pong measured by `SimNetClockClient` (`SimNetClock.h`: the RTT, theta, the server tick, its age and the four stamps) was drained. Called by the client session on the drain's thread, ahead of the envelope decode, once per clockSample record, in drain order |
 
 - **Why it exists.** The clock client turns each pong into a clockSample record and pushes it into the inbox on og-net's
   servicing thread (`SimNetClock-rationale.md` §6, §7). The record's version byte is one no envelope carries, so before this hook

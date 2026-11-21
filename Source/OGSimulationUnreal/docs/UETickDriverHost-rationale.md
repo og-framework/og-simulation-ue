@@ -3,7 +3,8 @@
 
 The Unreal engine port of og-simulation's `SimulationTickDriver`: the engine type, the task-graph executor and the two
 tick functions that start and end a frame's physics. The source holds the licence, a docs pointer, code, one
-`static_assert` and its `check`/`checkf` messages; this file carries the why. It has no prohibition
+`static_assert`, its `check`/`checkf` messages, the console variables' help texts and the test knob's log string (§8);
+this file carries the why. It has no prohibition
 (`UETickDriverHost-guards.md` has no live entry).
 
 **If this file and the source disagree, the source is authoritative and this file is stale.**
@@ -28,7 +29,8 @@ must supply"). Three pieces:
   persistent level (`begin`) and unregisters them (`unregisterTickFunctions`). Its `.cpp` holds the frame's four
   console variables (§4): the end tick function reads the block mode every frame, the engine reads the step task's
   priority at every dispatch, and two static members, `requestedMaxCatchUpSteps` and `runInline`, hand the game the
-  two values it reads once.
+  two values it reads once. Outside Shipping the `.cpp` also holds one test knob, `og.Sim.TestClientClockRatePpm`,
+  which the start tick function reads every frame (§8).
 
 It knows no driver type and no game type. `begin` is a template over the driver: it registers the two tick functions
 with a pointer to the driver and two captureless lambdas that cast it back and call `startFrame` and `endFrame`, so
@@ -50,7 +52,7 @@ rule, the same per-frame cadence for the probes and the reap, and the same roles
 
 | Chaos (async, block mode 0) | the frame host and the tick driver |
 |---|---|
-| the engine's start-physics tick function at `TG_StartPhysics` advances the scene, computes the frame's step count from accumulated world time, and dispatches the steps | `FSimulationStartStepsTickFunctionUImpl` at `TG_StartPhysics` calls the driver's `startFrame` with `static_cast<double>(DeltaTime)`: the driver pumps its scheduler with the accumulated world delta and runs or dispatches the frame's batch |
+| the engine's start-physics tick function at `TG_StartPhysics` advances the scene, computes the frame's step count from accumulated world time, and dispatches the steps | `FSimulationStartStepsTickFunctionUImpl` at `TG_StartPhysics` calls the driver's `startFrame` with `static_cast<double>(DeltaTime)` (outside Shipping, scaled by the test knob when it is not 0, §8): the driver pumps its scheduler with the accumulated world delta and runs or dispatches the frame's batch |
 | client: the steps run as chained task-graph tasks after the previous frame's; dedicated server: inline on the game thread | client: one task per frame, chained after the previous frame's, at the step task's priority (§3); authority (and a client under `og.Sim.RunInline=1`, which the game reads through `runInline`, §4): inline |
 | the end-physics tick function at `TG_EndPhysics` waits for the steps dispatched in **earlier** frames, then fires the scene's post-tick delegate | `FSimulationEndStepsTickFunctionUImpl` at `TG_EndPhysics` calls the driver's `endFrame` with its completion event and the block mode, read every frame from `og.Sim.BlockMode` (§4): the driver waits for earlier frames' task, then calls the game's `onPostPhysics` |
 
@@ -104,7 +106,7 @@ and BlockModeFn, function references; the end tick function kept the block-mode 
 With the variables here the getters have nothing to forward, and task 15c deleted them: neither constructor takes an
 argument, and the end tick function's `check` covers `endFrame` alone, as the frame host's did before task 11.
 
-**They register in both physics configurations.** The module is compiled in both, with no `#if` arm (§7), and a
+**They register in both physics configurations.** The module is compiled in both, with no physics-configuration `#if` arm (§7), and a
 `TAutoConsoleVariable` or `FAutoConsoleTaskPriority` registers itself with the console manager when the module's
 static objects are constructed. So in the Chaos configuration the four exist and nothing reads them: nothing
 constructs the engine or the host there. Until task 15c they were in a whole-file Jolt arm of the game module, and the
@@ -116,7 +118,7 @@ true of what the variables do.
 ## 5. Threads
 
 Everything here runs on the game thread: the tick functions, `begin`, `unregisterTickFunctions`, the waits, the
-deferral and the four console-variable reads (§4). Only `nowSeconds()`, `logEnabled` and `log` are also called from a step task: the driver's
+deferral, the four console-variable reads (§4) and the test knob's read and its one line (§8). Only `nowSeconds()`, `logEnabled` and `log` are also called from a step task: the driver's
 step hooks read the clock, the first batch logs its `[SimHost.FirstStep]` line from the thread that runs it, and a
 world host may log per-step lines (og-simulation-jolt's contact lines test `logEnabled` first). UE_LOG, its activity
 test and FPlatformTime::Seconds are thread-safe.
@@ -149,11 +151,39 @@ task 11 checked it on the Editor objects, and task 15c again after the console v
 in: none of this module's objects and none of its exports names a `tickDriverThread` symbol, a scope, the driver or
 the world host.
 
-The files have no `#if` arm. The module is compiled in both physics configurations, and in the Chaos one nothing
-constructs these types. What they do there is register the four console variables at load, and nothing reads them
-(§4).
+The files have no physics-configuration `#if` arm; the `.cpp`'s two `#if !UE_BUILD_SHIPPING` blocks are the test
+knob's (§8). The module is compiled in both physics configurations, and in the Chaos one nothing constructs these types. What
+they do there is register the four console variables at load (and, outside Shipping, the test knob), and nothing reads
+them (§4).
 
-## 8. Provenance
+## 8. The test clock-rate knob, `og.Sim.TestClientClockRatePpm` (og-time-dilation task 9)
+
+A test knob for the time-dilation drift gate: it makes one process's simulation clock run fast or slow against the
+others on one PC, where every process reads the same `FPlatformTime` clock and no real drift exists.
+
+* **What it does.** An `int32` console variable, default 0, `ECVF_Default`, in the `.cpp`'s anonymous namespace under
+  `#if !UE_BUILD_SHIPPING`, the pattern of `og.Sim.TestGameThreadHitchMs` (`UESimulationSession-rationale.md` §10). The
+  start tick function reads it on the game thread at every `ExecuteTick`, through the file-local
+  `testClientClockRateFrameDelta`. When it is not 0, the function returns `DeltaTime * (1.0 + ppm * 1e-6)` in `double`,
+  and `startFrame` gets that instead of the frame's `DeltaTime`; at +2000 the driver's host time runs 0.2 % fast, about
+  0.12 ticks per second at 60 Hz.
+* **Its one line.** The first frame that reads a value other than 0 logs `[SimHost.TestClockRate] ppm=<n>` once, a
+  Warning on `LogOGSimHost`, so the default `LogOGSimHost=Warning` shows it. A function-local `static` holds the
+  "logged" flag, so it is once per process: a later change of the value, or a second session in the same process,
+  prints nothing more.
+* **At 0 it changes nothing.** The function returns the delta it was given before it logs or multiplies, so
+  `startFrame` gets the same `double` as before and no line is printed.
+* **Which roles it reaches.** It scales only what `startFrame` receives, and only a HostDelta driver adds that to its
+  host time (`SimulationTickDriver.h`, `startFrame`; a Monotonic driver reads the clock instead; `[SimHost.Frame]` prints
+  `timeBase=worldDelta` for HostDelta, the brawler's client). A FreeRunning driver, the dedicated server's authority
+  loop (`og.Sim.AuthorityLoop=1`, the default since og-input-latency task P5-22), returns from `startFrame` before it
+  reads the delta, so on that server the knob does nothing. A client, and an authority with the loop off, step from
+  the scaled delta. The gate sets it on one client through its command line,
+  `-ini:Engine:[ConsoleVariables]:og.Sim.TestClientClockRatePpm=<n>`.
+* **Shipping.** The variable, the function and the call are compiled out; the start tick function passes
+  `static_cast<double>(DeltaTime)` as before.
+
+## 9. Provenance
 
 Moved by og-tickdriver task 11 (2026-10-16) from the brawler's game module, where it was the frame host
 SimulationFrameHostUImpl (og-simulationscheduler-withjolt task 54 wrote it as the whole Jolt frame pipeline;
@@ -174,3 +204,6 @@ same-numbered id of og-simulation's `SimulationTickDriver-guards.md`.
 og-tickdriver task 15c (2026-10-18) moved the four console variables here from the brawler's
 TickDriverBackendUImpl.cpp (a historical name: the host's `.cpp`, deleted by og-tickdriver task 15e), with their names, defaults and help texts, and deleted the two getters (§4). The six
 `og.Render.*` variables went to this module's `UEPresentControls.cpp` in the same task (`UEPresentControls-rationale.md`).
+
+og-time-dilation task 9 (2026-11-20) added the non-shipping test knob `og.Sim.TestClientClockRatePpm`, its file-local
+function and its call in the start tick function (§8). The header did not change.

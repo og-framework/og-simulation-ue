@@ -37,6 +37,31 @@ namespace
 		TEXT("Jolt configuration only. 1 = a client steps inline on the game thread instead of on a worker task. ")
 		TEXT("Read once, at the simulation manager's BeginPlay. The authority always steps inline."),
 		ECVF_Default);
+
+#if !UE_BUILD_SHIPPING
+	TAutoConsoleVariable<int32> CVarTestClientClockRatePpm(
+		TEXT("og.Sim.TestClientClockRatePpm"),
+		0,
+		TEXT("Test only (non-shipping): when not 0, the start-physics tick function hands the tick driver the frame's ")
+		TEXT("DeltaTime times (1 + this * 1e-6), an emulated clock-rate offset in parts per million. Read every frame. A ")
+		TEXT("free-running authority does not read the frame delta, so it reaches clients only."),
+		ECVF_Default);
+
+	double testClientClockRateFrameDelta(double frameDeltaSeconds)
+	{
+		const int32 ppm = CVarTestClientClockRatePpm.GetValueOnGameThread();
+		if (ppm == 0)
+			return frameDeltaSeconds;
+
+		static bool logged = false;
+		if (!logged)
+		{
+			logged = true;
+			UE_LOG(LogOGSimHost, Warning, TEXT("[SimHost.TestClockRate] ppm=%d"), ppm);
+		}
+		return frameDeltaSeconds * (1.0 + static_cast<double>(ppm) * 1e-6);
+	}
+#endif
 }
 
 double SimulationEngineUImpl::nowSeconds() const
@@ -96,7 +121,11 @@ void FSimulationStartStepsTickFunctionUImpl::ExecuteTick(float DeltaTime, ELevel
 	ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 {
 	check(startFrame != nullptr);
-	startFrame(target, static_cast<double>(DeltaTime));
+	double frameDeltaSeconds = static_cast<double>(DeltaTime);
+#if !UE_BUILD_SHIPPING
+	frameDeltaSeconds = testClientClockRateFrameDelta(frameDeltaSeconds);
+#endif
+	startFrame(target, frameDeltaSeconds);
 }
 
 FString FSimulationStartStepsTickFunctionUImpl::DiagnosticMessage()

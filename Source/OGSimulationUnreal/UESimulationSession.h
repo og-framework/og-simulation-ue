@@ -52,6 +52,7 @@
 #include "OGSimulation/Network/RelayWritePathProbe.h"
 #include "OGSimulation/Network/ReplicatedTierConsumer.h"
 #include "OGSimulation/PCTimeManagement/ClientPredictionClock.h"
+#include "OGSimulation/PCTimeManagement/ClockDilationController.h"
 #include "OGSimulation/PCTimeManagement/ServerTickClock.h"
 #include "OGSimulation/PCTimeManagement/TimeConfig.h"
 
@@ -92,6 +93,43 @@ inline constexpr float kSimNetDriverRefusedToastSeconds = 15.f;
 static_assert(kSimNetHostLineBytes >= sizeof(kSimNetHostLineFormat) + sizeof("server") + sizeof("detached") + 10u,
 	"kSimNetHostLineBytes must hold the [SimNet.Host] proof line with the longer role, the longer driver name and a 10-digit "
 	"inbox size");
+
+namespace clockDilationDoors
+{
+	inline constexpr double kMinGainPerTick       = 0.0;
+	inline constexpr double kMaxGainPerTick       = 0.05;
+	inline constexpr double kMinMaxPercent        = 0.0;
+	inline constexpr double kMaxMaxPercent        = 2.0;
+	inline constexpr double kMinTargetOffsetTicks = -2.0;
+	inline constexpr double kMaxTargetOffsetTicks = 2.0;
+
+	constexpr double clampToDoor(double requested, double low, double high)
+	{
+		if (!(requested >= low)) return low;
+		if (requested > high) return high;
+		return requested;
+	}
+
+	constexpr double clampGainPerTick(double requested) { return clampToDoor(requested, kMinGainPerTick, kMaxGainPerTick); }
+	constexpr double clampMaxPercent(double requested) { return clampToDoor(requested, kMinMaxPercent, kMaxMaxPercent); }
+	constexpr double clampTargetOffsetTicks(double requested)
+	{
+		return clampToDoor(requested, kMinTargetOffsetTicks, kMaxTargetOffsetTicks);
+	}
+} // namespace clockDilationDoors
+
+static_assert(clockDilationDoors::kMaxMaxPercent / 100.0 < 0.2,
+	"[OGNetcode] ClockDilationMaxPercent's ceiling must keep maxDeviation under the render bracket's bound, 0.2, for every "
+	"value the door accepts: the runtime form of ClockDilationConfig's static_assert maxDeviation < 0.2, which checks the "
+	"compiled default only");
+static_assert(clockDilationDoors::kMinGainPerTick >= 0.0 && clockDilationDoors::kMinMaxPercent >= 0.0,
+	"The ClockDilationGainPerTick and ClockDilationMaxPercent doors must not admit a negative value: a negative gain turns the "
+	"rate law into positive feedback, and a negative deviation inverts its clamp");
+static_assert(clockDilationDoors::clampGainPerTick(ClockDilationConfig{}.gainPerTick) == ClockDilationConfig{}.gainPerTick
+	&& clockDilationDoors::clampMaxPercent(ClockDilationConfig{}.maxDeviation * 100.0) == ClockDilationConfig{}.maxDeviation * 100.0
+	&& clockDilationDoors::clampTargetOffsetTicks(ClockDilationConfig{}.targetOffsetTicks) == ClockDilationConfig{}.targetOffsetTicks,
+	"ClockDilationConfig's compiled gainPerTick, maxDeviation and targetOffsetTicks must lie inside their [OGNetcode] doors' "
+	"clamps, or writing the compiled value into the ini would move it");
 
 namespace ueSimulationSessionHookNames
 {
@@ -301,10 +339,15 @@ public:
 
 	void onSimClockSample(const ogsimnet::SimNetClockSample& sample)
 	{
+		static_assert(ogsimnet::kNoServerTick == SimClockRttSample::kNoServerTick,
+			"onSimClockSample copies og-sim-net's serverTick into og-simulation's SimClockRttSample unchanged, so the two "
+			"'no server tick yet' sentinels must be one value, or a pong sent before the server's first tick would reach "
+			"the ServerTickEstimator as a real tick (og-time-dilation task 8)");
 		if (!m_manager.has_value())
 			return;
 		m_manager->editNetworkEstimator().noteSimClockSample(
-			SimClockRttSample{ sample.rttSeconds, sample.thetaSeconds, sample.t0, sample.t1, sample.t2, sample.t3 });
+			SimClockRttSample{ sample.rttSeconds, sample.thetaSeconds, sample.t0, sample.t1, sample.t2, sample.t3,
+				sample.serverTick, sample.serverTickAgeSeconds });
 		maybeLogClockSourceWindow();
 	}
 
@@ -369,7 +412,11 @@ private:
 
 	IdleWake idleUntil_Runner(double deadlineSeconds);
 
-	void beforeAuthorityPump_Runner();
+	void beforePump_Owner(double hostNowSeconds, TickRateDoor& rate);
+
+	void runClockDilation_GameThread(double hostNowSeconds, TickRateDoor& rate);
+
+	void noteAuthorityRateDoor_Owner(double hostNowSeconds, const TickRateDoor& rate);
 
 	void afterStep_Step();
 
@@ -471,6 +518,16 @@ private:
 		FString configuredClockRttSource;
 		bool    hasIniJitterMultiplier;
 		double  configuredJitterMultiplier;
+		bool    hasIniClockDilation;
+		FString configuredClockDilation;
+		bool    hasIniClockDilationGainPerTick;
+		double  configuredClockDilationGainPerTick;
+		bool    hasIniClockDilationMaxPercent;
+		double  configuredClockDilationMaxPercent;
+		bool    hasIniClockDilationTargetOffsetTicks;
+		double  configuredClockDilationTargetOffsetTicks;
+		bool    hasIniClockDilationSetpoint;
+		FString configuredClockDilationSetpoint;
 	};
 
 	static SessionKnobs readSessionKnobs(bool worldIsAuthority);
@@ -482,6 +539,11 @@ private:
 	void applyLatencyKnobs(const SessionKnobs& knobs);
 
 	void applyClockRttSource(const SessionKnobs& knobs, bool jitterFromIni);
+
+	void applyClockDilation(const SessionKnobs& knobs);
+
+	static bool applyClockDilationDoor(const TCHAR* key, bool hasIni, double requested, double (*clampToDoor)(double),
+		double& value);
 
 	void noteEngineRttForClockWindow(double roundTripSeconds);
 
@@ -570,6 +632,7 @@ private:
 	bool m_authorityLoop = false;
 	bool m_runnerStopped = false;
 	std::optional<double> m_releaseStepSeconds_Step;
+	std::optional<double> m_clockTickStartSeconds_Step;
 	std::unordered_map<unsigned int, uint64> m_runnerBodyKeysById;
 	uint64 m_authorityWakes_Runner = 0u;
 
@@ -658,6 +721,10 @@ private:
 	bool m_immediateStepsStopped = false;
 	double m_engineRttWindowSeconds = kNoRttReadingSeconds;
 	std::optional<double> m_clockWindowStartSeconds;
+	std::optional<ClockDilationController> m_clockDilation;
+	std::optional<ClockDilationWindow> m_clockDilationWindow;
+	std::optional<double> m_authorityRateLineDueSeconds_Owner;
+	uint64_t m_authorityRefusedRateChangesLogged_Owner = 0u;
 	std::mutex m_lifecycleBridgeMutex;
 	std::vector<unsigned int> m_unregisterRequests;
 	std::vector<LifecycleOutcome> m_lifecycleOutcomes;
@@ -1010,8 +1077,15 @@ void UESimulationSession<TraitsT>::postRunnerRequest(TUniqueFunction<void()> req
 }
 
 template <typename TraitsT>
-void UESimulationSession<TraitsT>::beforeAuthorityPump_Runner()
+void UESimulationSession<TraitsT>::beforePump_Owner(double hostNowSeconds, TickRateDoor& rate)
 {
+	if (m_manager.has_value() && m_manager->runsPrediction())
+	{
+		runClockDilation_GameThread(hostNowSeconds, rate);
+		return;
+	}
+	if (m_manager.has_value())
+		noteAuthorityRateDoor_Owner(hostNowSeconds, rate);
 	if (!m_authorityLoop)
 		return;
 	std::vector<TUniqueFunction<void()>> requests;
@@ -1026,10 +1100,49 @@ void UESimulationSession<TraitsT>::beforeAuthorityPump_Runner()
 }
 
 template <typename TraitsT>
+void UESimulationSession<TraitsT>::runClockDilation_GameThread(double hostNowSeconds, TickRateDoor& rate)
+{
+	if (!m_clockDilation.has_value() || m_clockDilation->config().mode == ClockDilationMode::Off)
+		return;
+	// ⛔G-38  docs/UESimulationSession-guards.md
+	const double clockNowSeconds = FPlatformTime::Seconds();
+	clockDilation::beforeClientPump(rate, hostNowSeconds, clockNowSeconds, *m_manager, *m_clockDilation,
+		*m_clockDilationWindow);
+	if (m_clockDilationWindow->isDue(clockNowSeconds))
+	{
+		UE_LOG(LogOGNet, Warning, TEXT("%hs"), m_clockDilationWindow->formatLine());
+		m_clockDilationWindow->restart();
+	}
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::noteAuthorityRateDoor_Owner(double hostNowSeconds, const TickRateDoor& rate)
+{
+	const uint64_t refused = rate.refusedRateChanges();
+	if (refused == m_authorityRefusedRateChangesLogged_Owner && m_authorityRateLineDueSeconds_Owner.has_value()
+		&& hostNowSeconds < *m_authorityRateLineDueSeconds_Owner)
+	{
+		return;
+	}
+	m_authorityRefusedRateChangesLogged_Owner = refused;
+	m_authorityRateLineDueSeconds_Owner = hostNowSeconds + clockDilation::kWindowSeconds;
+	UE_LOG(LogOGNet, Warning, TEXT("[Dilation.Authority] refusedRateChanges=%llu rateScale=%.5f"),
+		static_cast<unsigned long long>(refused), rate.rateScale());
+}
+
+template <typename TraitsT>
 void UESimulationSession<TraitsT>::afterStep_Step()
 {
-	if (m_clockServer != nullptr && m_manager.has_value() && !m_manager->runsPrediction())
-		m_clockServer->publishServerTick(static_cast<uint32_t>(getServerClock().getTick()));
+	const std::optional<double> tickStartSeconds = std::exchange(m_clockTickStartSeconds_Step, std::nullopt);
+	if (m_clockServer == nullptr || !m_manager.has_value() || m_manager->runsPrediction())
+		return;
+	checkf(tickStartSeconds.has_value(),
+		TEXT("UESimulationSession::afterStep_Step: an authority step ended with no start time. The brawler's tick-driver binding "
+			 "calls noteAuthorityStepTime_Step in releaseInputsForAuthorityTick, at the start of every authority step, and the "
+			 "SimClock server's tick age is measured from that time. Was publishServerTick(tick), which read the clock at the "
+			 "publish (og-time-dilation task 2b)"));
+	// ⛔G-39  docs/UESimulationSession-guards.md
+	m_clockServer->publishServerTick(static_cast<uint32_t>(getServerClock().getTick()), *tickStartSeconds);
 }
 
 template <typename TraitsT>
@@ -1379,13 +1492,61 @@ auto UESimulationSession<TraitsT>::readSessionKnobs(bool worldIsAuthority) -> Se
 		}
 	}
 
+	bool    hasIniClockDilation = false;
+	FString configuredClockDilation;
+	if (GConfig != nullptr)
+	{
+		FString iniDilation;
+		if (GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockDilation"), iniDilation, GGameIni) ||
+			GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockDilation"), iniDilation, GEngineIni))
+		{
+			hasIniClockDilation = true;
+			configuredClockDilation = iniDilation.TrimStartAndEnd();
+		}
+	}
+
+	bool    hasIniClockDilationGainPerTick = false;
+	double  configuredClockDilationGainPerTick = 0.0;
+	bool    hasIniClockDilationMaxPercent = false;
+	double  configuredClockDilationMaxPercent = 0.0;
+	bool    hasIniClockDilationTargetOffsetTicks = false;
+	double  configuredClockDilationTargetOffsetTicks = 0.0;
+	bool    hasIniClockDilationSetpoint = false;
+	FString configuredClockDilationSetpoint;
+	if (GConfig != nullptr)
+	{
+		hasIniClockDilationGainPerTick =
+			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationGainPerTick"), configuredClockDilationGainPerTick, GGameIni) ||
+			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationGainPerTick"), configuredClockDilationGainPerTick, GEngineIni);
+		hasIniClockDilationMaxPercent =
+			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationMaxPercent"), configuredClockDilationMaxPercent, GGameIni) ||
+			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationMaxPercent"), configuredClockDilationMaxPercent, GEngineIni);
+		hasIniClockDilationTargetOffsetTicks =
+			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationTargetOffsetTicks"), configuredClockDilationTargetOffsetTicks,
+				GGameIni) ||
+			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationTargetOffsetTicks"), configuredClockDilationTargetOffsetTicks,
+				GEngineIni);
+		FString iniSetpoint;
+		if (GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockDilationSetpoint"), iniSetpoint, GGameIni) ||
+			GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockDilationSetpoint"), iniSetpoint, GEngineIni))
+		{
+			hasIniClockDilationSetpoint = true;
+			configuredClockDilationSetpoint = iniSetpoint.TrimStartAndEnd();
+		}
+	}
+
 	return SessionKnobs{ configuredRelayDelayFloorTicks, configuredCorrectionRotationK,
 		hasIniResimTriggerPolicy, configuredResimTriggerPolicy,
 		hasIniRedundancyFrames, configuredRedundancyFrames,
 		hasIniRelayResendEntries, configuredRelayResendEntries,
 		hasIniRecentreSettleSamples, configuredRecentreSettleSamples,
 		hasIniClockRttSource, configuredClockRttSource,
-		hasIniJitterMultiplier, configuredJitterMultiplier };
+		hasIniJitterMultiplier, configuredJitterMultiplier,
+		hasIniClockDilation, configuredClockDilation,
+		hasIniClockDilationGainPerTick, configuredClockDilationGainPerTick,
+		hasIniClockDilationMaxPercent, configuredClockDilationMaxPercent,
+		hasIniClockDilationTargetOffsetTicks, configuredClockDilationTargetOffsetTicks,
+		hasIniClockDilationSetpoint, configuredClockDilationSetpoint };
 }
 
 template <typename TraitsT>
@@ -1544,6 +1705,8 @@ void UESimulationSession<TraitsT>::applyLatencyKnobs(const SessionKnobs& knobs)
 	}
 
 	applyClockRttSource(knobs, jitterFromIni);
+
+	applyClockDilation(knobs);
 }
 
 template <typename TraitsT>
@@ -1577,6 +1740,105 @@ void UESimulationSession<TraitsT>::applyClockRttSource(const SessionKnobs& knobs
 		m_manager->getTimeConfig().jitterMultiplier,
 		m_manager->getTimeConfig().simClockJitterMultiplier,
 		jitterFromIni ? TEXT("ini") : TEXT("compiled"));
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::applyClockDilation(const SessionKnobs& knobs)
+{
+	if (!m_manager->runsPrediction())
+	{
+		UE_LOG(LogOGNet, Warning, TEXT("[Dilation.Config] mode=n/a"));
+		return;
+	}
+	ClockDilationConfig config;
+	bool fromIni = false;
+	if (knobs.hasIniClockDilation)
+	{
+		if (knobs.configuredClockDilation.Equals(TEXT("Off"), ESearchCase::IgnoreCase))
+		{
+			config.mode = ClockDilationMode::Off;
+			fromIni = true;
+		}
+		else if (knobs.configuredClockDilation.Equals(TEXT("Shadow"), ESearchCase::IgnoreCase))
+		{
+			config.mode = ClockDilationMode::Shadow;
+			fromIni = true;
+		}
+		else if (knobs.configuredClockDilation.Equals(TEXT("On"), ESearchCase::IgnoreCase))
+		{
+			config.mode = ClockDilationMode::On;
+			fromIni = true;
+		}
+		else
+		{
+			UE_LOG(LogOGNet, Warning,
+				TEXT("[Dilation.Config] ini [OGNetcode] ClockDilation='%s' unrecognised (expected Off, Shadow or On), running Off"),
+				*knobs.configuredClockDilation);
+		}
+	}
+
+	const bool gainFromIni = applyClockDilationDoor(TEXT("ClockDilationGainPerTick"), knobs.hasIniClockDilationGainPerTick,
+		knobs.configuredClockDilationGainPerTick, &clockDilationDoors::clampGainPerTick, config.gainPerTick);
+	double maxPercent = config.maxDeviation * 100.0;
+	const bool maxFromIni = applyClockDilationDoor(TEXT("ClockDilationMaxPercent"), knobs.hasIniClockDilationMaxPercent,
+		knobs.configuredClockDilationMaxPercent, &clockDilationDoors::clampMaxPercent, maxPercent);
+	if (maxFromIni)
+		config.maxDeviation = maxPercent / 100.0;
+	const bool offsetFromIni = applyClockDilationDoor(TEXT("ClockDilationTargetOffsetTicks"),
+		knobs.hasIniClockDilationTargetOffsetTicks, knobs.configuredClockDilationTargetOffsetTicks,
+		&clockDilationDoors::clampTargetOffsetTicks, config.targetOffsetTicks);
+	bool setpointFromIni = false;
+	if (knobs.hasIniClockDilationSetpoint)
+	{
+		if (knobs.configuredClockDilationSetpoint.Equals(TEXT("OwnRtt"), ESearchCase::IgnoreCase))
+		{
+			config.setpoint = ClockDilationSetpoint::OwnRtt;
+			setpointFromIni = true;
+		}
+		else
+		{
+			UE_LOG(LogOGNet, Warning,
+				TEXT("[Dilation.Config] ini [OGNetcode] ClockDilationSetpoint='%s' is not accepted by this build (expected OwnRtt), ")
+				TEXT("running OwnRtt"),
+				*knobs.configuredClockDilationSetpoint);
+		}
+	}
+
+	m_clockDilation.emplace(config);
+	m_clockDilationWindow.emplace(config);
+	const ClockDilationConfig& stored = m_clockDilation->config();
+	UE_LOG(LogOGNet, Warning,
+		TEXT("[Dilation.Config] mode=%hs setpoint=%hs gainPerTick=%.4f maxDeviation=%.4f (%s)"),
+		clockDilation::modeWord(stored.mode), clockDilation::setpointWord(stored.setpoint), stored.gainPerTick,
+		stored.maxDeviation, fromIni ? TEXT("ini") : TEXT("compiled"));
+	UE_LOG(LogOGNet, Warning,
+		TEXT("[Dilation.Config] doors gainPerTick=%.4f (%s) maxPercent=%.3f (%s) targetOffsetTicks=%.3f (%s) setpoint=%hs (%s)"),
+		stored.gainPerTick, gainFromIni ? TEXT("ini") : TEXT("compiled"),
+		stored.maxDeviation * 100.0, maxFromIni ? TEXT("ini") : TEXT("compiled"),
+		stored.targetOffsetTicks, offsetFromIni ? TEXT("ini") : TEXT("compiled"),
+		clockDilation::setpointWord(stored.setpoint), setpointFromIni ? TEXT("ini") : TEXT("compiled"));
+}
+
+template <typename TraitsT>
+bool UESimulationSession<TraitsT>::applyClockDilationDoor(const TCHAR* key, bool hasIni, double requested,
+	double (*clampToDoor)(double), double& value)
+{
+	if (!hasIni)
+		return false;
+	if (!FMath::IsFinite(requested))
+	{
+		UE_LOG(LogOGNet, Warning,
+			TEXT("[Dilation.Config] ini [OGNetcode] %s is not a finite number, keeping the compiled default"), key);
+		return false;
+	}
+	const double clamped = clampToDoor(requested);
+	if (clamped != requested)
+	{
+		UE_LOG(LogOGNet, Warning,
+			TEXT("[Dilation.Config] ini [OGNetcode] %s=%.4f out of range, clamped to %.4f"), key, requested, clamped);
+	}
+	value = clamped;
+	return true;
 }
 
 template <typename TraitsT>
@@ -1782,6 +2044,7 @@ void UESimulationSession<TraitsT>::noteAuthorityStepTime_Step()
 {
     const double stepSeconds = FPlatformTime::Seconds();
     m_releaseStepSeconds_Step = stepSeconds;
+    m_clockTickStartSeconds_Step = stepSeconds;
     if (m_manager.has_value())
         m_manager->noteAuthorityStepSeconds(stepSeconds);
 }

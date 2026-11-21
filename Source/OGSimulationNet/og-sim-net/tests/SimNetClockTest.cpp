@@ -225,8 +225,9 @@ private:
 		if (m_spec.publishTicks && server->clockServer)
 		{
 			const uint32_t tick = kFirstServerTick + m_frames;
-			server->clockServer->publishServerTick(tick);
-			publications.push_back(Publication{now(), tick});
+			const double tickStartSeconds = server->host.nowSeconds();
+			server->clockServer->publishServerTick(tick, tickStartSeconds);
+			publications.push_back(Publication{tickStartSeconds, tick});
 		}
 		++m_frames;
 		client->transport->inbox().drain([&](const InboundSimRecord& record) {
@@ -472,7 +473,7 @@ SessionRun runSessions(bool clock)
 		serverSession.dispatchFrame();
 		serverSession.publishClock(tick);
 		if (server.clockServer)
-			server.clockServer->publishServerTick(tick);
+			server.clockServer->publishServerTick(tick, server.host.nowSeconds());
 		++tick;
 		serverSession.flushFrame();
 		server.service();
@@ -580,6 +581,29 @@ TEST_CASE("SimNetClock.BeforeTheAuthorityPublishesATickThePongCarriesNoServerTic
 	for (const SimNetClockSample& sample : rig.samples)
 		CHECK(sample.serverTick == ogsimnet::kNoServerTick);
 	CHECK(rig.clockServer().publishedServerTick() == ogsimnet::kNoServerTick);
+}
+
+TEST_CASE("SimNetClock.EachSamplesServerTickAgeIsThePongsSendTimeMinusTheStartTimeItsTickWasPublishedWith", "[NetTransport]")
+{
+	ClockRig rig(LinkSpec{20.0, 30.0, 0.75});
+	rig.runFor(kRunSeconds);
+	REQUIRE(rig.samples.size() >= static_cast<size_t>(kRunSeconds / ogsimnet::kClockPingIntervalSeconds) - 2u);
+	double minAge = rig.samples.front().serverTickAgeSeconds;
+	double maxAge = minAge;
+	for (const SimNetClockSample& sample : rig.samples)
+	{
+		REQUIRE(sample.serverTick != ogsimnet::kNoServerTick);
+		const auto publication = std::find_if(rig.publications.begin(), rig.publications.end(),
+			[&](const Publication& p) { return p.tick == sample.serverTick; });
+		REQUIRE(publication != rig.publications.end());
+		CHECK(std::abs(sample.serverTickAgeSeconds - (sample.t2 - publication->atSeconds)) <= 1e-6);
+		CHECK(sample.serverTickAgeSeconds >= 0.0);
+		CHECK(sample.serverTickAgeSeconds < kTickSeconds + 2.0 * kStepSeconds);
+		minAge = std::min(minAge, sample.serverTickAgeSeconds);
+		maxAge = std::max(maxAge, sample.serverTickAgeSeconds);
+	}
+	std::printf("server tick age over %zu samples: min %.6f ms, max %.6f ms\n", rig.samples.size(), minAge / kMs, maxAge / kMs);
+	CHECK(maxAge > minAge);
 }
 
 TEST_CASE("SimNetClock.TheClockLanesOtherMessagesReachTheInboxUnchangedAndAForgedOrMalformedPongIsDropped", "[NetTransport]")
