@@ -42,8 +42,8 @@ The host is a plain C++ class. The two tick functions are plain `FTickFunction` 
 
 **`LogOGSimHost`** is this module's category: `OGSimulationUnreal.h` declares it, exported, and `OGSimulationUnreal.cpp`
 defines it. Its name is the one the brawler's host lines have always used, so `Config/DefaultEngine.ini`'s
-`LogOGSimHost=Warning` governs it, and the brawler's simulation manager logs its `[SimHost.Backend]` line on it in both
-physics configurations.
+`LogOGSimHost=Warning` governs it, and the brawler's simulation manager logs its `[SimHost.Backend]` line on it (in both
+physics configurations until og-session-runtime tasks 3–6 removed the former Chaos configuration).
 
 ## 2. The frame
 
@@ -106,10 +106,11 @@ and BlockModeFn, function references; the end tick function kept the block-mode 
 With the variables here the getters have nothing to forward, and task 15c deleted them: neither constructor takes an
 argument, and the end tick function's `check` covers `endFrame` alone, as the frame host's did before task 11.
 
-**They register in both physics configurations.** The module is compiled in both, with no physics-configuration `#if` arm (§7), and a
+**They registered in both physics configurations.** The module has no physics-configuration `#if` arm (§7), and a
 `TAutoConsoleVariable` or `FAutoConsoleTaskPriority` registers itself with the console manager when the module's
-static objects are constructed. So in the Chaos configuration the four exist and nothing reads them: nothing
-constructs the engine or the host there. Until task 15c they were in a whole-file Jolt arm of the game module, and the
+static objects are constructed. So in the former Chaos configuration (removed by og-session-runtime tasks 3–6) the four
+existed and nothing read them: nothing constructed the engine or the host there. Jolt is the only configuration since,
+and it reads them. Until task 15c they were in a whole-file Jolt arm of the game module, and the
 Chaos configuration did not have them (design of og-tickdriver, Q5, which task 15's re-scope replaced). Three of
 the help texts start "Jolt configuration only" (the priority's names "the client's Jolt step task"), and two name the
 brawler's simulation manager; the texts are frozen with the names and defaults, and "Jolt configuration only" stays
@@ -152,9 +153,9 @@ in: none of this module's objects and none of its exports names a `tickDriverThr
 the world host.
 
 The files have no physics-configuration `#if` arm; the `.cpp`'s two `#if !UE_BUILD_SHIPPING` blocks are the test
-knob's (§8). The module is compiled in both physics configurations, and in the Chaos one nothing constructs these types. What
-they do there is register the four console variables at load (and, outside Shipping, the test knob), and nothing reads
-them (§4).
+knob's (§8). Until og-session-runtime tasks 3–6 removed the former Chaos configuration, the module was compiled in both
+physics configurations, and in the Chaos one nothing constructed these types: all they did there was register the four
+console variables at load (and, outside Shipping, the test knob), and nothing read them (§4).
 
 ## 8. The test clock-rate knob, `og.Sim.TestClientClockRatePpm` (og-time-dilation task 9)
 

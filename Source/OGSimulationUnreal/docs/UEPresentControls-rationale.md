@@ -76,10 +76,11 @@ trace texts name no Chaos variable.
 
 ## 6. Both physics configurations
 
-The module is compiled in both configurations and the files have no `#if` arm, so the six variables register at module
-load in both. In the Chaos configuration nothing calls `fromConsoleVariables`, and the variables are never read. Until
-og-tickdriver task 15c they were in a whole-file Jolt arm of the game module, and the Chaos configuration did not have
-them (`UETickDriverHost-rationale.md` §4 says the same of the frame's four).
+The files have no `#if` arm, so the six variables register at module load. Until og-session-runtime tasks 3–6 removed the
+former Chaos configuration, the module was compiled in both configurations, and in the Chaos one nothing called
+`fromConsoleVariables` and the variables were never read; Jolt is the only configuration since, and its tick-driver host
+calls it on every present. Until og-tickdriver task 15c they were in a whole-file Jolt arm of the game module, and the
+Chaos configuration did not have them (`UETickDriverHost-rationale.md` §4 says the same of the frame's four).
 
 ## 7. Module placement
 

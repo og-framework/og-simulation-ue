@@ -24,8 +24,8 @@ imports the level with the game binding's category table and logs the report on 
 
 `CollisionCategories` bits are consumer-local ids, not engine channels (`QueryGeometry.h`). This
 module cannot know a game's ids, so the importer takes the table as `UEStaticCategoryChannel`
-pairs, one category to one `ECollisionChannel`, in the same shape as the table the brawler hands
-the Chaos query adapter (`BrawlerChaosBindingUImpl.cpp` :: `categoryChannels`).
+pairs, one category to one `ECollisionChannel`: the brawler's is `BrawlerJoltBindingUImpl::categoryChannels`, in the
+same shape as the table it handed the former Chaos query adapter (removed by og-session-runtime tasks 3–4).
 
 `addMapping` rejects (with an Error line) a category of 32 or more, a channel outside the enum, and
 a pair that repeats a category or a channel already mapped. A one-to-one table is what makes the

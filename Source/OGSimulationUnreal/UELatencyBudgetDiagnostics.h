@@ -87,8 +87,7 @@ public:
 	void stampCorrectionHanded_Internal(unsigned int lane, uint32 correctionTick, double handedSeconds);
 	void onPostTickFlush();
 
-	template <typename BackendDiagnosticsT>
-	void tick_GameThread(BackendDiagnosticsT backendDiagnostics);
+	void tick_GameThread();
 
 	ClockCounts clockCountsInWindow() const;
 	void restartClockWindow();
@@ -179,8 +178,7 @@ private:
 	void stampCorrectionHanded_Internal(unsigned int, uint32, double) {}
 	void onPostTickFlush() {}
 
-	template <typename BackendDiagnosticsT>
-	void tick_GameThread(BackendDiagnosticsT) {}
+	void tick_GameThread() {}
 
 	ClockCounts clockCountsInWindow() const { return {}; }
 	void restartClockWindow() {}
@@ -515,8 +513,7 @@ void UELatencyBudgetDiagnostics<TraitsT>::onPostTickFlush()
 }
 
 template <typename TraitsT>
-template <typename BackendDiagnosticsT>
-void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread(BackendDiagnosticsT backendDiagnostics)
+void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread()
 {
 	if (!m_probe || !m_mailbox || !m_owner.m_manager.has_value())
 		return;
@@ -556,8 +553,6 @@ void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread(BackendDiagnosticsT ba
 	m_probe->stampNewestPending(latencyBudget::Stream::State,
 		latencyBudget::Point::StepEnd, latencyBudget::Point::Rendered, nowSeconds);
 
-	backendDiagnostics.sampleLatencyWindow_GameThread(isClient);
-
 	latencyBudget::WindowReport report;
 	if (!m_probe->closeWindowIfDue(nowSeconds, report))
 		return;
@@ -591,8 +586,6 @@ void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread(BackendDiagnosticsT ba
 		report.duplicateStamps, report.laneOverflow,
 		static_cast<unsigned long long>(m_mailboxDropped));
 	m_mailboxDropped = 0u;
-
-	backendDiagnostics.logLatencyWindow_GameThread(isClient);
 }
 
 template <typename TraitsT>

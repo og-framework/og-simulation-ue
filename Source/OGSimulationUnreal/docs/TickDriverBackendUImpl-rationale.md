@@ -63,8 +63,9 @@ The user asked whether `AOGBrawlerSimulationManager` could be split so that the 
 separate (og-simulationscheduler-withjolt phase F, 2026-10-15). The UImpl is the brawler's per-role simulation
 session: the netcode session, the relay listeners, registration and input, the per-frame sends, the latency budget
 and log routing. None of that depends on the physics engine. Task 82 moved the Chaos host into its own class
-(ChaosBackendUImpl, its historical name; `ChaosTickBackendUImpl` since og-tickdriver task 15b); task 83 moved the Jolt host into this class,
-and the UImpl lost its last `OG_PHYSICS_BACKEND_CHAOS`.
+(ChaosBackendUImpl, its historical name; ChaosTickBackendUImpl from og-tickdriver task 15b until og-session-runtime task 3
+deleted it); task 83 moved the Jolt host into this class, and the UImpl lost its last `OG_PHYSICS_BACKEND_CHAOS`. Since
+og-session-runtime tasks 3–6 removed the former Chaos configuration, this class is the brawler's only physics backend.
 
 **What it is.**
 
@@ -83,20 +84,21 @@ and the UImpl lost its last `OG_PHYSICS_BACKEND_CHAOS`.
 * **The owner calls it through the seam,** the fixed set of entry points in `OGBrawlerSimulationManager-rationale.md`
   §18, each from exactly one call site and with no `#if`. `PhysicsBackendHostUImpl.h` defines the concept
   `PhysicsBackendHost`, which lists the set, and the owner asserts that its backend satisfies it
-  (`PhysicsBackendHostUImpl-rationale.md`). Entry points with no Jolt work are empty inline bodies here:
-  `onEndPlayWorld`, and the two latency-window hooks `sampleLatencyWindow_GameThread` and
-  `logLatencyWindow_GameThread`, which since og-tickdriver task 18 sit on the empty diagnostics view `editDiagnostics()`
-  returns (a by-value `Diagnostics` with no state, header-only like the rest of this class; the game's
-  latency diagnostics call it, `DiagnosticsConventions.md` §1). The others call the
+  (`PhysicsBackendHostUImpl-rationale.md`). Until og-session-runtime task 5 three entry points with no Jolt work were
+  empty inline bodies here: the world-teardown entry point, and the two latency-window hooks, which since og-tickdriver
+  task 18 sat on an empty by-value diagnostics view that the game's latency diagnostics called
+  (`DiagnosticsConventions.md` §1). Only the former Chaos host did work in them; task 5 removed the three, the view and
+  their call sites. The others call the
   functions that held the Jolt arms before (`startStepping` calls `startDriverStepping`; since og-tickdriver task 9
   `beforePresent_GameThread` and `updateVisualization_GameThread` call og-simulation's presenter's two game-thread
   doors, §5, the second replaced by `overlayRenderPoses_GameThread` in og-input-latency task P5-16; since og-tickdriver task 10 `buildWorld` imports the statics and calls the world host's `build`, and the
   three visualization doors forward to the world host's, §3), or are the old arms themselves (`onEndPlayBegin`,
   `createBodies_GameThread`, `onRegistered_GameThread`, `onUnregistered_GameThread`).
-* **The header has no `#if`.** Only `PhysicsBackendHostUImpl.h` includes it, in the Jolt configuration. Since
+* **The header has no `#if`.** Only `PhysicsBackendHostUImpl.h` includes it. Since
   og-tickdriver task 15e it also holds the member definitions, and the class has no `.cpp`: its one explicit
-  instantiation is in the brawler's `BrawlerJoltBindingUImpl.cpp`, a whole-file arm (`#if !OG_PHYSICS_BACKEND_CHAOS`)
-  like `ChaosTickBackendUImpl.cpp`, so in the Chaos configuration nothing instantiates it (§12). Until task 15e the
+  instantiation is in the brawler's `BrawlerJoltBindingUImpl.cpp` (§12). That file was a whole-file arm
+  (`#if !OG_PHYSICS_BACKEND_CHAOS`), like the former Chaos host's `.cpp`, so in the former Chaos configuration nothing
+  instantiated this class; og-session-runtime task 3 removed the guard with that configuration. Until task 15e the
   host's own `.cpp` (TickDriverBackendUImpl.cpp, a historical name) was that arm and held the definitions and the
   instantiation (§10). The frame host's `.cpp` was a third such arm until og-tickdriver task 11 moved it to
   OGSimulationUnreal (`UETickDriverHost.cpp`), where it has none (`UETickDriverHost-rationale.md` §7).
@@ -139,8 +141,8 @@ reference, and is gone while the world host still holds it. And the frame host, 
 getters until og-tickdriver task 15c and takes nothing since), so the engine cannot be handed in from the worlds
 struct either without a change to that adapter.
 
-On Chaos the owner's two members are `ChaosTickBackendWorldsUImpl` (an empty struct) and `ChaosTickBackendUImpl`, so the
-owner's declarations and assertions are the same in both configurations.
+In the former Chaos configuration (removed by og-session-runtime task 3) the owner's two members were the Chaos host's empty
+worlds struct and the Chaos host, so the owner's declarations and assertions were the same in both configurations.
 
 | destruction-order row (destroyed right to left) | where it is asserted |
 |---|---|
@@ -199,8 +201,9 @@ declaration (task 82 made the check read it).
 
 ## §2 The Jolt host — overview (og-simulationscheduler-withjolt tasks 53–56 and 18)
 
-Since task 18 the Jolt configuration is the default: `PhysicsBackendChaos` in `OGBrawlerUnreal.Build.cs`
-is `0` (`OGBrawlerSimulationManager-rationale.md` §18). Its host is spread over this class, its owner (the shared
+Task 18 made the Jolt configuration the default (the PhysicsBackendChaos constant in `OGBrawlerUnreal.Build.cs` set to
+`0`, `OGBrawlerSimulationManager-rationale.md` §18); og-session-runtime task 3 deleted the constant and the Chaos arm, so Jolt
+is the only configuration. Its host is spread over this class, its owner (the shared
 session, which calls it through the seam), the frame host, the game binding and og-simulation's tick driver and step
 hooks. This section is the
 map; the details are in the sections and documents it points to.
@@ -255,7 +258,8 @@ at one step on a normal frame and the replay depth plus one on a resimulation fr
 on desktop and 2–4 ms on Android at its estimates. The ruled option copies Chaos's own model instead: a
 second world that only the game thread touches, restored once per frame from the newest saved state
 (§6). The visualizations query it with the same adapter
-classes, so the component and og-brawler are the same in both configurations; the game thread takes the
+classes, so the component and og-brawler were the same in both configurations (until og-session-runtime tasks 3–6 removed
+the former Chaos configuration); the game thread takes the
 world mutex only at `BeginPlay` and around the join-time bind. The alternatives priced with it were a game-thread pose
 copy with its own query view, taking the mutex and accepting the wait, and running the visualizations in
 the step with a recorded draw list (the user's proposal, kept as a possible later refinement). Which one
@@ -267,7 +271,7 @@ branches, the shadow world on a worker client (`buildWorld`), and at the end sta
 the tick driver with its hooks, step driver and scheduler, then the two tick functions). `EndPlay` first unregisters
 the tick functions and waits for every outstanding step (`onEndPlayBegin`, `⛔G-01`), before any teardown.
 
-**Lines.** `[SimHost.Backend]` (both configurations), `[SimHost.Mode]`, `[SimHost.World]`,
+**Lines.** `[SimHost.Backend]` (printed by both configurations until og-session-runtime task 3), `[SimHost.Mode]`, `[SimHost.World]`,
 `[SimHost.Frame]`, `[SimHost.FirstStep]`, `[SimHost.Slot]`, `[SimHost.Bind]`, `[SimHost.Shadow]`, `[SimHost.RenderTarget]`,
 the non-shipping `[SimHost.RenderApply]` and `[SimHost.RenderSync]` checks, `[SimHost.RenderCorrection]`
 and `[SimHost.RenderTrace]`,
@@ -284,9 +288,8 @@ says which is which.
 
 * **The world build** (`buildWorld`, before the role branches, the same on every peer). This class:
   1. imports the level's static collision with `UEStaticGeometryImporter` and the brawler's six-row category table
-     (`BrawlerJoltBindingUImpl::categoryChannels`, the same rows as the Chaos binding's
-     `BrawlerChaosBindingUImpl::categoryChannels`; both were file-local functions of the two hosts until og-tickdriver
-     task 15a), and logs its report;
+     (`BrawlerJoltBindingUImpl::categoryChannels`, the same rows as the former Chaos binding's table, which og-session-runtime
+     task 3 deleted; both were file-local functions of the two hosts until og-tickdriver task 15a), and logs its report;
   2. splits the import into the queryable and the PhysicsOnly shapes by the importer's per-shape `physicsOnly`
      flags, with the world host's `splitStatics` (reached through the engine traits' `splitStatics` since
      og-tickdriver task 15e, §12);
@@ -295,7 +298,7 @@ says which is which.
      components `+0`; G-06),
      `og.Jolt.ContactCounts` (read once, through the engine binding's `contactCountsEnabled`,
      `BrawlerJoltBindingUImpl::contactCountsEnabled` since og-tickdriver task 15e; §9), the six mapped
-     categories (`BrawlerJoltBindingUImpl::mappedCategories`, the Chaos adapter's mapped set) and the Jolt log sink
+     categories (`BrawlerJoltBindingUImpl::mappedCategories`, the former Chaos adapter's mapped set) and the Jolt log sink
      `JoltEngineTraitsUImpl::logEngineMessage`, which maps a `[Warning]` prefix to Warning on `LogOGSimHost`;
   4. calls the tick backend's `build` (§11) with the configuration, the two static parts and the owner's three adapter
      optionals (`m_physAdapter`, `m_physReaderAdapter`, `m_queryAdapter`); it hands them unchanged to the world host's
@@ -372,7 +375,7 @@ says which is which.
   query adapter's hit order requires. The `[SimHost.Bind] bind … body0=…` line is at `Warning`, so it shows at
   `LogOGSimHost`'s committed level (task 66; the lines were at `Log` before and never appeared). Occupancy is not
   applied here: the slot stays parked until the step applies the Occupy command the Ready path pushes (J1, §4).
-* **The capsule contract (design D14).** The Chaos factory compared the authored UE capsule with the movement
+* **The capsule contract (design D14).** The former Chaos factory (removed by og-session-runtime task 4) compared the authored UE capsule with the movement
   descriptor when it adopted the capsule as the root body. The Jolt slot body is built from the descriptor, so the
   bind pass `checkf`s the pawn's unscaled capsule radius and half-height against the descriptor's `CapsuleGeometry`
   instead (`OGBrawlerUECharacter-guards.md` G-01). The check is the binding's
@@ -389,7 +392,7 @@ says which is which.
   step-side reads of the bind table (the locked-rotation inertia) never read the entries a release clears; the
   reader's "bound" gate does, and its only callers are the game-thread visualizations, so the release cannot race
   them (task 11 review N3). The bodies keep their stale user data until the next bind, which is harmless: a parked
-  body answers no query and collides with nothing. Query volumes are never unregistered, as in the Chaos
+  body answers no query and collides with nothing. Query volumes are never unregistered, as in the former Chaos
   configuration. The release also forgets the owner's logged waits.
 * **Visualizations.** `editVizQuery()`, `getVizReader()` and `registerVizVolume` forward, through the tick backend's
   doors of the same names, to the world host's (`JoltTickWorldHost-rationale.md` §8): on an inline host the step world's adapters, which the
@@ -442,7 +445,7 @@ og-simulation-jolt's `JoltTickWorldHost`, held in `m_physicsBackendWorlds` (§1,
   (the old IsInGameThread checks), its `[SimHost.FirstStep]` `thread=` word and an inline host's access predicate
   read. Task 8 had made the same call from this class's stepping-mode decision; task 10 moved it into `build`.
 * **`startDriverStepping`**, at the end of `BeginPlay` (design §9.1 steps 7–9), through the seam's `startStepping`
-  (where the Chaos configuration registers its callback): it reads `og.Sim.MaxCatchUpSteps` once and calls the tick
+  (where the former Chaos configuration registered its callback, until og-session-runtime task 3): it reads `og.Sim.MaxCatchUpSteps` once and calls the tick
   backend's `start` with `dt`, the role, that cap and the frame wait: `ThisFramesSingleStep` on an immediate client,
   `EarlierFrames` otherwise (§16). A `checkf` first refuses a client whose og-sim-net lanes are not bound yet, since
   the lanes decide whether it is immediate (§11). `start` hands the world host the manager as the contact
@@ -500,8 +503,8 @@ rollback guide asks for, and prediction correction absorbs what remains.
 
 ## §5 The render publish and apply (task 55; og-tickdriver task 9)
 
-The Chaos configuration's end of physics syncs every component to the physics result, interpolated
-two steps behind. The Jolt configuration has no such sync, so the Jolt host does it for the one component
+The former Chaos configuration's end of physics (removed by og-session-runtime tasks 3–6) synced every component to the
+physics result, interpolated two steps behind. The Jolt configuration has no such sync, so the Jolt host does it for the one component
 that needs it, the capsule root (design D11, §8).
 
 **Since og-tickdriver task 9 the render code is og-simulation's** `TickDriverPresenter`
@@ -575,7 +578,7 @@ and condition below is the presenter's transcription of this class's old code. T
   presenter's `present_GameThread`, before its
   shared body (after the non-shipping hitch sleep and, on a worker client, after the shadow-world restore
   of §6),
-  every frame, on every role. The Chaos configuration has no apply: the engine's sync does that job.
+  every frame, on every role. The former Chaos configuration had no apply: the engine's sync did that job.
   Task 55's apply peeked the newest snapshot; since task 19 it moves the capsule to the render
   interpolation's pose (§7), and `og.Render.NewestSnapshot` 1 restores the newest. For every character in
   the presenter's target table, filled on `tryRegister`'s Ready path (`onRegistered_GameThread`) and erased by
@@ -617,8 +620,8 @@ and condition below is the presenter's transcription of this class's old code. T
 
 On a client the step runs on a worker task, so the game thread may not query the step world: it
 changes under the query, and the query adapter's predicate refuses any caller that neither runs the
-step nor holds J2. The visualizations still need a world to query every frame. Chaos gives them its
-game-thread copy of the scene, refreshed at the end of physics. The Jolt configuration does the same
+step nor holds J2. The visualizations still need a world to query every frame. The former Chaos configuration gave them
+the engine's game-thread copy of the scene, refreshed at the end of physics. The Jolt configuration does the same
 with a second world that only the game thread touches (design D §2.5, "(e) in detail"; OQ13 = (e)).
 
 Since og-tickdriver task 10 the shadow world, its build, its bind and release mirrors, its bind-table comparison,
@@ -917,8 +920,8 @@ switch (`JoltEngineTraitsUImpl-rationale.md` §3). This class calls the read whe
   The game module registers the cvar after the engine applies the ini's console variables; the engine
   keeps such a value in a placeholder and applies it when the cvar is registered, which is before the
   world's `BeginPlay`. The build line shows `installed=1`.
-* **The Chaos host has no equivalent.** The cvar, the counter and the line exist only in the Jolt configuration;
-  a Chaos build prints no `[SimHost.Contacts]` line, and Chaos collision events are out of scope.
+* **The former Chaos host had no equivalent** (removed by og-session-runtime task 3). The cvar, the counter and the line
+  existed only in the Jolt configuration, which is the only one since; a Chaos build printed no `[SimHost.Contacts]` line.
 
 ## §10 The template (og-tickdriver task 15b)
 
@@ -933,15 +936,16 @@ names come from its parameters.
 **The requirement.** The class template requires `TickDriverBackendComposition<EngineTraitsT, BindingT>`, a concept in
 its header that is the conjunction of:
 1. `PhysicsEngineTraits<EngineTraitsT>` (`PhysicsBackendUImpl-rationale.md` §2);
-2. `EngineTraitsT::kHasWorldHost`: the engine is scheduled by the tick driver;
+2. the traits' world-host flag: the engine is scheduled by the tick driver (removed by og-session-runtime task 6,
+   when og-simulation's `PhysicsEngineTraits` came to require a world host of every engine);
 3. `BrawlerEngineBinding<BindingT, EngineTraitsT>` (§3 there), which for such an engine also asks for the capsule check
    and the park snap;
 4. `TickDriverWorldHost<typename EngineTraitsT::template WorldHost<typename BindingT::Simulatable>>`: the engine's world
    host, over the binding's simulatable, models og-simulation's driver concept.
 
-The Chaos traits fail item 2 (`ChaosEngineTraitsUImpl-rationale.md` §3), so
-`TickDriverBackendUImpl<ChaosEngineTraitsUImpl, BrawlerChaosBindingUImpl>` does not compile: task 15b quoted the compiler's "the associated constraints are not
-satisfied", with the concept named.
+The former Chaos traits (removed by og-session-runtime task 4) failed item 2, so the class over the Chaos traits and the
+Chaos binding did not compile: task 15b quoted the compiler's "the associated constraints are not satisfied", with the
+concept named.
 
 **What comes from where.**
 
@@ -1062,13 +1066,15 @@ and the brawler supplies its bindings and instantiates it.
 | `EngineBindingT` | `Simulatable`, `categoryChannels`, `mappedCategories`, `contactCountsEnabled`, `checkCapsuleContract`, `kParkSnap` | `BrawlerJoltBindingUImpl` (`BrawlerJoltBindingUImpl-rationale.md` §6) |
 
 **The requirement.** `TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>`, in this header, is
-`PhysicsEngineTraits<EngineTraitsT>`, `EngineTraitsT::kHasWorldHost`, `PhysicsEngineBinding<EngineBindingT,
+`PhysicsEngineTraits<EngineTraitsT>`, `PhysicsEngineBinding<EngineBindingT,
 EngineTraitsT>` (since task 15f, §13 below, in og-simulation's `PhysicsEngineTraits-rationale.md` §3),
 `TickDriverWorldHost` of the world-host instance, and a call of
 `EngineBindingT::checkCapsuleContract` with a `const GameBindingT::Character&` and an id. It names no brawler concept:
 the brawler asserts its own refinement, `BrawlerEngineBinding`, on its binding in its seam
-(`PhysicsBackendUImpl-rationale.md` §3). The Chaos traits still fail the second item, so no driver-scheduled host is
-built over Chaos.
+(`PhysicsBackendUImpl-rationale.md` §3). Until og-session-runtime task 6 it also required the traits' world-host flag
+to be true, as its second item; the Chaos traits failed it, so no driver-scheduled host was built over Chaos. Task 6
+removed the flag and the item: og-simulation's `PhysicsEngineTraits` requires the world-host template and the log sink
+of every engine, and `PhysicsEngineBinding` the park snap of every binding.
 
 **Where each brawler-only statement went** (the inputs §10 listed):
 
@@ -1250,4 +1256,4 @@ and the frame count stays at the cap. The display gains one frame period (~9.8 m
 **What it leaves alone.** Frame-locked clients keep `EarlierFrames`. They are the reference arm of Ph4's gate, and the
 same wait would make their display deterministic too: that is a decision for the lead, not taken here. A catch-up frame (two
 or more steps) is not waited for (`SimulationTickDriver-guards.md` G-10). `og.Sim.RunInline=1` steps inline, where the
-setting changes nothing. The Chaos configuration does not use this class.
+setting changes nothing. The former Chaos configuration (removed by og-session-runtime tasks 3–6) did not use this class.

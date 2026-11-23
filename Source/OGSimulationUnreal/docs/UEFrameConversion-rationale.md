@@ -77,7 +77,7 @@ each with its sign) and s the og length per Unreal centimetre (`1 / Frame::kUeCe
   Unreal value that holds a float, the float result is still correctly rounded: such a value cannot be exactly 100
   (or 10⁴) times a midpoint between two floats, so the exact quotient lies about 2⁻³¹ of its magnitude or more from
   one, far outside that error (`SimulationFrame-rationale.md` makes the same argument for its wrappers). For an
-  arbitrary double (a Chaos position) a quotient that close to a midpoint is possible, so a float result may, rarely,
+  arbitrary double (a position the engine computed) a quotient that close to a midpoint is possible, so a float result may, rarely,
   round one float ulp the other way; `vectorToSimD`, which returns the double, may differ in its last bit.
 * **The signed index picks keep the sign of zero.** Every component is placed or read at its index with an exact
   negation where the axis is negative, never through a dot product, so in Unreal's own frame a `-0` stays `-0` and a

@@ -44,7 +44,6 @@ enum class ESimTrafficImmediate : uint8
 	Off,
 	On,
 	RefusedServer,
-	RefusedNoTickDriver,
 	RefusedRunInline,
 	RefusedDetached
 };
@@ -62,15 +61,13 @@ inline std::optional<int32> readSimTrafficImmediateKnob()
 	return std::nullopt;
 }
 
-inline ESimTrafficImmediate decideSimTrafficImmediate(std::optional<int32> knob, bool isServer, bool stepsOnTickDriver,
-	bool runsInline, bool detached, bool serverAuthorityLoop = false)
+inline ESimTrafficImmediate decideSimTrafficImmediate(std::optional<int32> knob, bool isServer, bool runsInline, bool detached,
+	bool serverAuthorityLoop = false)
 {
 	if (!knob.has_value() || *knob == 0)
 		return ESimTrafficImmediate::Off;
 	if (isServer)
 		return serverAuthorityLoop ? ESimTrafficImmediate::On : ESimTrafficImmediate::RefusedServer;
-	if (!stepsOnTickDriver)
-		return ESimTrafficImmediate::RefusedNoTickDriver;
 	if (runsInline)
 		return ESimTrafficImmediate::RefusedRunInline;
 	if (detached)
@@ -87,16 +84,13 @@ enum class EAuthorityLoop : uint8
 {
 	Off,
 	On,
-	RefusedNoTickDriver,
 	RefusedNotDedicated
 };
 
-inline EAuthorityLoop decideAuthorityLoop(int32 knob, bool isServer, bool stepsOnTickDriver, bool dedicatedServer)
+inline EAuthorityLoop decideAuthorityLoop(int32 knob, bool isServer, bool dedicatedServer)
 {
 	if (knob == 0 || !isServer)
 		return EAuthorityLoop::Off;
-	if (!stepsOnTickDriver)
-		return EAuthorityLoop::RefusedNoTickDriver;
 	if (!dedicatedServer)
 		return EAuthorityLoop::RefusedNotDedicated;
 	return EAuthorityLoop::On;
@@ -342,8 +336,7 @@ public:
 		checkf(bIsServer == m_isServer,
 			TEXT("UESimNetLanes::ioMode: the driver asks for its own role's I/O mode, and the game's factory made these lanes "
 				 "for that role"));
-		m_authorityLoop = decideAuthorityLoop(readAuthorityLoopKnob(), m_isServer, TraitsT::EngineTraits::kHasWorldHost,
-			IsRunningDedicatedServer());
+		m_authorityLoop = decideAuthorityLoop(readAuthorityLoopKnob(), m_isServer, IsRunningDedicatedServer());
 		logAuthorityLoopRefusal();
 		return m_authorityLoop == EAuthorityLoop::On ? ognetunreal::IoMode::HostServiced : ognetunreal::IoMode::OwnThread;
 	}
@@ -355,8 +348,8 @@ public:
 			TEXT("UESimNetLanes::beforeStart: the lanes were made for the %s role and the endpoint is the other role's"),
 			m_isServer ? TEXT("server") : TEXT("client"));
 		m_endpoint = &simEndpoint;
-		m_immediateDecision = decideSimTrafficImmediate(readSimTrafficImmediateKnob(), m_isServer,
-			TraitsT::EngineTraits::kHasWorldHost, UETickDriverHost::runInline(), isDetached(), authorityLoop());
+		m_immediateDecision = decideSimTrafficImmediate(readSimTrafficImmediateKnob(), m_isServer, UETickDriverHost::runInline(),
+			isDetached(), authorityLoop());
 		const bool immediate = m_immediateDecision == ESimTrafficImmediate::On || authorityLoop();
 		m_transport.emplace(ogsimnet::simNetConfigFor(simEndpoint.config(), immediate));
 		if (m_isServer)
@@ -550,11 +543,6 @@ private:
 		{
 		case EAuthorityLoop::Off:
 		case EAuthorityLoop::On:
-			return;
-		case EAuthorityLoop::RefusedNoTickDriver:
-			UE_LOG(LogOGSimHost, Warning,
-				TEXT("[SimHost.Runner] og.Sim.AuthorityLoop=%d refused: the %hs backend does not step through the tick driver; this "
-					 "server steps inline on the game thread"), readAuthorityLoopKnob(), TraitsT::EngineTraits::kName);
 			return;
 		case EAuthorityLoop::RefusedNotDedicated:
 			UE_LOG(LogOGSimHost, Warning,

@@ -3,6 +3,7 @@
 <!-- lint-external-ref: onCorrectionStateAccepted -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
 <!-- lint-external-ref: forgetReceptionOwner -- removed by og-input-latency task P5-7 (the switch to og-net); kept in the history -->
 <!-- ================= DECLARED LINT ESCAPES ==================================
+<!-- lint-external-ref: ChaosTickBackendUImpl.cpp -- deleted by og-session-runtime task 3 (the brawler's Chaos backend arm: the Chaos host, the Chaos binding and their four docs); kept in the history -->
      Every token below is CORRECT and cannot resolve. ========================= -->
 <!-- lint-external-ref: UWorld::OnPostTickFlush -- Unreal Engine method, outside every scan root -->
 <!-- lint-external-ref: FPlatformTime::Seconds -- Unreal Engine function, outside every scan root -->
@@ -46,8 +47,8 @@ two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` →
 session (`UESimulationSession`, since og-ue-simulationcomponentandmanagersplit task 24a; before, the session owner itself): it creates the probe at the
 owner's begin of play, wraps every client input provider, walks every
 simulatable on every step to post mailbox events, drains the mailbox every frame and logs at `Warning` every 10 s. The
-probe's only output is its log lines, `[LatencyBudget]` and `[LatencyBudget.Window]`, plus whatever per-window line the
-backend host's diagnostics view adds (§6), and nothing reads them back. Deleting it and every caller changes no
+probe's only output is its log lines, `[LatencyBudget]` and `[LatencyBudget.Window]`, and nothing reads them back
+(until og-session-runtime task 5 a backend host's diagnostics view could add a per-window line of its own, §7). Deleting it and every caller changes no
 production behaviour and no shipped telemetry, so it is diagnostics by og-simulation's own test
 (`DiagnosticsConventions.md` §2: "who calls it, and what breaks if it is deleted").
 
@@ -130,7 +131,8 @@ compiles the header only in its own `.cpp`.
   function it would run is still compiled at 1 and 0 alike, which keeps every call site's code checked in both states,
   and is discarded at 0.
 * **`begin` binds nothing,** so `UWorld::OnPostTickFlush` has no latency subscriber.
-* **`tick_GameThread` does nothing,** so no backend host's diagnostics view is called.
+* **`tick_GameThread` does nothing.** Until og-session-runtime task 5 it took the backend host's diagnostics view, and
+  this state called neither of the view's hooks.
 
 **The category is gated on the build, not on the macro.** `LogOGLatencyBudget` is declared (exported) in this header and
 defined in this module's `.cpp`, both under `!UE_BUILD_SHIPPING`. Each module may force the macro to a different value,
@@ -285,9 +287,10 @@ reads the common fields matches it unchanged (og-input-latency task 6; the count
 
 One `[LatencyBudget]` line per enabled hop and one `[LatencyBudget.Window]` line per window, both under
 **`LogOGLatencyBudget`** at `Warning` (one category per probe family, `UESimulationLogRoutes-rationale.md` §3). They are
-logged with `UE_LOG` directly, never as core SIMLOG strings, so `RouteOGMessage` has no arm for them. After them,
-`tick_GameThread` calls the backend view's `logLatencyWindow_GameThread`, which may log a backend's own window line under
-its own category. `duplicate` counts the copies first-stamp-wins discarded (an input re-sent in several redundant
+logged with `UE_LOG` directly, never as core SIMLOG strings, so `RouteOGMessage` has no arm for them. Until
+og-session-runtime task 5 `tick_GameThread` then called the backend view's latency-window log hook (and, before the window
+closed, its sample hook), which only the former Chaos host filled with a window line of its own; the tick-driver host's
+hooks were empty, and task 5 removed the parameter and both calls. `duplicate` counts the copies first-stamp-wins discarded (an input re-sent in several redundant
 bundles, a capture carried by more than one relay round), so a large number there is the expected state, not a fault.
 
 ---
@@ -297,8 +300,8 @@ bundles, a capture carried by more than one relay round), so a large number ther
 * **Header-only.** Every member is defined in the header: the in-class ones where they were, the out-of-line ones after
   the class, inside one `OGSIM_OPTIMIZE_OFF` / `OGSIM_OPTIMIZE_ON` pair under `#if OG_LATENCY_BUDGET_DIAGNOSTICS`. The game
   instantiates the template with its traits; `tick_GameThread` is instantiated by the session's call (in
-  `onPostPhysicsStep` since og-ue-simulationcomponentandmanagersplit task 27a, the owner's before) with its backend's view,
-  so no explicit instantiation is needed.
+  `onPostPhysicsStep` since og-ue-simulationcomponentandmanagersplit task 27a, the owner's before; a member template over
+  its backend's view until og-session-runtime task 5), so no explicit instantiation is needed.
 * ⚠ **The pair does not decide how the members compile.** MSVC compiles a template's instantiations, explicit ones
   included, with the `#pragma optimize` state in force at the **end** of the translation unit that instantiates them, and
   every file of the game ends with `OGSIM_OPTIMIZE_ON`. So in a Development build the members and their lambdas compile
@@ -358,7 +361,8 @@ their tick?** No, on either backend, verified 2026-11-11:
   (`BrawlerTickDriverGameUImpl.h:77`), runs once per physics step, for the prediction tick only. (Line numbers
   re-checked 2026-11-19, og-input-latency task P5-33.)
 * **Chaos.** `OnPreSimulate_Internal` calls `stampLatencyAfterStep_Internal` only `if (!isResimulating)`
-  (`ChaosTickBackendUImpl.cpp:266-267`).
+  (`ChaosTickBackendUImpl.cpp:266-267`). This bullet is the 2026-11-11 record of the former Chaos configuration, removed
+  by og-session-runtime tasks 3–6; Jolt is the only backend since.
 
 A resimulation's reads are still recorded: `collectResimInputForCharacter` notes a `RelayedReadObservation` for the
 replayed tick from its reference row (`SimulationInputResolution.h:1557-1558`) and from its scheduled read

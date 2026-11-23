@@ -164,20 +164,25 @@ detached lanes object for each role (the automation test `OGBrawler.SimNet.Hosts
 **The switch.** `[OGNetcode] SimTrafficImmediate` (game or engine ini; absent or 0 = frame-locked) is read by
 `readSimTrafficImmediateKnob` in `beforeStart`, and `decideSimTrafficImmediate` turns it into the lanes' `ESimTrafficImmediate`.
 The game's shipped `Config/DefaultEngine.ini` sets it to 1 since og-input-latency task P5-22 (after Ph4's gate), so `On` is the default on
-a Jolt client and a refusal below is what a shipped build prints where immediate cannot run. Frame-locked stays Chaos's mode
-and the attribution arm (design Q11); `-ini:Engine:[OGNetcode]:SimTrafficImmediate=0` selects it. The decisions:
+a Jolt client and a refusal below is what a shipped build prints where immediate cannot run. Frame-locked stays the
+attribution arm (design Q11; it was also the former Chaos backend's only mode); `-ini:Engine:[OGNetcode]:SimTrafficImmediate=0`
+selects it. The decisions:
 
 | decision | when | the lanes' transport |
 |---|---|---|
 | `Off` | the knob is absent or 0 | frame-locked |
 | `RefusedServer` | a server's lanes: the server drains frame-locked until its authority loop drains it | frame-locked |
-| `RefusedNoTickDriver` | the game's engine traits have no world host (`kHasWorldHost`), so the steps do not run through og-simulation's tick driver and nothing calls the step hook that drains (Chaos, EQ12) | frame-locked |
 | `RefusedRunInline` | `og.Sim.RunInline=1`: the client steps on the game thread, where the step drain is refused | frame-locked |
 | `RefusedDetached` | detached lanes (§7): nothing arrives | frame-locked |
 | `On` | a client's og-net lanes on the tick driver, stepping on workers | immediate |
 
 The order of the refusals is the order of the table. The world session prints the refusal as a Warning on `LogOGNet` and the
 mode on its `[SimNet.Host] … immediate=` line (`UESimulationSession-rationale.md` §18).
+
+Until og-session-runtime task 5 a fourth refusal sat between the server's and `og.Sim.RunInline`'s: a client whose engine
+traits had no world host (the former Chaos backend, EQ12) did not step through og-simulation's tick driver, so nothing
+called the step hook that drains, and it stayed frame-locked. Every engine left has a world host (Jolt), so task 5 removed
+the refusal, its decision parameter and its Warning; the decision is the same on every remaining build.
 
 **Where an immediate client drains.**
 - **Before a world session binds**, at `afterDispatch` on the game thread, as frame-locked does, but through `drain()`:
@@ -205,9 +210,10 @@ client publishes nothing: its drain reads the connection itself, on the game thr
   `og.Sim.AuthorityLoop` once (`readAuthorityLoopKnob`, `UEAuthorityRunner.h`) and latches `EAuthorityLoop`:
   - `Off` on a client, or with the knob 0 (the default until og-input-latency task P5-22 set it to 1,
     `UEAuthorityRunner-rationale.md` §1);
-  - `RefusedNoTickDriver` when the engine does not step through the tick driver (Chaos, `kHasWorldHost` false), and
-    `RefusedNotDedicated` on a listen server, whose game thread presents the authority. Each refusal is one Warning on
-    `LogOGSimHost`, `[SimHost.Runner] og.Sim.AuthorityLoop=<n> refused: ...`; the server then steps inline, as with the knob off;
+  - `RefusedNotDedicated` on a listen server, whose game thread presents the authority. The refusal is one Warning on
+    `LogOGSimHost`, `[SimHost.Runner] og.Sim.AuthorityLoop=<n> refused: ...`; the server then steps inline, as with the knob off.
+    Until og-session-runtime task 5 a refusal for an engine that did not step through the tick driver (the former Chaos
+    backend) came before it, with a Warning of the same form;
   - `On` otherwise: `ioMode` returns `HostServiced`, so og-net starts no thread and nothing services the endpoint until the
     session's runner idles on it (`OGNetSimLanes-rationale.md` §2). A detached world never asks (`makeDetached` skips `ioMode`), and
     its session refuses the loop with its own Warning (`UESimulationSession-rationale.md` §19).

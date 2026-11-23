@@ -29,7 +29,6 @@ struct JoltEngineTraitsUImpl
 	using Statics       = JoltTickStatics;
 
 	static constexpr char kName[] = "jolt";
-	static constexpr bool kHasWorldHost = true;
 
 	template <typename SimulatableT>
 	using WorldHost = JoltTickWorldHost<SimulatableT, UEFMutexLockableUImpl, SimulationEngineUImpl>;

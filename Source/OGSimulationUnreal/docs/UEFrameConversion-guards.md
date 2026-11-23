@@ -33,8 +33,8 @@ the rest of `uglm`, by og-sim-metres-yup task 9; it was compiled between the sam
 given the same parts the matrix it returns is bit-identical to that conversion's.
 The rotation matrix and the two matrix products do arithmetic. Under `/fp:fast` an optimized, inlined copy may fold
 `x + 0` and `0 * x` against the identity matrix and keep a `-0` that the unoptimized code turns into `+0`. The
-static geometry's matrices (the importer's `checksum=` hashes their bits) and every Chaos body and query transform
-would then no longer be bit-identical. MSVC compiles a template with the optimization state at the END of the
+static geometry's matrices (the importer's `checksum=` hashes their bits) would then no longer be bit-identical (nor, until
+og-session-runtime task 4 removed the Chaos adapters, every Chaos body and query transform). MSVC compiles a template with the optimization state at the END of the
 translation unit, so a template inside the pair is compiled optimized anyway.
 
 **What breaks if the tag moves.** The tag marks the definition. `decomposeTransform` has its own entry (G-02).
@@ -53,8 +53,10 @@ and do not move it out of the pair. Do not fold its reads into its callers (`Bas
 **The consequence.** Its body is the decomposition of the frame-free `uglm` conversion it replaced, toFtransform
 (deleted with the rest of `uglm`; it was compiled between the same pair and called out of line): the translation
 column, `glm::quat_cast` and the three column lengths. `quat_cast` takes a square root and divides; an optimized,
-inlined copy under `/fp:fast` may use a reciprocal or reassociate, so the Chaos transform writes (`setBodyTransform`,
-the query adapter's overlap and sweep poses) would no longer be bit-identical to the conversion they replaced.
+inlined copy under `/fp:fast` may use a reciprocal or reassociate, so the transforms it hands back to the engine (the
+visualizations' and the character's, through `BasicUeFrame::transformToUe` and `ueNative::toFTransform`; until
+og-session-runtime task 4 also the former Chaos adapters' body writes and query poses) would no longer be bit-identical to
+the conversion they replaced.
 
 **What breaks if the tag moves.** The tag marks the definition. `composeTransform` has its own entry (G-01).
 
@@ -74,8 +76,10 @@ back to `double` in the same inlined code, so a "converted" component keeps the 
 in this header's own test (2026-10-25, the real `OGSimulationTests` build): with the conversions inline,
 `rotationToUe(rotationToSim(FQuat(0.1, 0.2, 0.3, 0.9)))` returned `W = 0.90000000000000002`, the double, where
 `double(0.9f) = 0.89999997615814209`. The `uglm` conversions these functions replaced were out-of-line calls that
-always returned rounded floats, so an inline narrowing would make a captured Chaos state, or a log line that prints it,
-differ from today's wherever the caller widens the value again (a set-back to Chaos, a `%f` argument).
+always returned rounded floats, so an inline narrowing would make a captured state, or a log line that prints it,
+differ from today's wherever the caller widens the value again (a set-back to the engine, a `%f` argument). This entry
+first named a captured Chaos state and a set-back to Chaos: the former Chaos configuration, removed by og-session-runtime
+tasks 3–6.
 
 **What breaks if the tag moves.** The tag marks the definition. The quaternion overload has its own entry (G-04).
 `lengthToSim` is a scalar `static_cast` on purpose: it replaced inline casts, not out-of-line calls, so it keeps
@@ -119,9 +123,10 @@ disassembly of the Editor builds (og-sim-metres-yup tasks 8 and 7b):
   which turns an exact `-0` component into `+0`, and a non-finite one into NaN, in the weapon body's transform. The
   shadow-pose lambda of `overwriteShadowPoses_GameThread` stopped inlining `glm::mat4_cast` (196 → 129 instructions),
   and the inlining in `onPostPhysicsStep` and `beforePresent_GameThread` changed with it.
-- **Chaos (task 7b).** The Chaos host's instantiation translation unit, `ChaosTickBackendUImpl.cpp`, includes the header
-  through the Chaos adapter headers. On the tree before task 7b its `setInitialConditions<ChaosPhysicsBodyAdapter>`
-  called `glm::translate` in the same way (184 instructions). With the definitions in the `.cpp` it inlines it again (196),
+- **Chaos (task 7b; the former Chaos configuration, removed by og-session-runtime tasks 3–4).** The Chaos host's
+  instantiation translation unit, ChaosTickBackendUImpl.cpp, included the header through the Chaos adapter headers. On the
+  tree before task 7b its `setInitialConditions<ChaosPhysicsBodyAdapter>` called `glm::translate` in the same way (184
+  instructions). With the definitions in the `.cpp` it inlines it again (196),
   instruction for instruction like the Jolt instantiation in a translation unit that does not see the region
   (only the adapter's name and its call form differ).
 - **Seen failing (task 7b).** `composeTransform` alone, put back into the header between the pair, brought back all of

@@ -28,7 +28,7 @@ class AActor;
 class UWorld;
 
 template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-concept TickDriverBackendComposition = PhysicsEngineTraits<EngineTraitsT> && EngineTraitsT::kHasWorldHost
+concept TickDriverBackendComposition = PhysicsEngineTraits<EngineTraitsT>
 	&& PhysicsEngineBinding<EngineBindingT, EngineTraitsT>
 	&& TickDriverWorldHost<typename EngineTraitsT::template WorldHost<typename EngineBindingT::Simulatable>>
 	&& requires(const typename GameBindingT::Character& character, unsigned int id)
@@ -73,7 +73,6 @@ public:
 	void runAuthorityLoop_GameThread(UWorld& world, float dt, bool highResolutionWait, double idleSlackSeconds, AfterBuildF&& afterBuild);
 	void stopAuthorityLoop_GameThread();
 	void onEndPlayBegin();
-	void onEndPlayWorld(UWorld&) {}
 	void beforePresent_GameThread();
 	void overlayRenderPoses_GameThread(unsigned int id, VizState& vizState);
 
@@ -100,13 +99,6 @@ public:
 	void releaseBodies_Runner(uint64 key, unsigned int id);
 	void onUnregisteredHost_GameThread(unsigned int id);
 	static uint64 slotKeyFor(const AActor* owner) { return slotKeyOf(owner); }
-
-	struct Diagnostics
-	{
-		void sampleLatencyWindow_GameThread(bool) {}
-		void logLatencyWindow_GameThread(bool) {}
-	};
-	Diagnostics editDiagnostics() { return {}; }
 
 private:
 	static uint64 slotKeyOf(const AActor* owner);

@@ -1,4 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: hasServerTierWiring -- deleted by og-session-runtime task 7b (no caller after task 3 deleted the brawler's Chaos host); kept in the history -->
+<!-- lint-external-ref: hasServerTierWiring() -- deleted by og-session-runtime task 7b (no caller after task 3 deleted the brawler's Chaos host); kept in the history -->
+<!-- lint-external-ref: editStorage -- deleted by og-session-runtime task 7b (no caller after task 3 deleted the brawler's Chaos backend); kept in the history -->
 <!-- lint-external-ref: applyTierTransitionStall -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: shouldStallForTierTransition -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: hadAnyTier -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
@@ -166,7 +169,8 @@ m_owner&, m_game& → m_latencyBudgetDiagnostics → m_physicsBackendWorlds → 
 
 * **`m_owner` and `m_game` come first.** They are references, which have no destruction order, and the backend is
   constructed with the session, so both must be bound before it. No backend reads them during its construction today
-  (the tick-driver host stores the session in its game binding, the self-scheduled host stores it), but a reference
+  (the tick-driver host stores the session in its game binding; the former self-scheduled host, the brawler's Chaos host
+  removed by og-session-runtime task 3, stored it too), but a reference
   declared after `m_physicsBackend` would still be unbound while the backend is built, and one that read it would read an
   unbound reference.
 * **The latency member comes next, so it is destroyed last.** It was already declared before the worlds, the manager
@@ -242,13 +246,15 @@ emplaced in the role branches.
 ## §3 The backend's two members
 
 `typename TraitsT::PhysicsBackendWorlds m_physicsBackendWorlds` and `typename TraitsT::template PhysicsBackend<UESimulationSession> m_physicsBackend{
-*this, m_physicsBackendWorlds }`. The traits pick the configuration's host:
+*this, m_physicsBackendWorlds }`. The traits pick the host:
 
 * **A driver-scheduled engine (Jolt)**: the worlds are `TickDriverBackendWorldsUImpl` over the engine's world host, and
   the backend is `TickDriverBackendUImpl` over the game's tick-driver binding, `TraitsT::TickDriverGame<UESimulationSession>`
   (`TickDriverBackendUImpl-rationale.md` §1, §10, §12).
-* **A self-scheduled engine (Chaos)**: the game's own host, with an empty worlds struct (the brawler's
-  `ChaosTickBackendUImpl-rationale.md`, in OGBrawlerUnreal's docs).
+* **A self-scheduled engine (Chaos)** was the other shape: the game's own host, with an empty worlds struct. It is the
+  former Chaos configuration, removed by og-session-runtime tasks 3–6 (task 3 deleted the brawler's Chaos host and its
+  docs; task 6 made og-simulation's `PhysicsEngineTraits` require a world host of every engine), so every host is now
+  driver-scheduled.
 
 **Destruction order.** The backend is declared last, directly after `m_manager`, and the worlds above the adapters, so
 `m_physicsBackend` is destroyed first (on Jolt the tick backend with its driver and presenter, then the render-target table,
@@ -313,15 +319,17 @@ directly, and since task 36 the owner has no wrapper for either). **Since og-inp
 overrides are plain members the og-net hosts call, the timing buffer's accessor, the route's registration and the two sinks
 are gone, the game's const read is `getRegisteredComponentsById`, the coordinator's accessors answer from og-sim-net's server,
 and `clientBindStep` is the client's roster gate, which the game's key hook calls; the reception's members left are the
-coordinator's type, `hasServerTierWiring` (the Chaos host's test), `getReceptionCoordinator` (no caller left in code) and
-`getServerReceptionTick` (the server host's `receptionTick()`), §16.3. og-input-latency task P5-9 deleted the two `Replayed`
+coordinator's type, `getReceptionCoordinator` (no caller left in code) and
+`getServerReceptionTick` (the server host's `receptionTick()`), §16.3. `hasServerTierWiring`, the former Chaos host's
+test, had no caller left in code after og-session-runtime task 3 deleted that host, and og-session-runtime task 7b
+deleted it. og-input-latency task P5-9 deleted the two `Replayed`
 overrides, so three listener overrides remain (`onConnectionTierReceived`, `onRelayDelayFloorReceived`,
 `onTimingInfoReceived`), and task P5-26 deleted `getSyncedTimingBuffer`. The og-sim-net hosts also call
 `onSimClockSample` (og-input-latency task P3-10, §20) and `onSimNetLifecycleUnregistering` (`⛔G-35`). The owner keeps its own
 `getLatencyBudgetDiagnostics()` / `editLatencyBudgetDiagnostics()`, which forward here, so its latency lookups (`instanceFor`)
 are unchanged. *R0, task 28:* the mutable one keeps one caller, the latency member's own `instanceFor`
 (`UELatencyBudgetDiagnostics.h`), which reaches it through `TraitsT::SessionOwner::instanceFor`; the const one has no caller
-left in code (the self-scheduled host reads the session's own pair). No accessor
+left in code (the former self-scheduled host, removed by og-session-runtime task 3, read the session's own pair). No accessor
 hands a game's UI or its parts a mutable production peer: the mutable members of §8 are the storage, the server clock,
 the reconciliation and the visualization doors, each one the owner already exposed publicly before task 24b, kept with
 its signature (§8). Their one game caller, the brawler's component visualization, only reads the simulatable's
@@ -343,11 +351,13 @@ the owner's `GetWorld()` and `GetNetMode()` through the session's own `m_owner`,
 above are unchanged). Task 24b re-pointed the composition reads: the tick-driver
 host's `runsPrediction()` and the self-scheduled host's four forwards (`getServerClock`, `getClientClock`,
 `runsPrediction`, `editStorage`) now call the session directly. The calls are inline forwards, so a step costs the same:
-task 24a read the disassembly of the per-step release and the step stamps.
+task 24a read the disassembly of the per-step release and the step stamps. The self-scheduled host this paragraph names
+is the brawler's former Chaos host, which og-session-runtime task 3 deleted with every one of its calls; `editStorage` had
+no caller left in code since, and og-session-runtime task 7b deleted it.
 
 **Weak-lambda owners stay the actor.** A delegate's weak object must be a `UObject`, and this class is not one. Every
-`AddWeakLambda` that took the owner still takes it, as `&m_owner.owner()` (the latency member's post-tick-flush binding,
-and the self-scheduled host's two physics-scene bindings).
+`AddWeakLambda` that took the owner still takes it, as `&m_owner.owner()`: the latency member's post-tick-flush binding,
+the only one left since og-session-runtime task 3 deleted the former self-scheduled host and its two physics-scene bindings.
 
 ---
 
@@ -495,7 +505,7 @@ template called on a dependent object gained its `template` keyword):
 
 ⚠ **Since og-input-latency task P5-16 the visualization rows of this table are history.** `getLastRelayedInput`,
 `isLocallyControlledOnThisPeer` and `getVizSlice` answer from the display snapshot, and `editReconciliation`,
-`getLocalInputCache` and the two relayed-ring doors are deleted (§17.4). The paragraphs below on `getVizSlice` and the
+`getLocalInputCache` and the two relayed-ring doors are deleted (§17.4); og-session-runtime task 7b deleted `editStorage`. The paragraphs below on `getVizSlice` and the
 narrow read doors describe the doors as task 24b moved them.
 | `getTimeConfigPtr` | the manager's `TimeConfig`, or a null pointer |
 | `editVizQuery`, `getVizReader`, `registerVizVolume` | the backend's three visualization doors |
@@ -540,7 +550,8 @@ they replaced (og-simulationscheduler-withjolt task 51): a game's visualizers ar
 types and call them directly, on the game thread. `editVizQuery()` and `getVizReader()` return references to a world
 every peer's game thread may query; `registerVizVolume(descriptor, owner)` registers a visualization volume and returns
 its optional id, empty while a driver-scheduled host's slot acquire waits. What each host answers is that host's
-(`TickDriverBackendUImpl-rationale.md` §3; the brawler's `ChaosTickBackendUImpl-rationale.md`).
+(`TickDriverBackendUImpl-rationale.md` §3; the brawler's former Chaos host, removed by og-session-runtime task 3, had its
+own rationale until then).
 
 **`onPostSimulationGameThread()`** is the manager's post-simulation pass, which `onPostPhysicsStep` calls (§10; the
 owner's post-physics step until task 27a) between the backend's present and the timing write. It is defined out of line, after the class. In the owner it had to
@@ -828,7 +839,7 @@ re-pointed (§16.3):
 
 | member | since P5-7 |
 |---|---|
-| `ReceptionCoordinator`, `getReceptionCoordinator`, `hasServerTierWiring` | og-sim-net's server's coordinator and its presence |
+| `ReceptionCoordinator`, `getReceptionCoordinator`, `hasServerTierWiring` | og-sim-net's server's coordinator and its presence (`hasServerTierWiring` deleted by og-session-runtime task 7b) |
 | `getServerReceptionTick` | unchanged; the server host answers og-sim-net's `receptionTick()` with it |
 | `releaseDelayedInputsForStep` | `[ReleaseBatch]`, then the server's `releaseForStep` (with the step's time since P5-37, §19.7) |
 | `afterAuthorityBatch` | the server's `afterBatch` (the reap) |
@@ -1040,8 +1051,9 @@ runner, §21.1; on the game thread otherwise), with the frame's first upcoming s
 3. on the authority, per client connection of the world's net driver: the one-shot `[PacketBudget]` line, then
    **PROBE 6**, the per-connection send budget.
 
-Where each host calls it is the host's: the brawler's two hosts (the tick-driver binding at `TG_StartPhysics`, and the Chaos
-host's per-frame input hook) are its `OGBrawlerSimulationManager-rationale.md` §7 and §8, in OGBrawlerUnreal's docs.
+Where each host calls it is the host's: the brawler's tick-driver binding calls it at `TG_StartPhysics`
+(`OGBrawlerSimulationManager-rationale.md` §7 and §8, in OGBrawlerUnreal's docs); the brawler's former Chaos host called it
+from its per-frame input hook until og-session-runtime task 3 deleted that host.
 
 The body moved statement for statement; the task's notes hold the token comparison. The spellings changed where the owner
 reached the session (`m_session.m_manager` is `m_manager`, its coordinator `m_receptionCoordinator`) and where the owner
@@ -1070,8 +1082,9 @@ show up.
 **Why it lives here and not beside og-simulation's other probes** (`RelayReadProbe` in the input-resolution peer's
 `InputResolutionTelemetry`, `RelayArrivalProbe` in `NetSyncTelemetry`, `ResimGateProbe` in `SimulationManager`): it is
 measured on the game thread, in the host's per-frame call, from the tick the host hands it, and the only tick source legal
-to read on that thread is the host's own (the brawler's Chaos host: its tick mapper's atomic offset; its tick-driver host:
-the dispatch counter plus the published offset). og-simulation's peers have no access to it.
+to read on that thread is the host's own (the brawler's tick-driver host: the dispatch counter plus the published offset;
+the former Chaos host, removed by og-session-runtime tasks 3–4, read its tick mapper's atomic offset). og-simulation's peers
+have no access to it.
 
 **Why this hook and not the owner's post-physics step, on either role:** that hook is game-thread on both roles too, but it
 receives no physics step number, and therefore has no route to a sim tick through the only source safe on that thread.
@@ -1079,7 +1092,7 @@ Sampling there would have required either reading the physics-thread-written clo
 ruled out. This hook already has both numbers: the step, and the frame's step count.
 
 **Why reusing `firstUpcomingSimTick` is safe on the client,** even though a host's `+ 1` derivation may be proved under an
-authority-only assumption (the brawler's Chaos host's is, its `ChaosTickBackendUImpl-rationale.md` §4): the probe never
+authority-only assumption (the brawler's former Chaos host's was, until og-session-runtime task 3 deleted it): the probe never
 consumes the value directly, only **deltas** between consecutive samples, and a constant additive skew cancels under
 subtraction. A client-side departure from unconditional advance, a resim replay or a stall, surfaces either as an ordinary
 sample, if the tick delta stays plausible, or as a counted discontinuity (`kFrameHealthDiscontinuityTicks`) if it does
@@ -1203,9 +1216,9 @@ site (the task's notes show what it checked). A game's owner calls `endPlay` fro
 backend calls `onPostPhysicsStep`.
 
 **`endPlay`, in order** (game thread, once per world teardown):
-1. `m_physicsBackend.onEndPlayBegin()` (`⛔G-20`). A driver-scheduled backend unregisters the frame host's two tick functions,
-   so no new frame starts, and waits for every outstanding step task (`TickDriverBackendUImpl-guards.md` G-01); a
-   self-scheduled backend's may be empty. Nothing moves above it.
+1. `m_physicsBackend.onEndPlayBegin()` (`⛔G-20`). The driver-scheduled backend unregisters the frame host's two tick functions,
+   so no new frame starts, and waits for every outstanding step task (`TickDriverBackendUImpl-guards.md` G-01); the former
+   self-scheduled backend's was empty until og-session-runtime task 3 removed it. Nothing moves above it.
 2. `detachFromSimNetLanes` (since og-input-latency task P5-7, §16.6): the session unbinds from the og-net lanes it is still
    bound to.
 3. og-sim-net's server's and its host's resets and the two registered maps' clears (`⛔G-21`), then the tier consumer's reset,
@@ -1214,15 +1227,17 @@ backend calls `onPostPhysicsStep`.
    the delayed-input map.
 4. The registry (§9.2): if this session holds the authority slot, the slot is cleared; then the client slot. The destructor
    repeats this as a backstop (`⛔G-10`). Until P5-7 each role's three relay listeners were unregistered here too.
-5. If the owner still has a world: the latency member's `end` (it unbinds its post-tick-flush handler), then the backend's
-   `onEndPlayWorld` (a self-scheduled backend removes its engine delegates there).
+5. If the owner still has a world: the latency member's `end` (it unbinds its post-tick-flush handler). Until
+   og-session-runtime task 5 the backend's world-teardown entry point followed it (the former self-scheduled backend
+   removed its engine delegates there; the tick-driver backend's was empty).
 
 Nothing resets the manager, the composition or the backend: they live until the session is destroyed, with its owner.
 
 **`onPostPhysicsStep`, in order** (game thread, once per frame, after the frame's physics, with or without steps):
 1. The test hitch (not in Shipping; below).
 2. `m_physicsBackend.beforePresent_GameThread()`: a driver-scheduled backend's presenter (the shadow restore and the render
-   apply, `TickDriverBackendUImpl-rationale.md`); empty on a self-scheduled backend.
+   apply, `TickDriverBackendUImpl-rationale.md`); it was empty on the former self-scheduled backend (removed by
+   og-session-runtime task 3).
 3. The manager's post-simulation pass, `onPostSimulationGameThread()` (§8).
 4. The authority's server-clock publish, `publishServerClock_GameThread()` (§9.6).
 5. For a session on its own detached lanes only (§16.2): the lanes' `afterDispatch` and `onTickFlush`.
@@ -1231,11 +1246,13 @@ Nothing resets the manager, the composition or the backend: they live until the 
    Until og-input-latency task P5-16 this step was the backend's visualization refresh, which copied every stored simulatable's state into its
    visualization copy on the game thread and overlaid the rendered poses there.
 7. `Game::afterVisualization(*this)`, the game's hook, at the position of the game statement it replaced.
-8. The latency member's `tick_GameThread`, with the backend's diagnostics view (`UELatencyBudgetDiagnostics-rationale.md`).
+8. The latency member's `tick_GameThread` (`UELatencyBudgetDiagnostics-rationale.md`). Until og-session-runtime task 5 it
+   took the backend's diagnostics view, whose two latency-window hooks only the former Chaos host filled.
 
-It is private: the backend hosts call it as the session's friends (§4), a driver-scheduled backend through the game's
-tick-driver binding (`onPostPhysics`, at the frame's end of physics), a self-scheduled one from the engine's post-tick
-delegate, bound to a weak lambda whose weak object is the owner.
+It is private: the backend host calls it as the session's friend (§4), through the game's tick-driver binding
+(`onPostPhysics`, at the frame's end of physics). Until og-session-runtime task 3 the former self-scheduled host (the
+brawler's Chaos host) called it too, from the engine's post-tick delegate, bound to a weak lambda whose weak object was the
+owner.
 
 **The game's hook, `afterVisualization(session)`.** The game's statement that sat between the visualization update and the
 latency tick (the brawler's: its ring-out score push) is the hook's body, verbatim, and the session calls it with itself,
@@ -1551,7 +1568,8 @@ and return `Ready`. Every call before that returns `Pending`, and the component 
 body-owning sub-simulation edits neither this session nor a backend's creation fold to have the body created, bound,
 captured, rewound and checksummed. That is the whole of the claim. Making the body collidable or queryable is still the game's
 hand-written work: its collision category needs a row in the game's category table for each backend configuration (the
-brawler's are the `categoryChannels` tables of its Chaos and Jolt bindings). *R0, task 28:* verified: both backends' creation
+brawler's is the `categoryChannels` table of its Jolt binding, the only one since og-session-runtime task 3 deleted the
+Chaos binding's). *R0, task 28:* verified: both backends' creation
 folds (the tick-driver host's `acquireAndBind` path and the brawler's self-scheduled host's `forEach` over the composite) and
 the DO_CHECK walk name no declaration type; the brawler's two `categoryChannels` tables exist, one per configuration.
 
@@ -1744,7 +1762,8 @@ is what rejects detection after routing (`BrawlerCompositionUImpl-rationale.md` 
 the traits' `PhysicsBackend<SessionT>` and `PhysicsBackendWorlds` (were `Backend` and `BackendWorlds`), this class's alias
 `PhysicsBackend` and its friend line, and the members `m_physicsBackend` and `m_physicsBackendWorlds` (were `m_backend` and
 `m_backendWorlds`). It is the physics backend host: it owns and steps the physics worlds and updates the visuals (on Jolt
-through the tick driver, on Chaos the game's own host), reached through the traits (§3). The rename is identifiers only:
+through the tick driver; on the former Chaos configuration, removed by og-session-runtime tasks 3–6, the game's own host),
+reached through the traits (§3). The rename is identifiers only:
 the `[SimHost.Backend]` log tag and every other log text, cvar and config key are unchanged, and so are the game's selector
 names (the brawler's `physicsBackendUImpl::Backend`, `BackendFor` and `BackendWorlds`), og-simulation's
 `SimulationTickBackend` (whose `m_backend` is its render source's own reference) and the game hook `backendFingerprint`.
@@ -1781,18 +1800,18 @@ session's friends (§4).
 the walk reads the registered channels. The table above is P5-5's state.
 
 **No file but this header named the session's coordinator member since P5-5.** The Chaos host's test of it became
-`hasServerTierWiring()` and its reap `afterAuthorityBatch`. The tick-driver binding never named the member: it called
+`hasServerTierWiring()` and its reap `afterAuthorityBatch` (that host, the brawler's former Chaos host, was deleted by
+og-session-runtime task 3; `hasServerTierWiring()` had no caller since, and og-session-runtime task 7b deleted it). The tick-driver binding never named the member: it called
 `getReceptionCoordinator()`, which the component binding's RPC tail still called then (§9.7). Since og-input-latency
 task P5-7 the accessor returns og-sim-net's server's coordinator (§16), and since P5-8 deleted the RPC tail no file in this
 tree calls it.
 
 **The slot doors.** Both take the owner as an `AActor&` and the host's slot key (`TickDriverBackendUImpl::slotKeyOf`), which
-neither reads yet; the parameter is for the switch, which records the authority's slot in the session by that key and
-answers a client from the roster. Each casts with `CastChecked` to `TraitsT::Character`, as `tryRegister` casts to it: the
-session is a class template, so the cast and the member calls are compiled where the door is instantiated, through the game
-binding's `callWithSlotRequest`, where the character is complete. The caller's `checkf` that the owner is that class runs
-first and keeps its message, so the cast cannot fail on any path that reaches it. The doors name two members of the game's
-character, `GetPhysicsSlot` and `SetAuthoritativePhysicsSlot`; the switch removes both reads.
+neither reads. At P5-5 each cast the owner to `TraitsT::Character` and called the game character's replicated-slot getter or
+setter; the switch (P5-7, §16.4) replaced both: `physicsSlotFor` reads the session's slot map (keyed by the owner's address)
+on the authority and the roster entry on a client, and `recordAuthoritativeSlot` writes that map. Neither casts or names a
+member of the game's character now, and og-input-latency Ph3 (root edac6a0, OGSimulation 051f99b) deleted the brawler
+character's two slot members.
 
 **The walk's include.** The correction-buffer read names `correctionStateBuffer::kTickOffset`, which does not depend on
 `TraitsT`, so this header includes `OGSimulation/CorrectionStateBufferCodec.h` itself. The latency member's header included
@@ -1969,8 +1988,9 @@ capture poll and its 60-tick applied poll, `InputHistoryDisplay-rationale.md` §
 
 ### 17.2 Publish: after the step batch, on the thread that ran it
 
-**A predicting session on a driver-scheduled backend** (`publishesDisplayOnStep()`: the engine traits have a world host,
-the manager exists and runs prediction) publishes in `publishDisplaySnapshot_Step`, which the tick-driver game binding's
+**A predicting session** (`publishesDisplayOnStep()`: the manager exists and runs prediction; until og-session-runtime
+task 5 the engine traits' world-host flag was a first conjunct, true on Jolt, so the expression is the same on every
+build since) publishes in `publishDisplaySnapshot_Step`, which the tick-driver game binding's
 `publishForDisplay()` calls once after each client batch, on the thread that ran the batch (a worker task, or the game
 thread for a client stepping inline), under the world lock (`TickDriverConcepts-rationale.md` §11, in og-simulation's
 docs). Nothing steps there, so the fill reads the storage, the input resolution, the reconciliation and the clock as the
@@ -2002,9 +2022,9 @@ refresh ran before (§10, step 6):
 - an authority stepping inline steps on the game thread inside the frame's start of physics, so its fill in the
   post-physics pass runs after its steps on the same thread: there is no race there;
 - an authority on the loop never fills (below);
-- the brawler's Chaos backend, which this initiative neither builds nor runs, calls `onPostPhysicsStep` from the engine's
-  post-tick delegate while its physics thread may still step: the same unsynchronized read its visualization refresh made
-  there before. It has no batch hook.
+- the brawler's former Chaos backend (removed by og-session-runtime task 3) called `onPostPhysicsStep` from the engine's
+  post-tick delegate while its physics thread might still step: the same unsynchronized read its visualization refresh made
+  there before. It had no batch hook.
 
 The fill is og-simulation's `fillSimulationDisplaySnapshot`; in `publishDisplaySnapshot_GameThread` the clock and the tier are
 read first:
@@ -2044,8 +2064,8 @@ reader in the frame shares the one held snapshot until the next pass. `endPlay` 
 Then, for each entry, the session copies the entry's state into its own array of visualization states (index-aligned with
 the entries) and calls the backend's `overlayRenderPoses_GameThread(id, state)`. On a driver-scheduled backend that writes
 the presenter's rendered poses into every non-root body state (`TickDriverBackendUImpl-rationale.md`), exactly what the
-presenter wrote into the storage's visualization copy before; the brawler's Chaos backend writes nothing, as its refresh
-wrote only the plain copy. The snapshot itself stays as published: it is shared with the writer's channel, and the overlay is
+presenter wrote into the storage's visualization copy before; the brawler's former Chaos backend (removed by
+og-session-runtime task 3) wrote nothing, as its refresh wrote only the plain copy. The snapshot itself stays as published: it is shared with the writer's channel, and the overlay is
 the game thread's.
 
 So the game thread now reads the state as of the end of the last step batch, plus this frame's poses. A reader that ran
@@ -2069,8 +2089,10 @@ that batch; a frame that does not wait shows the newest batch that finished befo
 `getLastRelayedInput`, `isLocallyControlledOnThisPeer` and `getVizSlice` keep their names and signatures; only their source
 changed. `getLocalInputCache`, `getRelayedReadObservations`, `getRelayedInputArrivals`, `getStorage` and
 `editReconciliation` (both overloads) were deleted with their last game-thread callers: the entry carries the local
-captures, both relayed rings by value and the applied-capture window. `editStorage` stays for the brawler's Chaos backend,
-which steps on the physics thread. `getClientEffectiveInputDelayTicks` stays (the input resolution's atomic) but has no game
+captures, both relayed rings by value and the applied-capture window. `editStorage` stayed for the brawler's Chaos backend,
+which stepped on the physics thread; it had no caller left in code after og-session-runtime task 3 deleted that backend,
+and og-session-runtime task 7b deleted it.
+`getClientEffectiveInputDelayTicks` stays (the input resolution's atomic) but has no game
 caller since this task: the feed reads the published delay from the snapshot's tier reading.
 
 A game reads all of this through the doors, never the snapshot's channel: the session acquires and releases, so the hold
@@ -2081,19 +2103,21 @@ bound is the session's to keep.
 With `[OGNetcode] SimTrafficImmediate=1` a client's og-sim-net session is drained on the step's thread at each step and sends
 its inputs at capture, and its registrations go through og-sim-net's lifecycle queue (`SimNetClient-rationale.md` §16–§18).
 The game's shipped `Config/DefaultEngine.ini` sets the knob to 1 since og-input-latency task P5-22 (after Ph4's gate), so a Jolt
-client is immediate by default. Frame-locked (the knob absent or 0, the default before P5-22) stays Chaos's mode and the
-attribution arm (design Q11), and is unchanged: every branch below tests `m_immediateClient`, which is false there.
+client is immediate by default. Frame-locked (the knob absent or 0, the default before P5-22) stays the attribution arm
+(design Q11; it was also the former Chaos configuration's mode until og-session-runtime tasks 3–6 removed that
+configuration), and is unchanged: every branch below tests `m_immediateClient`, which is false there.
 
 ### 18.1 The mode and its lines
 
 - **Decided by the lanes**, at driver start (`UESimNetLanes-rationale.md` §11), because og-sim-net fixes the mode when the
   transport is built. `beginClientSimNet` copies the lanes' `isImmediate()` into `m_immediateClient`, before any step runs and
   never again, so the steps read a value nothing writes while they run.
-- **A refusal** (the server's lanes, a backend that does not step through the tick driver, `og.Sim.RunInline=1`, detached
-  lanes) is one Warning on `LogOGNet` from `logSimTrafficImmediateRefusal`, in `beginServerSimNet` or `beginClientSimNet`, naming
-  the knob's value and the reason. An absent or zero knob prints nothing. With the shipped knob (1, P5-22) the Warning is printed
-  on every session of a world where immediate cannot run: a Chaos client, a server without the authority loop (a listen server,
-  an in-editor PIE server), `og.Sim.RunInline=1`, detached lanes.
+- **A refusal** (the server's lanes, `og.Sim.RunInline=1`, detached lanes) is one Warning on `LogOGNet` from
+  `logSimTrafficImmediateRefusal`, in `beginServerSimNet` or `beginClientSimNet`, naming the knob's value and the reason. An
+  absent or zero knob prints nothing. With the shipped knob (1, P5-22) the Warning is printed on every session of a world
+  where immediate cannot run: a server without the authority loop (a listen server, an in-editor PIE server),
+  `og.Sim.RunInline=1`, detached lanes. Until og-session-runtime task 5 a backend that did not step through the tick driver
+  (the former Chaos client) was refused too, with its own case.
 - **The proof line** carries the mode: `[SimNet.Host] role=client immediate=1 …`; a server's is `immediate=1` exactly when its
   authority loop runs (§19.1), else `immediate=0`.
 - **The lifecycle binding.** An immediate client binds og-sim-net's lifecycle queue to the session's storage, reconciliation,
@@ -2232,16 +2256,17 @@ On a frame-locked client the only differences are the lock around the bindings, 
 With `og.Sim.AuthorityLoop=1` (the default since og-input-latency task P5-22) on a Jolt dedicated server the authority steps on
 its own thread, `OGSimAuthority`, which also services og-net's server endpoint (P11, design K14; `UEAuthorityRunner-rationale.md`
 §1 has the defaults). Every branch below tests `m_authorityLoop`, which is false on every other world, so the inline server (the
-knob 0, the attribution arm), every client and Chaos are unchanged.
+knob 0, the attribution arm) and every client are unchanged (and so was the former Chaos configuration, until
+og-session-runtime tasks 3–6 removed it).
 
 ### 19.1 The decision
 
 - **The lanes decide**, at the driver's `InitBase` (`UESimNetLanes-rationale.md` §12): og-net fixes the servicing thread at its
-  first service, before any world exists. `beginPlay` copies the answer (`decideAuthorityLoop`, before the world build, only when
-  the engine has a world host): the server's lanes' `authorityLoop()`. A detached world (no og-net driver) has no lanes; with the
+  first service, before any world exists. `beginPlay` copies the answer (`decideAuthorityLoop`, before the world build; until
+  og-session-runtime task 5 only when the engine had a world host): the server's lanes' `authorityLoop()`. A detached world (no og-net driver) has no lanes; with the
   knob set it logs `[SimHost.Runner] og.Sim.AuthorityLoop=<n> refused: this world has no og-net sim lanes (detached); …` at
-  Warning and steps inline. Chaos and listen servers are refused by the lanes (their Warning), so the session never sees the loop
-  there.
+  Warning and steps inline. Listen servers are refused by the lanes (their Warning), so the session never sees the loop
+  there (the former Chaos backend was too, until og-session-runtime task 5 removed that refusal).
 - **Proof lines** with the loop on: `[OGNet.Driver] start … mode=hostServiced` (the driver), `[SimHost.Runner] priority=AboveNormal
   nice=… highResWait=…` and `[SimHost.Runner] startLatch waitMs=…` (the runner), `[SimHost.Mode] role=Authority stepping=runner
   viz=none` and `[SimHost.Frame] role=Authority stepping=runner …` (og-simulation), `[SimNet.Host] role=server immediate=1 …`.
@@ -2350,9 +2375,9 @@ server frame late (the Ph4 gate measured 6.3 to 7.2 ms on average). Both lines t
   one machine). Everything before the field is unchanged.
 - **Loop on and loop off alike.** Off the loop the stamps are already prompt; the field is written anyway, so the gate tools
   read one timeline on every arm.
-- **Not on Chaos.** The Chaos configuration releases a frame's batch from `InjectInputs_External` on the game thread and steps
-  on the physics thread. It never calls `noteAuthorityStepTime_Step`, so its lines are as before, and nothing written on one
-  thread is read on the other.
+- **Not on Chaos.** The former Chaos configuration (removed by og-session-runtime tasks 3–6) released a frame's batch from
+  its input hook on the game thread and stepped on the physics thread. It never called `noteAuthorityStepTime_Step`, so its
+  lines were as before, and nothing written on one thread was read on the other.
 
 ### 19.8 The SimClock server's tick and its step's start time (og-time-dilation task 2b)
 
@@ -2403,7 +2428,7 @@ started, and the age is measured from it:
   is drained at step start, so the drain adds no delay to any stamp.
 - **Off is unchanged.** Only the pong's `serverTickAgeUs` changes (larger by D). A client's estimator feeds it to its server-tick
   estimator in every mode (§22.1), but under `ClockDilation=Off` nothing reads that estimate: only the dilation stage does,
-  and `Off` does not run it (§22.7). The publish runs whatever the mode, as before. Chaos never calls `afterStep_Step` (§19.7), so it publishes nothing, as before.
+  and `Off` does not run it (§22.7). The publish runs whatever the mode, as before. The former Chaos configuration (removed by og-session-runtime tasks 3–6) never called `afterStep_Step` (§19.7), so it published nothing.
 
 ## §20 The clock's RTT source: SimClock samples, the knob, the shadow line (og-input-latency task P3-10)
 
@@ -2480,9 +2505,9 @@ the mean wall time between stepping wakes. The line keeps its text, `[RelayProbe
 PROBE 6 (`[RelayProbe.Budget]`, `[PacketBudget]`) reads the `UNetDriver`'s client connections, which are game-thread state.
 `onFrameStepsDue` returns
 before it while the loop runs, and its first statement after that return is a `checkf(IsInGameThread())`, so a PROBE 6 that
-ran on the runner (the return deleted) fails at its first wake instead of racing the driver. Inline Jolt and Chaos call
-`onFrameStepsDue` on the game thread (the tick-driver binding at `TG_StartPhysics`, the Chaos host's `InjectInputs_External`),
-so the check holds there and PROBE 6 is unchanged.
+ran on the runner (the return deleted) fails at its first wake instead of racing the driver. Inline Jolt calls
+`onFrameStepsDue` on the game thread (the tick-driver binding at `TG_StartPhysics`; the former Chaos host did too, from its
+input hook, until og-session-runtime task 3 deleted it), so the check holds there and PROBE 6 is unchanged.
 
 ### 21.3 The authority presentation snapshot (the ring-out score)
 

@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: hasServerTierWiring() -- deleted by og-session-runtime task 7b (no caller after task 3 deleted the brawler's Chaos host); kept in the history -->
 <!-- lint-external-ref: applyTierTransitionStall -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: hadAnyTier -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: shouldStallForTierTransition -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
@@ -7,6 +8,7 @@
 <!-- lint-external-ref: OutBytes -- Unreal Engine connection stat, outside every scan root (G-19) -->
 <!-- lint-external-ref: OutPackets -- Unreal Engine connection stat, outside every scan root (G-19) -->
 <!-- lint-external-ref: ResimCooldownTicks -- ABSENCE FENCE (G-16): the ini key that was built and removed on a ruling. It must NOT resolve -->
+<!-- lint-external-ref: ChaosTickBackendUImpl.cpp -- deleted by og-session-runtime task 3 (the brawler's Chaos backend arm: the Chaos host, the Chaos binding and their four docs); kept in the history -->
 # `UESimulationSession.h` — guards
 
 Prohibitions with a tagged site in `Plugins/OGSimulation/Source/OGSimulationUnreal/UESimulationSession.h`. Ids are opaque,
@@ -51,7 +53,8 @@ step itself reads, never the reader. *R0, og-ue-simulationcomponentandmanagerspl
 "only the Chaos configuration builds today"; both configurations build, and the Jolt one is the default since
 og-simulationscheduler-withjolt task 18. The verification of the wrong adapter's behaviour is the Chaos configuration's,
 and it names the brawler's detector, so it stayed with the game (`OGBrawlerSimulationManager-rationale.md` §2, in
-OGBrawlerUnreal's docs).
+OGBrawlerUnreal's docs). *og-session-runtime tasks 3–6* removed the former Chaos configuration, so Jolt is the only one;
+the prohibition is unchanged.
 
 **What breaks if the edit is made.**
 * Handed the reader adapter, a body-reading system classifies against the game-thread copy of a body transform, an
@@ -251,8 +254,8 @@ og-ue-simulationcomponentandmanagersplit task 25, with the statement it marks.*
 
 **The prohibition.** ⛔ Do not call `GetWorld()` on the owner, or any other method that reaches the owner actor's outer,
 its world or another `UObject`, from the destructor. Unbinding from engine objects belongs in `endPlay`, which the owner's
-`EndPlay` calls for every world teardown while the world still exists (the self-scheduled backend removes its post-tick handle and
-its two solver callbacks there, in its `onEndPlayWorld`).
+`EndPlay` calls for every world teardown while the world still exists (until og-session-runtime tasks 3 and 5 the former
+self-scheduled backend removed its post-tick handle and its two solver callbacks there, in its world-teardown entry point).
 
 **What breaks if the edit is made.** The session is a member of its owner actor, so its destructor runs inside the owner's,
 inside the garbage collector's purge, after the owner's outer level may already have been destroyed. The brawler's owner
@@ -265,9 +268,9 @@ only a packaged client shows it.
 **What breaks if the tag moves.** The tag marks the destructor's body. A `GetWorld()` typed above the tagged statement is
 typed directly under the tag. Nothing mechanical checks the destructor: the crash depends on the collector's purge order.
 
-*R0, task 25:* the self-scheduled host's teardown is `ChaosTickBackendUImpl::onEndPlayWorld` (the brawler's), which
-removes the inject-inputs and post-tick handles and unregisters the solver callback object; the owner calls it from its
-`EndPlay`. The registry's unregistration in the owner's `EndPlay` is unchanged; the destructor is its backstop for an
+*R0, task 25:* the self-scheduled host's teardown was the brawler's Chaos host's world-teardown entry point, which
+removed the inject-inputs and post-tick handles and unregistered the solver callback object; the owner called it from its
+`EndPlay` (og-session-runtime task 3 deleted that host, and task 5 the entry point). The registry's unregistration in the owner's `EndPlay` is unchanged; the destructor is its backstop for an
 owner destroyed without `EndPlay`. *Since task 27a* both are statements of `endPlay` (rationale §10), which the owner's
 `EndPlay` calls; the destructor is still the backstop.
 
@@ -339,7 +342,7 @@ two more clamped setters, `setRedundancyFrames` and `setRelayResendEntries`. The
 as the first two (an integer clamped into one `TimeConfig` field), so "the clamped setters" above now names four. The
 seam script's list predates them: run it with the row above added, or it does not check this function.
 
-**Exempt by design: the input reception and the og-net hookup.** `hasServerTierWiring`, `getReceptionCoordinator`,
+**Exempt by design: the input reception and the og-net hookup.** `getReceptionCoordinator`,
 `getServerReceptionTick`, `releaseDelayedInputsForStep`, `afterAuthorityBatch` (the reap) and `forEachAuthorityCorrectionTick`
 (the walk for the latency member) are typed on the per-step release (task 26a): erasing the game's input type there would put
 an indirect call on the step path (manager design §9, step 5). Since og-input-latency task P5-7 they reach og-sim-net's server,
@@ -569,9 +572,9 @@ server-only and correctly behind it.
 **The consequence.** Hoisted to the top of the function, the return stops the frame-health probe on every client, because a
 pure client never has an og-sim-net server. The drain and the reap do not depend on it: `releaseDelayedInputsForStep` and the reap,
 `afterAuthorityBatch`, each test the coordinator themselves (the reap since og-input-latency task P5-5; until then the
-tick-driver binding's `afterInlineBatch` reaped only through a non-null `getReceptionCoordinator()`), and a self-scheduled
-host tests it before its drain and reap (the brawler's Chaos host, `InjectInputs_External`, through `hasServerTierWiring()`
-since P5-5).
+tick-driver binding's `afterInlineBatch` reaped only through a non-null `getReceptionCoordinator()`). The former
+self-scheduled host, the brawler's Chaos host, tested it before its drain and reap (through `hasServerTierWiring()` since
+P5-5) until og-session-runtime task 3 deleted it.
 
 *R0, task 26b:* verified against the session (`releaseDelayedInputsForStep`'s first statement is its own test) and the
 brawler's two hosts (`BrawlerTickDriverGameUImpl.h`, `ChaosTickBackendUImpl.cpp`).
@@ -614,11 +617,13 @@ own declaration states the same rule (og-simulation's `RelayWritePathProbe.h`, `
 
 **The prohibition.** ⛔ Do not move any `endPlay` statement above `m_physicsBackend.onEndPlayBegin()`, do not add one above
 it, and do not drop the call. Everything else in `endPlay` (the og-net unbind, G-21's resets, the static instance table,
-the latency member's `end` with its post-tick-flush unbind, the backend's `onEndPlayWorld`) runs after it. The rule is the same for every backend:
+the latency member's `end` with its post-tick-flush unbind; the backend's world-teardown entry point until og-session-runtime
+task 5) runs after it. The rule is the same for every backend:
 - on a driver-scheduled backend (the tick-driver backend, `TickDriverBackendUImpl`), `onEndPlayBegin` unregisters the
   frame host's two tick functions and waits for every outstanding step task (`TickDriverBackendUImpl-guards.md` G-01);
-- on a self-scheduled backend it may be empty (the brawler's Chaos host's is an empty inline body today); a teardown of
-  such a backend that must run first belongs inside it, not above it.
+- a backend whose `onEndPlayBegin` has nothing to wait for may leave it empty (the former self-scheduled Chaos host's was,
+  until og-session-runtime task 3 removed it); a teardown of such a backend that must run first belongs inside it, not
+  above it.
 
 **The consequence of getting it wrong.** On a worker-stepping peer the frame's step task runs on another thread through
 the rest of the frame. A statement above the call tears its state down while the step still runs: a use-after-reset on

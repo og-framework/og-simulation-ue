@@ -30,7 +30,8 @@ Who logs on it:
 
 * this module: the tick driver's engine port (`UETickDriverHost.cpp`; see `UETickDriverHost-rationale.md` §1), the
   render target table (`UERenderTargetTable.cpp`; see `UERenderTargetTable-rationale.md`) and the session's `beginPlay`
-  (`UESimulationSession.h`, its `[SimHost.Backend]` line, in both physics configurations; the brawler's
+  (`UESimulationSession.h`, its `[SimHost.Backend]` line, in both physics configurations until og-session-runtime tasks 3–6
+  removed the former Chaos configuration; the brawler's
   `OGBrawlerSimulationManager.cpp` until og-ue-simulationcomponentandmanagersplit task 27b). The session is a template, so
   that line compiles into the game module that instantiates it (the brawler's);
 * OGSimulationJoltUnreal: the Jolt engine traits' log sink (`JoltEngineTraitsUImpl.cpp`;
@@ -150,7 +151,7 @@ Clients pace their frames differently (they sleep short and spin), but they are 
 
 This was seen twice in gate 22: with the dedicated server's `-log` console minimized, and with a
 window-less server that dropped to 31 ms frames when another application started. The Jolt and the Chaos
-server behave the same way.
+server behaved the same way (the Chaos server was the former Chaos configuration, removed by og-session-runtime tasks 3–6).
 The cause is not in this project: the gate-22 investigation found no project code that sleeps on the
 frame's hot path.
 

@@ -20,7 +20,8 @@ task P5-19. The files state no prohibition, so they have no guards doc; the star
 
 - **The defaults** are Ph4's, set by og-input-latency task P5-22 after Ph4's measured gate passed (task P5-34,
   its rework 2) and before the final gate, whose PIE may veto them. Until then both were 0. The loop is refused, with one Warning, where
-  it cannot run (`UESimNetLanes-rationale.md` §12): Chaos, a listen server, and a world with no og-net driver. An in-editor PIE
+  it cannot run (`UESimNetLanes-rationale.md` §12): a listen server and a world with no og-net driver (and, until
+  og-session-runtime task 5 removed that refusal with the former Chaos configuration, an engine without a world host). An in-editor PIE
   server is refused as a listen server is (`RefusedNotDedicated`: `IsRunningDedicatedServer()` is false in an editor process
   started without `-server`), so only a dedicated server process runs the loop. 0 keeps Ph3's inline server, the attribution arm.
 - **Read once.** The loop's choice is latched by the lanes before the endpoint starts (og-net fixes its servicing thread at the
