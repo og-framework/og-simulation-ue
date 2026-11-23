@@ -562,7 +562,7 @@ TEST_CASE("SimNetServer.EachServerReceiveLineEndsWithItsRecordsReceiveTime", "[N
 	});
 }
 
-TEST_CASE("SimNetServer.TheTierGoesOncePerConnectionChangeAndTierZeroIsNeverAFirstValue", "[NetTransport][SimNetServer]")
+TEST_CASE("SimNetServer.TheTierGoesOncePerConnectionChangeAndTheFirstValueGoesEvenAtTierZero", "[NetTransport][SimNetServer]")
 {
 	Fixture f;
 	f.host.rttByConn[kConnA] = 100.0;
@@ -590,32 +590,40 @@ TEST_CASE("SimNetServer.TheTierGoesOncePerConnectionChangeAndTierZeroIsNeverAFir
 		if (decodeDown(SimLane::Control, call.bytes, storage).kind == SimMessageKind::ConnectionTier)
 			tiers.push_back(call);
 	}
-	REQUIRE(tiers.size() == 2u);
+	// og-input-latency P6-2: a connection's FIRST tier is sent even when it is tier 0 (the client runs the worst-tier
+	// fallback until told, not tier 0). Each wire's first sample sends tier 0; kConnA's two owners share one send.
+	REQUIRE(tiers.size() == 4u);
 	CHECK(tiers[0].id == kConnA);
-	CHECK(tiers[1].id == kConnA);
+	CHECK(tiers[1].id == kConnB);
+	CHECK(tiers[2].id == kConnA);
+	CHECK(tiers[3].id == kConnA);
 	CHECK(!tiers[0].broadcast);
-	CHECK(decodeDown(SimLane::Control, tiers[0].bytes, storage).value == 1u);
-	CHECK(decodeDown(SimLane::Control, tiers[1].bytes, storage).value == 2u);
+	CHECK(decodeDown(SimLane::Control, tiers[0].bytes, storage).value == 0u);
+	CHECK(decodeDown(SimLane::Control, tiers[1].bytes, storage).value == 0u);
+	CHECK(decodeDown(SimLane::Control, tiers[2].bytes, storage).value == 1u);
+	CHECK(decodeDown(SimLane::Control, tiers[3].bytes, storage).value == 2u);
 	CHECK(f.server->coordinator().lookupTierIndex(f.server->handleFor(kConnA)) == 2);
-	CHECK(f.server->stats().tiersSent == 2u);
+	CHECK(f.server->stats().tiersSent == 4u);
 
 	f.server->publishTier(kConnB, 0u);
 	f.server->publishTier(kConnA, 2u);
 	f.server->flushFrame();
-	CHECK(f.server->stats().tiersSent == 2u);
+	CHECK(f.server->stats().tiersSent == 4u);
 	f.server->publishTier(kConnA, 1u);
 	f.server->publishTier(kConnA, 0u);
-	CHECK(f.server->stats().tiersSent == 4u);
+	CHECK(f.server->stats().tiersSent == 6u);
 
 	f.server->publishTier(kConnA, 1u);
-	CHECK(f.server->stats().tiersSent == 5u);
+	CHECK(f.server->stats().tiersSent == 7u);
 	f.disconnect(kConnA);
 	f.connect(kConnA);
 	f.server->dispatchFrame();
 	f.server->publishTier(kConnA, 0u);
-	CHECK(f.server->stats().tiersSent == 5u);
+	CHECK(f.server->stats().tiersSent == 8u);   // a reconnect starts from "never sent": its first tier 0 goes
+	f.server->publishTier(kConnA, 0u);
+	CHECK(f.server->stats().tiersSent == 8u);
 	f.server->publishTier(kConnA, 1u);
-	CHECK(f.server->stats().tiersSent == 6u);
+	CHECK(f.server->stats().tiersSent == 9u);
 }
 
 TEST_CASE("SimNetServer.TheFloorGoesToAttachedConnectionsOnEveryChangeIncludingAFirstZero", "[NetTransport][SimNetServer]")
@@ -697,6 +705,8 @@ TEST_CASE("SimNetServer.RemovingACharacterReportsItsStagerSendsTheRemoveAndForge
 	for (const RecordingEndpoint::Call& call : f.endpoint.on(ognet::Lane::Control))
 	{
 		const DecodedSimMessage message = decodeDown(SimLane::Control, call.bytes, storage);
+		if (message.kind == SimMessageKind::ConnectionTier)
+			continue;   // og-input-latency P6-2: the input's RTT sample sends kConnA its first tier, 0
 		REQUIRE(message.kind == SimMessageKind::Roster);
 		roster.emplace_back(call.id, rosterCodec::decode(message.body).kind);
 	}

@@ -399,9 +399,10 @@ session drains frame-locked over an immediate transport. `SimNetTransport` has o
 - **The tier receipt in the Unreal host** (`UESimulationSession::onConnectionTierReceived`, then `applyReplicatedConnectionTier`
   and `recomputeAndPublishEffectiveInputDelay`; the floor's `applyReplicatedRelayDelayFloor`) is a writer of tier state: the tier
   consumer, the last published delay, the runtime relay floor (`SimulationManager::setRelayDelayFloorTicks`), the published
-  delay atomic and the clock's stall debt (`requestInputDelayIncreaseStall`). In immediate mode it runs inside the drain at step
+  delay atomic and the clock's input-delay transition debt (`requestInputDelayTransition`, signed since og-input-latency
+  P6-2: Stalls for a raised delay, Skips for a lowered one; `requestInputDelayIncreaseStall` before). In immediate mode it runs inside the drain at step
   start, on the step's thread, both for an arrival and for the replay at bind (G-10). Its step-side readers (`collectInputAll`'s
-  delay read, the clock's stall) run later in the same step on the same thread, so they need no synchronization. Its
+  delay read, the clock's debt payment) run later in the same step on the same thread, so they need no synchronization. Its
   game-thread readers are display reads (the HUD's `getReplicatedTierConsumer`, the input-history delay decomposition); they
   must read the display snapshot's tier fields (og-sim `SimulationDisplaySnapshot.h`, `DisplayTierReading`) before immediate
   mode is switched on, which is og-input-latency P5's re-pointing. Frame-locked, all of it stays on the game thread as today.

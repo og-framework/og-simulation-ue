@@ -124,9 +124,9 @@ namespace simNetClock
 
 		constexpr uint32_t microsecondsOfSeconds(double seconds)
 		{
-			const double microseconds = seconds * 1e6;
-			if (!(microseconds > 0.0))
+			if (!(seconds > 0.0))
 				return 0u;
+			const double microseconds = seconds * 1e6;
 			if (!(microseconds < static_cast<double>(std::numeric_limits<uint32_t>::max())))
 				return std::numeric_limits<uint32_t>::max();
 			return static_cast<uint32_t>(microseconds + 0.5);

@@ -184,8 +184,11 @@ session reaps in `afterInlineBatch` (§16), after that batch's corrections and c
   the last one sent to it. Two local players on one wire are two owners to the coordinator, and each publishes on its own
   tier change; the session sends the wire's value once. (Today two components write one per-wire relay property, which also
   replicates once.)
-- **Tier 0 is never a first value.** A connection that was never sent a tier is at tier 0 on the client, which is the
-  coordinator's baseline too ("a missing entry means never told, baseline 0"). Tier 0 after another tier is sent.
+- **The first tier is always sent, tier 0 included** (og-input-latency P6-2). A connection that was never sent a tier runs the
+  no-tier fallback on the client (og-sim's `ReplicatedTierConsumer`, the worst tier's delay), not tier 0, so a first tier 0 is
+  a change the client must hear: below a relay delay floor of 4 it lowers the client's delay, which the client pays as a
+  prediction Skip. Until P6-2 this bullet read "Tier 0 is never a first value", on the false premise that such a connection
+  "is at tier 0 on the client"; the coordinator's dedup carried the same premise and changed with it.
 - A disconnect forgets the connection's last tier, so a reconnect under the same id starts again from "never sent".
 
 ## §9 `flushFrame()`

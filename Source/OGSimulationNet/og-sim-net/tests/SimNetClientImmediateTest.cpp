@@ -994,7 +994,7 @@ TEST_CASE("SimNetClientImmediate.EveryRelayStoreCorrectionCacheAndEstimatorWrite
 	}
 	CHECK(tierReplays[0] == 1u);
 	CHECK(tierArrivals[0] == 0u);
-	CHECK(tierReplays[1] == 0u);
+	CHECK(tierReplays[1] == 1u);   // og-input-latency P6-2: its first tier, 0, is sent at the server's first sample, before the bind
 	CHECK(tierArrivals[1] == 1u);
 	std::printf("[SimNetClientImmediate.Threads] records=%zu clientTasks=%zu clientWorkers=%zu\n", records.size(), clientTasks,
 		clientThreads.size());

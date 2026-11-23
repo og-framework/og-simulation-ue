@@ -496,7 +496,7 @@ public:
 	void publishTier(SimConnectionId conn, uint8_t tier)
 	{
 		const auto found = m_lastTier.find(conn);
-		if (found == m_lastTier.end() ? tier == 0u : found->second == tier)
+		if (found != m_lastTier.end() && found->second == tier)
 			return;
 		m_lastTier[conn] = tier;
 		sendU8(conn, SimMessageKind::ConnectionTier, tier);

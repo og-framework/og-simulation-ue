@@ -1,4 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: applyTierTransitionStall -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
+<!-- lint-external-ref: hadAnyTier -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
+<!-- lint-external-ref: shouldStallForTierTransition -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: OnRep -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: onRelayDelayFloorReplayed -- deleted by og-input-latency task P5-9 (the relay actors, their listeners and the session's two replay members); kept in the history -->
 <!-- lint-external-ref: OutBytes -- Unreal Engine connection stat, outside every scan root (G-19) -->
@@ -104,13 +107,14 @@ copy in both configurations.
 
 ---
 
-## G-03 — `requestInputDelayIncreaseStall` keeps its `runsPrediction()` guard
+## G-03 — `requestInputDelayTransition` keeps its `runsPrediction()` guard
 
 **Tag site:** `UESimulationSession.h`, directly above the `if (!m_manager.has_value() || !m_manager->runsPrediction())`
-early return in `requestInputDelayIncreaseStall`.
+early return in `requestInputDelayTransition` (`requestInputDelayIncreaseStall` until og-input-latency P6-2, which renamed it
+when the clock's debt became signed; the guard and its site are unchanged).
 
-**The prohibition.** ⛔ Do not remove or weaken the early return: the stall request reaches the manager's client clock only
-on a manager that predicts.
+**The prohibition.** ⛔ Do not remove or weaken the early return: the transition request reaches the manager's client clock
+only on a manager that predicts.
 
 **What breaks if the edit is made.** `SimulationManager::editClientClock()` calls `std::terminate()` when the manager holds
 no client clock, which is every authority and standalone manager. Remove the guard and the first call that reaches a
@@ -177,7 +181,8 @@ their replay entry points) goes
 through this one function, which reads both cached
 inputs through `ReplicatedTierConsumer::effectiveInputDelayTicks`, the same lookups (`tierInputDelayTicks`, which floors,
 and the floored worst-tier fallback) that the server's `ServerInputDelayQueue::effectiveDelay` uses for the same
-connection. Its return value is the change in published delay, which is how a caller that must pay for an increase can.
+connection. Its return value is the change in published delay, which is how a caller that must pay for a change can (both receipts
+do, either sign, since og-input-latency P6-2: `⛔G-40`).
 
 *R0, task 25:* verified against `ReplicatedTierConsumer.h` and `ServerInputDelayQueue.h`; "the same derivation the
 server's queue mirrors" is exact in the sense above (both ends call the same shared lookups), not a shared function.
@@ -217,23 +222,6 @@ are gone), and the client's precedes `beginClientSimNet`, whose replayed tier ap
 *Moved from `OGBrawlerSimulationManager-guards.md` G-61 (og-netcode-v2-field-defects task 12) by
 og-ue-simulationcomponentandmanagersplit task 25. Its site was the authority branch's emplace in the owner's `BeginPlay`;
 the emplace and the baseline publish moved into `beginTierConsumer`, and the tag moved with the emplace.*
-
----
-
-## G-08 — `hadAnyTier` is read before `applyReplicatedConnectionTier`
-
-**Tag site:** `UESimulationSession.h`, the `const bool hadAnyTier =` statement in `onConnectionTierReceived`.
-
-**The prohibition.** ⛔ Read `hadAnyTier` BEFORE `applyReplicatedConnectionTier`, which makes the consumer's
-`hasReceivedTier()` true unconditionally.
-
-**What breaks if the edit is made.** If the read comes after the apply, every call reports "had a tier", including the
-first. The first real tier resolution then requests a spurious stall.
-
-*R0, task 25:* verified: `ReplicatedTierConsumer::onReplicatedTierReceived` sets its received flag unconditionally.
-
-*Moved from `OGBrawlerSimulationManager-guards.md` G-65 (og-netcode-v2-field-defects task 12) by
-og-ue-simulationcomponentandmanagersplit task 25, with the statement it marks.*
 
 ---
 
@@ -316,12 +304,14 @@ the timing relay pointer until og-input-latency task P5-7), which M4 moves with 
 | `onTimingInfoReceived` | transport state `m_onTimingInfoReceivedCallback`; `m_manager`: `has_value`, `editNetworkEstimator`; **exempt (Q-I):** `m_latencyBudgetDiagnostics.noteWireSample` |
 | `publishServerClock_GameThread` | `m_manager`: `has_value`, `runsPrediction`; the accessor `getServerClock` (itself checked: `m_manager`: `getServerClock`); og-sim-net's server (`m_simNetServer`: `has_value`, `publishClock`) since og-input-latency task P5-7 |
 | `publishClientEffectiveInputDelayTicks` / `getClientEffectiveInputDelayTicks` | `m_inputResolution`: `setClientEffectiveInputDelayTicks` / `getClientEffectiveInputDelayTicks` (the atomic) |
-| `getReplicatedTierConsumer`, `onConnectionTierReceived`, `applyReplicatedConnectionTier` | transport state `m_replicatedTierConsumer` |
+| `getReplicatedTierConsumer`, `applyReplicatedConnectionTier` | transport state `m_replicatedTierConsumer` |
+| `onConnectionTierReceived` | transport calls `applyReplicatedConnectionTier`, `payInputDelayTransition`; `m_manager`: `has_value`, `getTimeConfig` (the floor its line prints; og-input-latency P6-2) |
 | `beginTierConsumer` | transport state `m_replicatedTierConsumer`; `m_manager`: `getTimeConfig` |
 | `recomputeAndPublishEffectiveInputDelay` | transport state `m_replicatedTierConsumer`, `m_lastPublishedEffectiveInputDelayTicks`; `m_manager`: `has_value`, `getTimeConfig` |
-| `applyTierTransitionStall`, `logRelayDelayFloorAdvisory` | `m_manager`: `has_value`, `getTimeConfig` |
+| `logRelayDelayFloorAdvisory` | `m_manager`: `has_value`, `getTimeConfig` (`applyTierTransitionStall` was here too until og-input-latency P6-2 deleted it) |
 | `applyReplicatedRelayDelayFloor` | `m_manager`: `has_value`, `getTimeConfig`, `setRelayDelayFloorTicks` |
-| `requestInputDelayIncreaseStall` | `m_manager`: `has_value`, `runsPrediction`, `editClientClock` |
+| `requestInputDelayTransition` (`requestInputDelayIncreaseStall` until og-input-latency P6-2) | `m_manager`: `has_value`, `runsPrediction`, `editClientClock` |
+| `payInputDelayTransition` (og-input-latency P6-2) | transport call `requestInputDelayTransition` only |
 | `onRelayDelayFloorReceived` | transport calls only (its replay twin and the tier's were deleted by og-input-latency task P5-9) |
 | `readSessionKnobs` (task 26b) | nothing of the session: it reads the ini and returns the requests (a static member) |
 | `applySessionKnobs` (task 26b) | `m_manager`: `getTimeConfig`, `setRelayDelayFloorTicks`, `setCorrectionRotationK` (the two clamped setters); transport call `logRelayDelayFloorAdvisory`; og-sim-net's server (`m_simNetServer`: `has_value`, `publishFloor`) since og-input-latency task P5-7, where the timing relay's lookup stood |
@@ -1147,6 +1137,30 @@ is 3 to 8 times the worst D · f (0.014), and task 2b's smoke still reads −0.0
 
 ---
 
+## G-40 — the tier receipt pays the recompute's change, either sign, its first arrival included
+
+**Tag site:** `UESimulationSession.h`, `onConnectionTierReceived`, directly above
+`payInputDelayTransition(TEXT("[ConnectionTier]"), deltaDelayTicks, ...)`.
+
+**The prohibition.** ⛔ Do not gate this payment on the tier indices (`oldTier == newTier`, `tierDelayDeltaTicks(oldTier,
+newTier)`), on whether a tier had arrived before (`hasReceivedTier()`, the retired `hadAnyTier`), or on the sign of the
+change, and do not compute the change any other way than the recompute's return value.
+
+**The consequence.** A first arrival reports `oldTier == newTier == 0` on a LAN wire, and its change is the fallback's
+(`max(floor, 4)`) to the tier's delay: −1 at floor 3, −2 at floor 2. The server made that same change at its first sample of
+the wire. Skip the payment and, if the server had parked any of the client's inputs at the fallback first, its drain stays
+that many ticks late for the session (`[Release] late=1` on every release, the shape og-simulation-tests' `Network/DelayTransitionTest.cpp` pins), and every
+relay stamp disagrees with the tick the authority applies. A gate on the sign brings back the pre-P6-2 defect for every
+lowered delay; a gate on the indices or on a prior arrival drops the first arrival, which at floors below 4 is the one
+transition every LAN join makes.
+
+**What breaks if it moves.** It must follow `applyReplicatedConnectionTier`, whose return value it pays; above it there is no
+change to pay. Nothing at compile time; og-simulation-tests' `Network/DelayTransitionTest.cpp` tier cases model the session's arithmetic
+(the consumer's delay before and after, the clock's request) but cannot reach this function, and the loopback smoke at floors
+3 and 2 shows the `DOWNWARD … skip` line.
+
+---
+
 ## §R — Retired ids
 
 ⛔ **An id is never reused.** A retired id may be named in prose; it may never again appear as a `⛔G-nn` tag.
@@ -1178,3 +1192,14 @@ its `[RelayProbe.Write]` lines are gone (rationale §16.3).
 **Why it retired.** The walk reads og-sim-net channels since P5-7, which have no binding to lose: a channel exists exactly while
 its character is registered (`m_simChannelsById` is written at `Ready` and erased by `forgetSimNetCharacter`, `⛔G-13`). The
 walk's remaining skips (a buffer shorter than its header, tick 0) are plain bounds.
+
+### G-08 — RETIRED by og-input-latency P6-2 (2026-11-22): its subject was deleted
+
+**Was:** *"`hadAnyTier` is read before `applyReplicatedConnectionTier`"*. Its tag sat on the `const bool hadAnyTier =`
+statement in `onConnectionTierReceived`. Its prohibition: read it before the apply, which makes the consumer's
+`hasReceivedTier()` true unconditionally, or "the first real tier resolution then requests a spurious stall".
+
+**Why it retired.** `hadAnyTier` fed og-simulation's `shouldStallForTierTransition`, which P6-2 retired: the tier receipt now
+pays the recompute's change, either sign, the first arrival included (`⛔G-40`), and reads no prior-arrival flag. The fact it
+guarded, that a first arrival's `oldTier` of 0 is the wire's default and not a tier the client ran, still holds; the recompute
+answers it by reading the consumer's own state, the fallback before the arrival (rationale §9.4).

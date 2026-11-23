@@ -1,4 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: applyTierTransitionStall -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
+<!-- lint-external-ref: shouldStallForTierTransition -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
+<!-- lint-external-ref: hadAnyTier -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: getSyncedTimingBuffer -- deleted by og-input-latency task P5-26 (og-simulation's SimulationManagerConcept.h lost the timing-buffer owner concepts, which nothing modelled since P5-7); kept in the history -->
 <!-- lint-external-ref: SimulationManagerOwnerConcept -- deleted by og-input-latency task P5-26 (og-simulation's SimulationManagerConcept.h lost the timing-buffer owner concepts, which nothing modelled since P5-7); kept in the history -->
 <!-- lint-external-ref: getLocalInputCache -- deleted by og-input-latency task P5-16 (the game-thread readers read the session's display snapshot); kept in the history -->
@@ -101,7 +104,8 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
 * **§22** is og-time-dilation task 8: clock dilation on a client in `Off` and `Shadow`: the server tick on the SimClock sample,
   the `ClockDilation` knob and its `[Dilation.Config]` line, `beforePump_Owner` and its two roles, the stage's threading and its
   two clocks, the `[Dilation.Window]` line, and why `Shadow` cannot change the rate; og-time-dilation task 11 accepts `On`
-  (§22.6), adds the four dev doors and their clamps (§22.8) and the authority's `[Dilation.Authority]` line (§22.9).
+  (§22.6), adds the four dev doors and their clamps (§22.8) and the authority's `[Dilation.Authority]` line (§22.9);
+  og-time-dilation task 14 accepts the `Common` setpoint and adds its lead's door (§22.8) and the smoke (§22.11).
 
 ---
 
@@ -654,12 +658,13 @@ teardown and post-physics pass (§10; the owner's until task 27a). *Moved from t
 `OGBrawlerSimulationManager-rationale.md` §1 ("The write crossing carries one scalar"); R0, task 25: the resimulation load was
 not listed.*
 
-**Why the passthroughs are narrow.** `requestInputDelayIncreaseStall` and `publishClientEffectiveInputDelayTicks` are
+**Why the passthroughs are narrow.** `requestInputDelayTransition` (`requestInputDelayIncreaseStall` until og-input-latency
+P6-2) and `publishClientEffectiveInputDelayTicks` are
 one-purpose entry points onto objects otherwise driven only by the manager's tick loop (the client clock, the input
 resolution's atomic). Handing game-thread code a general mutable handle to one of them would invite exactly the
-cross-thread reach the entry point exists to bound, so do not widen one into an accessor. The stall request is private
-to the session since task 25 (only the tier and floor helpers call it); the publish is public, and its one caller is the
-recompute (`⛔G-05`). `requestInputDelayIncreaseStall` also guards on `runsPrediction()` (`⛔G-03`): a server or standalone
+cross-thread reach the entry point exists to bound, so do not widen one into an accessor. The transition request is private to the session since task 25 (only the tier and floor helpers call it, through
+`payInputDelayTransition`); the publish is public, and its one caller is the recompute (`⛔G-05`).
+`requestInputDelayTransition` also guards on `runsPrediction()` (`⛔G-03`): a server or standalone
 manager has no client clock, and `editClientClock()` would `std::terminate`. *Moved from §1 of the brawler's rationale
 ("Why the passthroughs are narrow rather than `edit*()` accessors", these two names and its last paragraph).*
 
@@ -687,7 +692,7 @@ Both arms are evaluated inside `ReplicatedTierConsumer::effectiveInputDelayTicks
 construction rather than by coincidence.
 
 `recomputeAndPublishEffectiveInputDelay` **returns the change** in published delay (new − previous) so a caller that must
-pay for an increase can. A caller publishing a baseline rather than reacting to a transition ignores it.
+pay for a change can: both receipts pay it, either sign (below). A caller publishing a baseline rather than reacting to a transition ignores it.
 `m_lastPublishedEffectiveInputDelayTicks` is kept on the session rather than read back from the atomic, because the delta
 is a game-thread bookkeeping quantity: the atomic exists to hand one scalar to the physics thread, not to be used as shared
 state. It is seeded to `0`, so the start-up publish reports its full value as the delta, which `beginTierConsumer`
@@ -711,30 +716,44 @@ to its connections only, so the authority cache stays at that fallback for the w
 `m_manager`, so member destruction takes it first, and a `compositionContractsHold()` row asserts that order (§2).
 `endPlay` also resets it while the manager still exists, as the owner's `EndPlay` did before task 27a (`⛔G-21`).
 
-#### The preserved tier-0 quirk, and its two consequences
+#### Both receipts pay the change, either sign (og-input-latency P6-2)
 
-**The server never publishes tier 0 as a FIRST value:** the last published tier for a connection is taken as 0 until the
-first publish (og-sim-net's `publishTier` keeps that rule since og-input-latency task P5-7). A wire that never leaves tier 0
-therefore produces no publish and no call into `onConnectionTierReceived` at all: the client sits on the pre-arrival no-tier
-fallback while the server parks at tier-0 delay. That standing divergence is preserved deliberately; changing its cause
-changes felt input lag and belongs with the floor work, not with a transport move.
+The floor's receipt (`applyReplicatedRelayDelayFloor`) and the tier's (`onConnectionTierReceived`) each hand the recompute's
+return value to `payInputDelayTransition`, which requests `ClientPredictionClock::requestInputDelayTransition(delta)`: a
+positive change is paid as prediction Stalls (T11, as before), a negative one as Skips. 0 requests nothing. The lines:
 
-**The second consequence** was a real defect. That fabricated `oldTier = 0` used to reach `applyTierTransitionStall` as if it
-were the client's real prior tier, requesting a spurious multi-tick prediction stall on the connection's **first** real tier
-resolution. It was fixed by giving the stall decision `hadAnyTier`, whether the client had already received an
-authoritative tier, as an explicit input, so a first-ever resolution requests zero stall whichever tier arrives. The
-standing divergence above is unchanged by that fix: `hadAnyTier` only ever suppresses a stall.
+```
+[RelayDelayFloor] floor = 6 ticks, UPWARD, requesting 2-tick prediction stall      (Warning)
+[ConnectionTier] floor = 3 ticks, DOWNWARD, requesting 1-tick prediction skip      (Warning)
+[RelayDelayFloor] floor = 3 ticks, effective delay delta=0, no stall or skip       (Log)
+[ConnectionTier] tier 0 -> 0, effective delay delta=-1                             (Log, before the payment)
+```
 
-`hadAnyTier` **must be captured before `applyReplicatedConnectionTier`** (`⛔G-08`), because that call feeds the tier
-consumer, whose `hasReceivedTier()` becomes true unconditionally as a side effect.
+**Why a lowered delay must skip.** The server re-times its parked inputs to the smaller delay and releases one per slot per
+tick, oldest first, so at the switch two are due; with the client's gap-free capture stream its drain then stays the
+difference late for the session (`[Release] late=1` on every release at a lowered delay of 1). The client's prediction target
+never reads the delay, so no drift correction ever closes it. Each Skip leaves one capture tick unproduced, and that gap
+drains one tick of the backlog when the release front reaches it (og-simulation's `ClientPredictionClock.h`, the input-delay
+transition block; og-simulation-tests' `Network/DelayTransitionTest.cpp` pins both). Until P6-2 a lowered delay was logged as `no stall` and did nothing.
 
-The decision itself is og-simulation's `shouldStallForTierTransition` (`Network/ConnectionTierTable.h`), a pure function
-with its own low-level test coverage; `applyTierTransitionStall` is only the plumbing around it, and non-positive results
-are dropped by the client clock too (`ClientPredictionClock::requestInputDelayIncreaseStall` returns on a delta of zero or
-less).
+**Why the tier pays its first arrival too** (`⛔G-40`). The quantity is the client's own effective delay before and after the
+arrival, so a first arrival pays the change from the pre-arrival fallback (`max(floor, rttTierInputDelays[3])`) to the tier's
+delay. That is the change the server made at its first sample of the wire, when it left the same fallback for the same tier
+(`ServerInputDelayQueue::effectiveDelay`). At a floor of 4 or more both collapse to the floor and the change is 0; at the shipped
+tier table (`{1, 2, 3, 4}`) floor 3 skips once at join for tiers 0-2, and floor 2 skips twice for tiers 0-1 and once for tier 2. Until P6-2 the tier path asked og-simulation's
+`shouldStallForTierTransition` (retired with it, `ConnectionTierTable-rationale.md` §8), which returned zero for a first
+arrival and dropped every negative change, and read `hadAnyTier` for it (G-08, retired by P6-2).
+
+**The server sends a wire's first tier, tier 0 included** (og-input-latency P6-2; `ServerReceptionCoordinator` and og-sim-net's
+`SimNetServer::publishTier`). Until P6-2 neither sent a first tier 0, so a wire that never left tier 0 (a LAN session's ordinary
+shape) never called `onConnectionTierReceived`: the client sat on the pre-arrival fallback while the server parked at tier-0
+delay. That divergence was preserved deliberately ("changing its cause changes felt input lag and belongs with the floor
+work"); P6-2 is that floor work. At a floor of 4 or more it was invisible (both ends at the floor); below 4 the owner applied its
+own inputs one or two ticks later than the server did, and could not pay for a switch it never heard of.
 
 *R0, task 25:* the moved text said "the core never publishes tier 0 … (`m_lastPublishedTier` is baselined at 0)"; that
-member is the coordinator's map, read with 0 for an owner it has not published, which is what the sentence above says.
+member is the coordinator's map, read with 0 for an owner it has not published. *R0, P6-2:* the coordinator now reads a
+missing entry as "never told" and publishes.
 
 #### Replayed values never stall
 
@@ -752,7 +771,8 @@ Since og-input-latency task P5-10 `applyReplicatedRelayDelayFloor` has no `payFo
 `onRelayDelayFloorReceived`, passed `true`; the `false` arm was the deleted floor replay's.
 
 A floor **rise** on the live channel is indistinguishable from an upward tier transition to the client: the frontier must
-fall back by the difference, which the clock pays down as stall ticks.
+fall back by the difference, which the clock pays down as stall ticks. A floor **fall** is the mirror: paid as Skips since
+og-input-latency P6-2.
 
 Both listeners **bound, then PULLED** (guard G-07, retired by og-input-latency task P5-7): each relay property dirtied only on
 change, so an `OnRep` that fired before the bind was latched by the relay and handed over at the pull. Since P5-7 the client
@@ -842,7 +862,7 @@ og-input-latency task 4 added two more keys, read by the same intake, and a four
 | `readSessionKnobs(worldIsAuthority)` | the intakes (`⛔G-14`, `⛔G-15`, `⛔G-16`, and since og-input-latency task 4 `⛔G-27`); it reaches no session state and returns the requests in a `SessionKnobs` value | after the latency member's begin, before the backend builds its world: both roles |
 | `applySessionKnobs(knobs)` | the floor's clamp, set, ini line and advisory; the rotation width's clamp and set; the rotation width's proof line; the floor's publish through og-sim-net's server (`publishFloor`, since og-input-latency task P5-7; onto the timing relay before) | in the authority branch, after the neutral input and the og-sim-net server's start, before the tier consumer's start |
 | `applyResimTriggerPolicy(knobs)` | the policy's parse, apply and proof line (`⛔G-17`) | after both role branches |
-| `applyLatencyKnobs(knobs)` (og-input-latency task 4) | the two latency knobs' clamp and set, and their one proof line; since og-input-latency task 27 also the re-centre window's clamp, set and proof line; since og-input-latency tasks P3-10 and P3-13 the clock's RTT source and jitter multiplier (§20); since og-time-dilation task 8, last, `applyClockDilation` (§22), which since og-time-dilation task 11 also applies the four dev doors (§22.8) | after both role branches, directly after `applyResimTriggerPolicy` |
+| `applyLatencyKnobs(knobs)` (og-input-latency task 4) | the two latency knobs' clamp and set, and their one proof line; since og-input-latency task 27 also the re-centre window's clamp, set and proof line; since og-input-latency tasks P3-10 and P3-13 the clock's RTT source and jitter multiplier (§20); since og-time-dilation task 8, last, `applyClockDilation` (§22), which since og-time-dilation task 11 also applies the dev doors (§22.8; four, five since task 14) | after both role branches, directly after `applyResimTriggerPolicy` |
 
 The statements moved unchanged: the intake's locals are returned in a `SessionKnobs` value, and the two apply functions
 read the same four fields from it (as task 26b left it; `applyLatencyKnobs` reads only the four fields og-input-latency
@@ -1241,21 +1261,31 @@ the one hitch site for every backend.
   variables are per process, so with two sessions in one process the first pass of either starts the delay and the first
   pass after it fires the hitch. The delay does not depend on the stepping mode: the pass runs on the game thread with the
   authority loop on and off (§19.5).
-* **The marker, `[SimHost.TestHitch] ms=<n> afterSeconds=<s> frame=<f>`** (P5-32). When the hitch fires, the accessor
-  logs this one Warning on `LogOGSimHost`, after the reset and before it returns, so the sleep follows it at once and the
-  line's time stamp is the hitch's start; `frame` is the engine's `GFrameCounter`. It is new with the delay and prints at
-  0 too; a session without the hitch prints no new line. Ph4's gate checker reads it first (P5-21's `check_ph4.py`, rows
+* **The repeat, `og.Sim.TestGameThreadHitchEverySeconds`** (og-time-dilation task 7c; not in Shipping; a float, default 0).
+  When it is above 0 the accessor does not reset the hitch variable when it fires; it fires again at the first pass at
+  least that many seconds after its previous firing (a second function-local `static`, the `FPlatformTime::Seconds()` of
+  the last firing), so the process keeps getting one long frame every interval until the hitch variable is set to 0.
+  The delay still holds the first firing back. At 0 the hitch fires once and resets, as before. It exists so that a gate
+  can inject isolated long frames of a few tens of milliseconds into a running client, the frames task 7c's frame-peak
+  filter must ignore (`ClockDilationController-rationale.md` §5.1 in og-simulation): for example
+  `og.Sim.TestGameThreadHitchMs=20`, `…AfterSeconds=60`, `…EverySeconds=3` on a 100 fps client.
+* **The marker, `[SimHost.TestHitch] ms=<n> afterSeconds=<s> frame=<f> everySeconds=<r>`** (P5-32; `everySeconds`, the
+  repeat's value, appended by task 7c). Each time the hitch fires, the accessor logs this one Warning on `LogOGSimHost`,
+  after the reset (when there is one) and before it returns, so the sleep follows it at once and the line's time stamp is
+  the hitch's start; `frame` is the engine's `GFrameCounter`. It is new with the delay and prints at 0 too; a session
+  without the hitch prints no new line. A repeating hitch prints one line per firing. Ph4's gate checker reads it first (P5-21's `check_ph4.py`, rows
   T2 and R1).
 * **Where it lives.** The console variable is a namespace-scope object, registered when it is constructed; the class
   template's header has no translation unit of its own to define it in, so the plugin's `.cpp` does (the initiative's
   review, finding m-10), and the plugin module constructs it once. It is defined in `UESimulationSession.cpp`, under
   `#if !UE_BUILD_SHIPPING`, with its name, default, help text and flags unchanged (its help text still names the owner's
   `OnPostPhysicsStep`, verbatim). The template reads it through an exported function the header declares under the same
-  condition, `OGSIMULATIONUNREAL_API int32 consumeTestGameThreadHitchMs()`: it reads the value on the game thread, sets it
-  back to 0 when it is above 0, and returns what it read; when that is above 0, `onPostPhysicsStep` calls the second
+  condition, `OGSIMULATIONUNREAL_API int32 consumeTestGameThreadHitchMs()`: it reads the value on the game thread; when it is
+  above 0 and neither the delay nor the repeat's interval holds it back, it sets it back to 0 (unless the repeat is on)
+  and returns it, and otherwise it returns 0; when that is above 0, `onPostPhysicsStep` calls the second
   exported function, `sleepTestGameThreadHitch(hitchMs)`, whose one statement is the unchanged sleep. The read, the reset
-  and the sleep run in their old order. The delay's variable sits beside it in the same `#if` and namespace, read by the
-  same accessor (P5-32), so the header and its call site did not change.
+  and the sleep run in their old order. The delay's and the repeat's variables sit beside it in the same `#if` and
+  namespace, read by the same accessor (P5-32, og-time-dilation task 7c), so the header and its call site did not change.
 * **Why the sleep is in the `.cpp` too.** Its argument is `static_cast<float>(hitchMs) / 1000.f`, and the engine sleeps
   `(uint32)(Seconds * 1000.0)` milliseconds. Compiled optimized in the template under `/fp:fast`, the division became a
   multiply by `0.001f`, one ulp off for most values, so the engine's truncation slept one millisecond more than before for
@@ -1998,14 +2028,18 @@ stays the size it was plus three pointers.
 
 ### 17.3 The game-thread view: one snapshot held, its states copied and overlaid
 
-`refreshDisplayView_GameThread`, in the post-physics pass, acquires the newest snapshot and then releases the one it held, if
-that is a different one: the channel marks a held snapshot with one bit, not a count, so releasing first and acquiring the
-same slot again would leave the reader on an unmarked slot. Acquiring first holds two for the instant between the calls,
-which is the reader's bound (`SimulationDisplayPublisher::kMaxHeldByReader`). On a Jolt client a publish may run in that
-instant, on the step's thread: the channel's writer then recycles the oldest snapshot the reader does not hold, and with
-two of four held one is always free (`SimulationDisplaySnapshot-rationale.md` §5). On every other session the publish runs
-just before, on the game thread. Every reader in the frame shares the one held snapshot until the next pass.
-`endPlay` releases it.
+`refreshDisplayView_GameThread`, in the post-physics pass, swaps the held snapshot for the newest through the publisher's
+`refreshView_GameThread(held)`, which releases the held one first and then acquires the newest
+(`SimulationDisplaySnapshot-rationale.md` §5). The order is the channel's read rule: while the reader holds a snapshot, a
+peek of the newest returns the held one, never a later commit. Until og-input-latency task P6-1 the session acquired first
+and released the old pointer only if it differed, so the peek returned the held snapshot, nothing was released, and every
+client's view stayed on the first snapshot it acquired, published before any character registered: the brawler's
+`TickComponent` found no entry (`findDisplayVizState` null) and drew no aim indicator, attack or projectile visualization,
+on immediate and frame-locked clients alike, from Ph4 on. Re-acquiring a slot just released marks it held again (the
+channel's hold is one bit per slot), so the reader holds one snapshot between passes and none between the two calls. On a
+Jolt client a publish may run in that instant, on the step's thread: the writer's open slot is not listed, so the peek
+returns the newest committed snapshot. On every other session the publish runs just before, on the game thread. Every
+reader in the frame shares the one held snapshot until the next pass. `endPlay` releases it.
 
 Then, for each entry, the session copies the entry's state into its own array of visualization states (index-aligned with
 the entries) and calls the backend's `overlayRenderPoses_GameThread(id, state)`. On a driver-scheduled backend that writes
@@ -2504,7 +2538,7 @@ outcomes (§19.4), the authority presentation (§21.3) and the latency tick, who
 the pending stamps and the window lines. The lanes' `afterDispatch` publishes the RTT table. Registration's game-thread half
 reads only `UObject`s and the session's own maps (§19.4).
 
-## §22 Clock dilation on a client: `Off`, `Shadow` and `On` (og-time-dilation tasks 8 and 11)
+## §22 Clock dilation on a client: `Off`, `Shadow` and `On` (og-time-dilation tasks 8, 11 and 14)
 
 og-simulation's `ClockDilationController.h` holds the rate controller (`ClockDilationController`), its per-frame stage
 (`clockDilation::beforeClientPump`) and its window statistics (`ClockDilationWindow`); its rationale has the law, the sensor and
@@ -2536,15 +2570,16 @@ first tick reaches the estimator as "no tick" only while the two sentinels agree
   [OGNetcode] ClockDilation='…' unrecognised (expected Off, Shadow or On), running Off`, and runs the compiled default, `Off`,
   never a guessed mode. (Until og-time-dilation task 11, `On` logged a Warning and ran `Shadow`.)
 - **The proof line**, unconditional, at `Warning` on `LogOGNet`, once per client session: `[Dilation.Config] mode=<Off|Shadow|On>
-  setpoint=OwnRtt gainPerTick=<g> maxDeviation=<d> (<ini|compiled>)`. Every value is read back from the controller's stored
+  setpoint=<OwnRtt|Common> gainPerTick=<g> maxDeviation=<d> (<ini|compiled>)`. Every value is read back from the controller's stored
   `config()`, not the parsed request (§9.8's step 4). The trailing token is the mode's: `ini` when the `ClockDilation` key was
   applied and `compiled` when it was absent or unrecognised. The line keeps task 8's exact shape, because og-time-dilation's
   `lead_split.py` parses it (G4 reads its `maxDeviation`) with a pattern anchored at the token.
 - **The doors line** follows it, also unconditional on a client: `[Dilation.Config] doors gainPerTick=<g> (<src>) maxPercent=<p>
-  (<src>) targetOffsetTicks=<o> (<src>) setpoint=<s> (<src>)`, each value read back from the stored config with its own token
-  (§22.8).
+  (<src>) targetOffsetTicks=<o> (<src>) setpoint=<s> (<src>) commonLeadTicks=<x> (<src>)`, each value read back from the
+  stored config with its own token (§22.8). og-time-dilation task 14 appended `commonLeadTicks` at its end, so a parser
+  anchored on the line's start reads the four older fields unchanged.
 - **Every other `ClockDilationConfig` field** (the slew, the quantum, the change hysteresis, the two time constants, the guard's
-  edges, the resync freeze, the `Common` lead) is og-simulation's compiled default, which its `static_assert`s check. No door
+  edges, the resync freeze) is og-simulation's compiled default, which its `static_assert`s check. No door
   reaches them, so those checks hold for the runtime config too.
 - **The controller and the window** (`m_clockDilation`, `m_clockDilationWindow`, both `std::optional`) are emplaced there, on
   every client session, `Off` included, and on no authority. A client's `configureSession` runs on the game thread
@@ -2622,7 +2657,7 @@ authority has no mode, and the line only reads the door.
 
 ### 22.8 The dev doors and their clamps (og-time-dilation task 11)
 
-Four more `[OGNetcode]` keys, read by `readSessionKnobs` on both roles (the game ini first, then the engine ini) and applied
+Five more `[OGNetcode]` keys (four since task 11, the fifth since og-time-dilation task 14), read by `readSessionKnobs` on both roles (the game ini first, then the engine ini) and applied
 only on a client, by `applyClockDilation`, into the config the controller and the window are built from. They apply in
 `Shadow` as in `On`, so a `Shadow` run projects the `On` that the same doors would run; `Off` never calls the controller.
 
@@ -2631,14 +2666,15 @@ only on a client, by `applyClockDilation`, into the config the controller and th
 | `ClockDilationGainPerTick` | `gainPerTick` | clamped to [0, 0.05] (`clockDilationDoors::clampGainPerTick`) |
 | `ClockDilationMaxPercent` | `maxDeviation` = percent / 100 | clamped to [0, 2] % (`clampMaxPercent`) |
 | `ClockDilationTargetOffsetTicks` | `targetOffsetTicks` | clamped to [−2, 2] ticks (`clampTargetOffsetTicks`) |
-| `ClockDilationSetpoint` | `setpoint` | only `OwnRtt`, case-insensitive; any other value, `Common` included, logs one Warning, `[Dilation.Config] ini [OGNetcode] ClockDilationSetpoint='…' is not accepted by this build (expected OwnRtt), running OwnRtt` (`Common` is og-time-dilation task 14's) |
+| `ClockDilationSetpoint` | `setpoint` | `OwnRtt` or `Common`, case-insensitive; any other value logs one Warning, `[Dilation.Config] ini [OGNetcode] ClockDilationSetpoint='…' unrecognised (expected OwnRtt or Common), running <the compiled setpoint>`, and runs the compiled setpoint (`OwnRtt`). Until og-time-dilation task 14 only `OwnRtt` was accepted: `Common` logged `… is not accepted by this build (expected OwnRtt), running OwnRtt` |
+| `ClockDilationCommonLeadTicks` | `commonLeadTicks` | clamped to [0, 10] ticks (`clampCommonLeadTicks`; og-time-dilation task 14). The compiled default is og-simulation's, 3.65; the door sets it in every mode, but only `Common` reads it |
 
-- **The three number doors** go through `applyClockDilationDoor`. A value that is not finite logs `[Dilation.Config] ini
+- **The four number doors** go through `applyClockDilationDoor`. A value that is not finite logs `[Dilation.Config] ini
   [OGNetcode] <key> is not a finite number, keeping the compiled default` and keeps it (token `compiled`). An out-of-range value
   logs `[Dilation.Config] ini [OGNetcode] <key>=<v> out of range, clamped to <c>` and runs the clamped value (token `ini`), as
   the latency knobs do (§9.8).
 - **The doors line** (§22.2) reports what was applied: `gainPerTick=%.4f`, `maxPercent=%.3f` (`maxDeviation` · 100),
-  `targetOffsetTicks=%.3f` and `setpoint`, each with its own `(ini|compiled)` token. The proof line's `gainPerTick` and
+  `targetOffsetTicks=%.3f`, `setpoint` and `commonLeadTicks=%.3f`, each with its own `(ini|compiled)` token. The proof line's `gainPerTick` and
   `maxDeviation` are the same stored values; its token stays the mode's.
 - **The clamps are the controller's constraints in runtime form.** og-simulation's `ClockDilationConfig` `static_assert`s check
   its compiled defaults only; the controller checks no runtime config. So the doors' bounds carry their own `static_assert`s:
@@ -2646,7 +2682,10 @@ only on a client, by `applyClockDilation`, into the config the controller and th
     value (og-simulation's `ClockDilationController-rationale.md` §7): `kMaxMaxPercent / 100 < 0.2`;
   - neither the gain nor the deviation door admits a negative value. A negative gain turns `1 − gainPerTick · error` into
     positive feedback, and a negative `maxDeviation` gives `std::clamp` a low bound above its high one;
-  - each compiled default lies inside its own door, so writing the compiled value into the ini changes nothing.
+  - each compiled default lies inside its own door, so writing the compiled value into the ini changes nothing (since
+    og-time-dilation task 14 `commonLeadTicks` too);
+  - the `Common` lead's door admits no negative lead: a target behind the server's tick would make every client's inputs late
+    by construction.
 - **What no door reaches** keeps its compiled values, and with them their `static_assert`s, at runtime: `quantum > 0`; the
   slew, `0 < slewPerCall` (0.002, a whole number of quanta, 20, by its value rather than by an assert); the change hysteresis,
   `changeHysteresisQuanta ≥ 0.5` and `changeHysteresisQuanta · quantum ≤ slewPerCall` (2 today); and the guard's edges with
@@ -2659,6 +2698,12 @@ only on a client, by `applyClockDilation`, into the config the controller and th
 - **The gain's ceiling, 0.05**, is ten times the default. At that gain the loop's per-frame step `f · K_p · Δt` is 0.10 at
   30 fps and 0.03 at 100 fps, still small against 1 (og-simulation's `ClockDilationController-rationale.md` §8), and the
   scale saturates at `maxDeviation` from 0.2 tick of error at the default 1 % (`maxDeviation / gainPerTick`).
+- **The `Common` lead's range, [0, 10] ticks**, is a dev door's. og-time-dilation task 13's report puts the shapes it
+  measured inside [3.17, 3.71] at 100 fps and names its fallbacks, 3.60 and 3.70; a session with a farther client needs a
+  higher lead, and 10 ticks is above every guard centre this initiative measured. Whatever the door admits, each client's
+  band guard still clamps the target into its own band (og-simulation's `ClockDilationController-rationale.md` §5): a
+  client whose band does not admit the lead binds at its edge and holds a lead near its own, and what the clock still does
+  there is og-simulation's §5.2 and §21.
 - **The offset's range, ±2 ticks**, is for og-time-dilation's G7 seen-failing arm (+0.5 tick). The guard still clamps the
   shifted target into its band (og-simulation's `ClockDilationController-rationale.md` §5), so no offset can push the lead past
   the clock's quiet band.
@@ -2702,3 +2747,42 @@ with every door out of range (`T11_*` under `Saved/Profiling`). Every number is 
   every run (18 in a 150 s run, the first 3 s after the server's log opens).
 - **The doors:** gain 0.2, 5 %, −9 ticks and `Common` log the four Warnings and run 0.05, 2 %, −2 ticks and `OwnRtt`; at ten
   times the default gain the door changes 40 times a second (a dev door, not a setting).
+
+### 22.11 What `Common` measured (og-time-dilation task 14)
+
+A packaged smoke (Development server and clients of the task's tree, `Saved/DilationTD2_14/jolt`), og-time-dilation task 13's
+launcher: three headless clients, each through its own og-net shaper with a fixed lag each way and b0's loss (2 % up, 1 %
+down), a near (10 ms), a mid (30 ms) and a far client, 100 fps, `RelayDelayFloorTicks=6`, 150 s, one lock hold on a clean
+host, a discarded warm-up first (`T14_*` under `Saved/Profiling`). Every number is og-time-dilation's `lead_split.py` and its
+task 13 per-direction table (`e2e_join`'s late share, B ← A = B receiving A's inputs).
+
+- **The door refused `Common` before this task:** the same tokens on the TD1b package (`T14_red`) log `[Dilation.Config] ini
+  [OGNetcode] ClockDilationSetpoint='Common' is not accepted by this build (expected OwnRtt), running OwnRtt` and run
+  `OwnRtt`. On this build the proof line reads `setpoint=Common` with `(ini)` and the doors line ends `setpoint=Common (ini)
+  commonLeadTicks=3.650 (compiled)`.
+- **The far client at 50 ms**, `Common` twice and `OwnRtt` twice, interleaved:
+
+  | run | near ↔ mid (%) | near ↔ far (%) | mid ↔ far (%) | pooled late | guardBound (near / mid / far) |
+  |---|---|---|---|---|---|
+  | `Common` 1 | 0.00 / 0.00 | 0.00 / 0.00 | 1.01 / 0.13 | 0.19 % | 0 / 0 / 0 |
+  | `Common` 2 | 0.01 / 0.00 | 0.00 / 0.03 | 1.29 / 0.11 | 0.24 % | 0 / 0 / 0 |
+  | `OwnRtt` 1 | 0.00 / 0.00 | 0.00 / 0.03 | 0.03 / 30.03 | 5.02 % | 0 / 0 / 0 |
+  | `OwnRtt` 2 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 100.00 | 16.68 % | 0 / 0 / 0 |
+
+  Each pair cell is the first client's late share receiving the second's inputs, then the reverse (near ↔ far = near ← far
+  / far ← near). Under `Common` every pair is within 1.2 percentage points across its two directions; under `OwnRtt` the far
+  client receives the mid client's inputs 30 % and 100 % late while the reverse is on time. The clients' leads: `Common`
+  3.58–3.69 ticks on every client, the window's target 3.950 (3.65 plus the 100 fps step lag, 0.300); `OwnRtt` 2.88–2.90 / 1.71–1.89
+  / 3.00–3.01 (near / mid / far). In every run 0 steady Skips, Stalls and hard resyncs (G5) and G3 and G4 pass; G1 (the
+  pair lead split) passes under `Common` (worst pair mean 0.107) and fails by design under `OwnRtt` (pair means up to 1.30).
+- **The far client at 60 ms**, task 13's shape, `Common` once (`T14_c60_Common1`): guardBound 0 on every client, the far
+  client's lead 3.565 against its low edge c − 0.5 = 3.30; the pooled late share 4.01 % (task 13 measured 16.8 % under
+  `OwnRtt` on the same shape), with mid ← far 20.7 % and far ← mid 3.2 %: at 60 ms that pair's arrivals (101.9 and 102.7 ms)
+  exceed the 100 ms an equal lead gives, so no common lead puts both on time (task 13's report §4.3).
+- **The mid client's high edge**: under `Common` its lead minus its guard centre is 2.01 ticks on every run, the e that
+  task 13's report predicted at 3.65 (+2.00), one tick inside the clock's band; it bound no call and the clock corrected
+  nothing.
+- **`OwnRtt` on this shape sits at the far client's low edge**: the 50 ms far client's `OwnRtt` lead, 3.00, is about its low
+  edge's threshold (task 13's report §5 item 4 predicts X_low ≈ 3.0). On the TD1b run it bound 8,990 calls over 10 steady
+  windows (its centre 3.45 that run); on this build's two `OwnRtt` runs none (centres 3.32 and 3.34). That is `OwnRtt`'s
+  behaviour, unchanged by this task.

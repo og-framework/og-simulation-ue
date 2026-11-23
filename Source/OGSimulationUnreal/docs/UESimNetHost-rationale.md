@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: hadAnyTier -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: FUEConnectionHandle -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
 <!-- lint-external-ref: UEConnectionHandle.h -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
 <!-- lint-external-ref: OnRep -- Unreal Engine symbol or file, outside every scan root -->
@@ -188,8 +189,10 @@ bound, and the floor was received, paying for the increase with a prediction sta
 `[RelayDelayFloor] floor = 6 ticks, UPWARD, requesting 2-tick prediction stall`, then the relay's replay with delta 0). og-net
 delivers the floor on the server's attach, before the client's world exists, so it is always latched and always replayed. Applied
 as a replay it would never stall, which changes the join's timing and drops Ph3's identical row for that line; applied as
-received it is today's common case. The tier follows the same rule: its first application never stalls either way
-(`hadAnyTier` is false), and as received it keeps today's `[ConnectionTier] tier a -> b hadAnyTier=0, no stall` line. The
+received it is today's common case. The tier follows the same rule. Until og-input-latency P6-2 its first application never stalled either way
+(`hadAnyTier` was false); since P6-2 the tier receipt pays its effective delay's change, either sign, the first arrival
+included, replayed or received alike (`UESimulationSession-guards.md` G-40), and logs
+`[ConnectionTier] tier a -> b, effective delay delta=N`. The
 session's two replay members had no caller since, and og-input-latency task P5-9 deleted them.
 
 ## §7 The roster and the bindings

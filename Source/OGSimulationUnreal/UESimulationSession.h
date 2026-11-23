@@ -102,6 +102,8 @@ namespace clockDilationDoors
 	inline constexpr double kMaxMaxPercent        = 2.0;
 	inline constexpr double kMinTargetOffsetTicks = -2.0;
 	inline constexpr double kMaxTargetOffsetTicks = 2.0;
+	inline constexpr double kMinCommonLeadTicks   = 0.0;
+	inline constexpr double kMaxCommonLeadTicks   = 10.0;
 
 	constexpr double clampToDoor(double requested, double low, double high)
 	{
@@ -116,6 +118,10 @@ namespace clockDilationDoors
 	{
 		return clampToDoor(requested, kMinTargetOffsetTicks, kMaxTargetOffsetTicks);
 	}
+	constexpr double clampCommonLeadTicks(double requested)
+	{
+		return clampToDoor(requested, kMinCommonLeadTicks, kMaxCommonLeadTicks);
+	}
 } // namespace clockDilationDoors
 
 static_assert(clockDilationDoors::kMaxMaxPercent / 100.0 < 0.2,
@@ -127,9 +133,13 @@ static_assert(clockDilationDoors::kMinGainPerTick >= 0.0 && clockDilationDoors::
 	"rate law into positive feedback, and a negative deviation inverts its clamp");
 static_assert(clockDilationDoors::clampGainPerTick(ClockDilationConfig{}.gainPerTick) == ClockDilationConfig{}.gainPerTick
 	&& clockDilationDoors::clampMaxPercent(ClockDilationConfig{}.maxDeviation * 100.0) == ClockDilationConfig{}.maxDeviation * 100.0
-	&& clockDilationDoors::clampTargetOffsetTicks(ClockDilationConfig{}.targetOffsetTicks) == ClockDilationConfig{}.targetOffsetTicks,
-	"ClockDilationConfig's compiled gainPerTick, maxDeviation and targetOffsetTicks must lie inside their [OGNetcode] doors' "
-	"clamps, or writing the compiled value into the ini would move it");
+	&& clockDilationDoors::clampTargetOffsetTicks(ClockDilationConfig{}.targetOffsetTicks) == ClockDilationConfig{}.targetOffsetTicks
+	&& clockDilationDoors::clampCommonLeadTicks(ClockDilationConfig{}.commonLeadTicks) == ClockDilationConfig{}.commonLeadTicks,
+	"ClockDilationConfig's compiled gainPerTick, maxDeviation, targetOffsetTicks and commonLeadTicks must lie inside their "
+	"[OGNetcode] doors' clamps, or writing the compiled value into the ini would move it");
+static_assert(clockDilationDoors::kMinCommonLeadTicks >= 0.0,
+	"The ClockDilationCommonLeadTicks door must not admit a negative lead: a Common target behind the server's tick would make "
+	"every client's inputs late by construction");
 
 namespace ueSimulationSessionHookNames
 {
@@ -393,14 +403,16 @@ public:
 	void onSimNetLifecycleUnregistering(uint8_t simId);
 
 private:
-	void requestInputDelayIncreaseStall(int32 deltaDelayTicks)
+	void requestInputDelayTransition(int32 deltaDelayTicks)
 	{
 		// ⛔G-03  docs/UESimulationSession-guards.md
 		if (!m_manager.has_value() || !m_manager->runsPrediction())
 			return;
 
-		m_manager->editClientClock().requestInputDelayIncreaseStall(deltaDelayTicks);
+		m_manager->editClientClock().requestInputDelayTransition(deltaDelayTicks);
 	}
+
+	void payInputDelayTransition(const TCHAR* lineTag, int32 deltaDelayTicks, int32 floorTicks);
 
 	void beginTierConsumer();
 
@@ -490,7 +502,7 @@ private:
 
 	void publishServerClock_GameThread();
 
-	void applyReplicatedConnectionTier(uint8 tier);
+	int32 applyReplicatedConnectionTier(uint8 tier);
 
 	void applyReplicatedRelayDelayFloor(uint8 floorTicks);
 
@@ -499,8 +511,6 @@ private:
 
 	// ⛔G-05  docs/UESimulationSession-guards.md
 	int32 recomputeAndPublishEffectiveInputDelay();
-
-	void applyTierTransitionStall(uint8 oldTier, uint8 newTier, bool hadAnyTier);
 
 	struct SessionKnobs
 	{
@@ -528,6 +538,8 @@ private:
 		double  configuredClockDilationTargetOffsetTicks;
 		bool    hasIniClockDilationSetpoint;
 		FString configuredClockDilationSetpoint;
+		bool    hasIniClockDilationCommonLeadTicks;
+		double  configuredClockDilationCommonLeadTicks;
 	};
 
 	static SessionKnobs readSessionKnobs(bool worldIsAuthority);
@@ -1240,23 +1252,24 @@ void UESimulationSession<TraitsT>::detachFromSimNetLanes()
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::onConnectionTierReceived(uint8_t oldTier, uint8_t newTier)
 {
-    // ⛔G-08  docs/UESimulationSession-guards.md
-    const bool hadAnyTier =
-        m_replicatedTierConsumer.has_value() && m_replicatedTierConsumer->hasReceivedTier();
+    const int32 deltaDelayTicks = applyReplicatedConnectionTier(newTier);
 
-    applyReplicatedConnectionTier(newTier);
+    UE_LOG(LogOGNet, Log, TEXT("[ConnectionTier] tier %u -> %u, effective delay delta=%d"),
+        (unsigned int)oldTier, (unsigned int)newTier, deltaDelayTicks);
 
-    applyTierTransitionStall(oldTier, newTier, hadAnyTier);
+    // ⛔G-40  docs/UESimulationSession-guards.md
+    payInputDelayTransition(TEXT("[ConnectionTier]"), deltaDelayTicks,
+        m_manager.has_value() ? (int32)m_manager->getTimeConfig().relayDelayFloorTicks : 0);
 }
 
 template <typename TraitsT>
-void UESimulationSession<TraitsT>::applyReplicatedConnectionTier(uint8 tier)
+int32 UESimulationSession<TraitsT>::applyReplicatedConnectionTier(uint8 tier)
 {
     if (!m_replicatedTierConsumer.has_value())
-        return;
+        return 0;
 
     m_replicatedTierConsumer->onReplicatedTierReceived((int32)tier);
-    recomputeAndPublishEffectiveInputDelay();
+    return recomputeAndPublishEffectiveInputDelay();
 }
 
 template <typename TraitsT>
@@ -1286,19 +1299,27 @@ void UESimulationSession<TraitsT>::applyReplicatedRelayDelayFloor(uint8 floorTic
 
     const int32 deltaDelayTicks = recomputeAndPublishEffectiveInputDelay();
 
-    if (deltaDelayTicks <= 0)
+    payInputDelayTransition(TEXT("[RelayDelayFloor]"), deltaDelayTicks, clampedFloor);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::payInputDelayTransition(const TCHAR* lineTag, int32 deltaDelayTicks, int32 floorTicks)
+{
+    if (deltaDelayTicks == 0)
     {
         UE_LOG(LogOGNet, Log,
-            TEXT("[RelayDelayFloor] floor = %d ticks, effective delay delta=%d, no stall"),
-            clampedFloor, deltaDelayTicks);
+            TEXT("%s floor = %d ticks, effective delay delta=0, no stall or skip"),
+            lineTag, floorTicks);
         return;
     }
 
-    requestInputDelayIncreaseStall(deltaDelayTicks);
+    requestInputDelayTransition(deltaDelayTicks);
 
     UE_LOG(LogOGNet, Warning,
-        TEXT("[RelayDelayFloor] floor = %d ticks, UPWARD, requesting %d-tick prediction stall"),
-        clampedFloor, deltaDelayTicks);
+        TEXT("%s floor = %d ticks, %s, requesting %d-tick prediction %s"),
+        lineTag, floorTicks, deltaDelayTicks > 0 ? TEXT("UPWARD") : TEXT("DOWNWARD"),
+        deltaDelayTicks > 0 ? deltaDelayTicks : -deltaDelayTicks,
+        deltaDelayTicks > 0 ? TEXT("stall") : TEXT("skip"));
 }
 
 template <typename TraitsT>
@@ -1351,34 +1372,6 @@ int32 UESimulationSession<TraitsT>::recomputeAndPublishEffectiveInputDelay()
         m_manager.has_value() ? (int)m_manager->getTimeConfig().relayDelayFloorTicks : 0);
 
     return deltaDelayTicks;
-}
-
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::applyTierTransitionStall(uint8 oldTier, uint8 newTier, bool hadAnyTier)
-{
-    if (oldTier == newTier)
-        return;
-
-    if (!m_manager.has_value())
-        return;
-
-    const TimeConfig& cfg = m_manager->getTimeConfig();
-    const int32 stallTicks = (int32)shouldStallForTierTransition(
-        (int32)oldTier, (int32)newTier, hadAnyTier, cfg);
-
-    if (stallTicks <= 0)
-    {
-        UE_LOG(LogOGNet, Log,
-            TEXT("[ConnectionTier] tier %u -> %u hadAnyTier=%d, no stall"),
-            (unsigned int)oldTier, (unsigned int)newTier, hadAnyTier ? 1 : 0);
-        return;
-    }
-
-    requestInputDelayIncreaseStall(stallTicks);
-
-    UE_LOG(LogOGNet, Warning,
-        TEXT("[ConnectionTier] tier %u -> %u UPWARD, requesting %d-tick prediction stall"),
-        (unsigned int)oldTier, (unsigned int)newTier, stallTicks);
 }
 
 template <typename TraitsT>
@@ -1513,6 +1506,8 @@ auto UESimulationSession<TraitsT>::readSessionKnobs(bool worldIsAuthority) -> Se
 	double  configuredClockDilationTargetOffsetTicks = 0.0;
 	bool    hasIniClockDilationSetpoint = false;
 	FString configuredClockDilationSetpoint;
+	bool    hasIniClockDilationCommonLeadTicks = false;
+	double  configuredClockDilationCommonLeadTicks = 0.0;
 	if (GConfig != nullptr)
 	{
 		hasIniClockDilationGainPerTick =
@@ -1525,6 +1520,11 @@ auto UESimulationSession<TraitsT>::readSessionKnobs(bool worldIsAuthority) -> Se
 			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationTargetOffsetTicks"), configuredClockDilationTargetOffsetTicks,
 				GGameIni) ||
 			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationTargetOffsetTicks"), configuredClockDilationTargetOffsetTicks,
+				GEngineIni);
+		hasIniClockDilationCommonLeadTicks =
+			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationCommonLeadTicks"), configuredClockDilationCommonLeadTicks,
+				GGameIni) ||
+			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationCommonLeadTicks"), configuredClockDilationCommonLeadTicks,
 				GEngineIni);
 		FString iniSetpoint;
 		if (GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockDilationSetpoint"), iniSetpoint, GGameIni) ||
@@ -1546,7 +1546,8 @@ auto UESimulationSession<TraitsT>::readSessionKnobs(bool worldIsAuthority) -> Se
 		hasIniClockDilationGainPerTick, configuredClockDilationGainPerTick,
 		hasIniClockDilationMaxPercent, configuredClockDilationMaxPercent,
 		hasIniClockDilationTargetOffsetTicks, configuredClockDilationTargetOffsetTicks,
-		hasIniClockDilationSetpoint, configuredClockDilationSetpoint };
+		hasIniClockDilationSetpoint, configuredClockDilationSetpoint,
+		hasIniClockDilationCommonLeadTicks, configuredClockDilationCommonLeadTicks };
 }
 
 template <typename TraitsT>
@@ -1787,6 +1788,9 @@ void UESimulationSession<TraitsT>::applyClockDilation(const SessionKnobs& knobs)
 	const bool offsetFromIni = applyClockDilationDoor(TEXT("ClockDilationTargetOffsetTicks"),
 		knobs.hasIniClockDilationTargetOffsetTicks, knobs.configuredClockDilationTargetOffsetTicks,
 		&clockDilationDoors::clampTargetOffsetTicks, config.targetOffsetTicks);
+	const bool commonLeadFromIni = applyClockDilationDoor(TEXT("ClockDilationCommonLeadTicks"),
+		knobs.hasIniClockDilationCommonLeadTicks, knobs.configuredClockDilationCommonLeadTicks,
+		&clockDilationDoors::clampCommonLeadTicks, config.commonLeadTicks);
 	bool setpointFromIni = false;
 	if (knobs.hasIniClockDilationSetpoint)
 	{
@@ -1795,12 +1799,17 @@ void UESimulationSession<TraitsT>::applyClockDilation(const SessionKnobs& knobs)
 			config.setpoint = ClockDilationSetpoint::OwnRtt;
 			setpointFromIni = true;
 		}
+		else if (knobs.configuredClockDilationSetpoint.Equals(TEXT("Common"), ESearchCase::IgnoreCase))
+		{
+			config.setpoint = ClockDilationSetpoint::Common;
+			setpointFromIni = true;
+		}
 		else
 		{
 			UE_LOG(LogOGNet, Warning,
-				TEXT("[Dilation.Config] ini [OGNetcode] ClockDilationSetpoint='%s' is not accepted by this build (expected OwnRtt), ")
-				TEXT("running OwnRtt"),
-				*knobs.configuredClockDilationSetpoint);
+				TEXT("[Dilation.Config] ini [OGNetcode] ClockDilationSetpoint='%s' unrecognised (expected OwnRtt or Common), ")
+				TEXT("running %hs"),
+				*knobs.configuredClockDilationSetpoint, clockDilation::setpointWord(config.setpoint));
 		}
 	}
 
@@ -1812,11 +1821,13 @@ void UESimulationSession<TraitsT>::applyClockDilation(const SessionKnobs& knobs)
 		clockDilation::modeWord(stored.mode), clockDilation::setpointWord(stored.setpoint), stored.gainPerTick,
 		stored.maxDeviation, fromIni ? TEXT("ini") : TEXT("compiled"));
 	UE_LOG(LogOGNet, Warning,
-		TEXT("[Dilation.Config] doors gainPerTick=%.4f (%s) maxPercent=%.3f (%s) targetOffsetTicks=%.3f (%s) setpoint=%hs (%s)"),
+		TEXT("[Dilation.Config] doors gainPerTick=%.4f (%s) maxPercent=%.3f (%s) targetOffsetTicks=%.3f (%s) setpoint=%hs (%s) ")
+		TEXT("commonLeadTicks=%.3f (%s)"),
 		stored.gainPerTick, gainFromIni ? TEXT("ini") : TEXT("compiled"),
 		stored.maxDeviation * 100.0, maxFromIni ? TEXT("ini") : TEXT("compiled"),
 		stored.targetOffsetTicks, offsetFromIni ? TEXT("ini") : TEXT("compiled"),
-		clockDilation::setpointWord(stored.setpoint), setpointFromIni ? TEXT("ini") : TEXT("compiled"));
+		clockDilation::setpointWord(stored.setpoint), setpointFromIni ? TEXT("ini") : TEXT("compiled"),
+		stored.commonLeadTicks, commonLeadFromIni ? TEXT("ini") : TEXT("compiled"));
 }
 
 template <typename TraitsT>
@@ -2627,10 +2638,7 @@ void UESimulationSession<TraitsT>::stageDisplayRelay_GameThread()
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::refreshDisplayView_GameThread()
 {
-	const DisplaySnapshot* const newest = m_displayPublisher->acquire_GameThread();
-	if (m_heldDisplaySnapshot != nullptr && m_heldDisplaySnapshot != newest)
-		m_displayPublisher->release_GameThread(m_heldDisplaySnapshot);
-	m_heldDisplaySnapshot = newest;
+	m_heldDisplaySnapshot = m_displayPublisher->refreshView_GameThread(m_heldDisplaySnapshot);
 	if (m_heldDisplaySnapshot == nullptr)
 		return;
 
