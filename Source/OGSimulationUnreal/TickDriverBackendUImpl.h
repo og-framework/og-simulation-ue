@@ -172,7 +172,7 @@ void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::buildW
 
 	typename WorldHost::Config config;
 	config.isAuthority      = worldIsAuthority;
-	config.runInline        = UETickDriverHost::runInline();
+	config.runInline        = false;
 	// ⛔G-06  docs/TickDriverBackendUImpl-guards.md
 	config.gravity          = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(m_owner));
 	config.contactCounts    = EngineBindingT::contactCountsEnabled();
@@ -183,8 +183,8 @@ void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::buildW
 		static_assert(requires { config.freeRunning = true; },
 			"TickDriverBackendUImpl::buildWorld: the authority loop needs a world host that builds FreeRunning on the runner "
 			"(JoltTickWorldHostConfig::freeRunning). Was P11 design section 9's UE half");
-		checkf(worldIsAuthority && !config.runInline,
-			TEXT("TickDriverBackendUImpl::buildWorld: only a dedicated server's authority runs the authority loop, and not inline"));
+		checkf(worldIsAuthority,
+			TEXT("TickDriverBackendUImpl::buildWorld: only a dedicated server's authority runs the authority loop"));
 		config.freeRunning = true;
 		m_runnerWorldConfig = config;
 		m_runnerStatics.emplace(statics);
@@ -413,14 +413,10 @@ void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::startD
 		"two rows until og-tickdriver task 10, when the driver's world host moved out of this class.");
 
 	checkf(world.PersistentLevel != nullptr, TEXT("startDriverStepping: the world has no persistent level."));
-	checkf(worldIsAuthority || m_owner.m_simNetLanes != nullptr,
-		TEXT("startDriverStepping: a client's tick driver is built after the session bound its og-sim-net lanes, which decide ")
-		TEXT("whether it is an immediate client; an immediate client's end of physics waits for the step its frame dispatched ")
-		TEXT("(FrameWait::ThisFramesSingleStep). Was og-input-latency task P5-35 (H7 one frame late)"));
 
 	typename TickBackend::Driver& tickDriver = m_tickBackend.start(static_cast<double>(dt), worldIsAuthority,
 		UETickDriverHost::requestedMaxCatchUpSteps(), /*idleSlackSeconds=*/0.0,
-		m_owner.m_immediateClient ? FrameWait::ThisFramesSingleStep : FrameWait::EarlierFrames);
+		worldIsAuthority ? FrameWait::EarlierFrames : FrameWait::ThisFramesSingleStep);
 
 	m_frameHost.begin(m_owner.owner(), *world.PersistentLevel, tickDriver);
 }

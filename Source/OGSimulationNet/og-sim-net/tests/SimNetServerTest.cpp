@@ -472,16 +472,15 @@ TEST_CASE("SimNetServer.DecisionsEqualTheCoordinatorFedDirectlyWithTheSameArgume
 			f.push(kConnA, truncated);
 		}
 
-		f.server->dispatchFrame();
+		f.endpoint.calls.clear();
+		f.server->drain();
 		f.server->releaseForStep(t, 1);
 		ref.release(t, 1);
 
-		f.endpoint.calls.clear();
-		f.server->flushFrame();
 		const std::uint8_t resend = static_cast<std::uint8_t>(latencyKnobs::clampRelayResendEntries(f.config.relayResendEntries));
 		CHECK(f.endpoint.on(ognet::Lane::SimRelay) == ref.flushRelays(resend, owners));
 
-		f.server->afterBatch(t + 1);
+		f.server->afterInlineBatch(t + 1);
 		ref.coordinator.reapConnections(t + 1);
 
 		const std::int32_t tierA = f.server->coordinator().lookupTierIndex(f.server->handleFor(kConnA));
@@ -524,7 +523,7 @@ TEST_CASE("SimNetServer.ABundleForACharacterOfAnotherConnectionIsRefusedAndCount
 	f.host.tick = 100;
 
 	f.push(kConnB, inputSet({{kSimA0, {{100u, 1}, {99u, 2}}}, {kSimUnknown, {{100u, 3}}}}));
-	f.server->dispatchFrame();
+	f.server->drain();
 	f.server->releaseForStep(100, 8);
 
 	CHECK(f.server->stats().refusedNotOwner == 1u);
@@ -537,7 +536,7 @@ TEST_CASE("SimNetServer.ABundleForACharacterOfAnotherConnectionIsRefusedAndCount
 	CHECK(f.linesWith("[Roster.InputRefused]") == std::vector<std::string>{"[Roster.InputRefused] conn=6 simId=3 reason=NotOwner"});
 
 	f.push(kConnA, inputSet({{kSimA0, {{110u, 4}}}}));
-	f.server->dispatchFrame();
+	f.server->drain();
 	CHECK(f.server->coordinator().claimCount() == 1u);
 	CHECK(f.linesWith("[Park]").size() == 1u);
 }
@@ -551,7 +550,7 @@ TEST_CASE("SimNetServer.EachServerReceiveLineEndsWithItsRecordsReceiveTime", "[N
 
 	f.push(kConnA, inputSet({{kSimA0, {{100u, 1}, {99u, 2}}}}), 16777300.25);
 	f.push(kConnA, inputSet({{kSimA0, {{101u, 3}}}}), 16777300.5);
-	f.server->dispatchFrame();
+	f.server->drain();
 
 	std::vector<std::string> lines = f.linesWith("[ServerReceive]");
 	std::sort(lines.begin(), lines.end());
@@ -579,8 +578,8 @@ TEST_CASE("SimNetServer.TheTierGoesOncePerConnectionChangeAndTheFirstValueGoesEv
 		f.host.tick = 100 + frame;
 		f.push(kConnA, inputSet({{kSimA0, {{u, 1}}}, {kSimB1, {{u, 2}}}}));
 		f.push(kConnB, inputSet({{kSimOther, {{u, 3}}}}));
-		f.server->dispatchFrame();
-		f.server->flushFrame();
+		f.server->drain();
+		f.server->afterInlineBatch(f.host.tick);
 	}
 
 	std::vector<RecordingEndpoint::Call> tiers;
@@ -607,7 +606,7 @@ TEST_CASE("SimNetServer.TheTierGoesOncePerConnectionChangeAndTheFirstValueGoesEv
 
 	f.server->publishTier(kConnB, 0u);
 	f.server->publishTier(kConnA, 2u);
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	CHECK(f.server->stats().tiersSent == 4u);
 	f.server->publishTier(kConnA, 1u);
 	f.server->publishTier(kConnA, 0u);
@@ -617,7 +616,7 @@ TEST_CASE("SimNetServer.TheTierGoesOncePerConnectionChangeAndTheFirstValueGoesEv
 	CHECK(f.server->stats().tiersSent == 7u);
 	f.disconnect(kConnA);
 	f.connect(kConnA);
-	f.server->dispatchFrame();
+	f.server->drain();
 	f.server->publishTier(kConnA, 0u);
 	CHECK(f.server->stats().tiersSent == 8u);   // a reconnect starts from "never sent": its first tier 0 goes
 	f.server->publishTier(kConnA, 0u);
@@ -630,16 +629,16 @@ TEST_CASE("SimNetServer.TheFloorGoesToAttachedConnectionsOnEveryChangeIncludingA
 {
 	Fixture f;
 	f.connect(kConnA);
-	f.server->dispatchFrame();
+	f.server->drain();
 	f.server->publishFloor(0u);
 	f.server->publishFloor(0u);
 	CHECK(f.server->stats().floorsSent == 1u);
 	f.server->publishFloor(4u);
 	CHECK(f.server->stats().floorsSent == 2u);
 	f.connect(kConnB);
-	f.server->dispatchFrame();
+	f.server->drain();
 	CHECK(f.server->stats().floorsSent == 3u);
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 
 	std::vector<std::pair<SimConnectionId, std::uint8_t>> floors;
 	std::vector<std::byte> storage;
@@ -662,20 +661,20 @@ TEST_CASE("SimNetServer.TheReapDropsADisconnectedConnectionsClaimsAtTheNextDwell
 	f.host.tick = 100;
 	f.push(kConnA, inputSet({{kSimA0, {{120u, 1}}}}));
 	f.push(kConnB, inputSet({{kSimOther, {{120u, 2}}}}));
-	f.server->dispatchFrame();
-	f.server->afterBatch(100);
+	f.server->drain();
+	f.server->afterInlineBatch(100);
 	REQUIRE(f.server->coordinator().claimCount() == 2u);
 
 	f.disconnect(kConnB);
-	f.server->dispatchFrame();
+	f.server->drain();
 	CHECK(!f.server->handleFor(kConnB).isAlive());
 	CHECK(f.server->attachedConnections().size() == 1u);
 
-	f.server->afterBatch(101);
-	f.server->afterBatch(102);
-	f.server->afterBatch(103);
+	f.server->afterInlineBatch(101);
+	f.server->afterInlineBatch(102);
+	f.server->afterInlineBatch(103);
 	CHECK(f.server->coordinator().claimCount() == 2u);
-	f.server->afterBatch(104);
+	f.server->afterInlineBatch(104);
 	CHECK(f.server->coordinator().claimCount() == 1u);
 	CHECK(f.server->coordinator().hasClaim(ConnectionSlotKey<ogsimnet::SimNetConnectionHandle>(f.server->handleFor(kConnA), 0u)));
 }
@@ -685,11 +684,11 @@ TEST_CASE("SimNetServer.RemovingACharacterReportsItsStagerSendsTheRemoveAndForge
 	Fixture f;
 	f.connect(kConnA);
 	f.connect(kConnB);
-	f.server->dispatchFrame();
+	f.server->drain();
 	f.addRecorded<SimA>(kSimA0, 0u, kConnA, 0u);
 	f.host.tick = 100;
 	f.push(kConnA, inputSet({{kSimA0, {{110u, 1}}}}));
-	f.server->dispatchFrame();
+	f.server->drain();
 	REQUIRE(f.server->coordinator().claimCount() == 1u);
 
 	f.server->removeCharacter(kSimA0, RosterRemoveReason::Left);
@@ -699,7 +698,7 @@ TEST_CASE("SimNetServer.RemovingACharacterReportsItsStagerSendsTheRemoveAndForge
 	CHECK(f.server->stager(kSimA0) == nullptr);
 	CHECK(f.server->roster().liveCount() == 0u);
 
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	std::vector<std::byte> storage;
 	std::vector<std::pair<SimConnectionId, RosterKind>> roster;
 	for (const RecordingEndpoint::Call& call : f.endpoint.on(ognet::Lane::Control))
@@ -721,11 +720,12 @@ TEST_CASE("SimNetServer.AnAddWithALiveSimIdOrALiveSlotIsRefusedAndChangesNothing
 {
 	constexpr SimConnectionId kConnC = 8u;
 	Fixture f;
+	f.host.tick = 100;
 	f.connect(kConnA);
 	f.connect(kConnB);
-	f.server->dispatchFrame();
+	f.server->drain();
 	f.addRecorded<SimA>(kSimA0, 0u, kConnA, 0u);
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	FakeServer::Channel<SimA>* const first = f.server->channel<SimA>(kSimA0);
 	REQUIRE(first != nullptr);
 	const RelayRingStager* const firstStager = f.server->stager(kSimA0);
@@ -752,12 +752,12 @@ TEST_CASE("SimNetServer.AnAddWithALiveSimIdOrALiveSlotIsRefusedAndChangesNothing
 	CHECK(f.server->roster().revision() == revisionBefore);
 	CHECK(f.server->roster().liveCount() == 1u);
 	CHECK(f.server->roster().ownerOf(kSimA0) == std::optional<SimConnectionId>(kConnA));
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	CHECK(f.endpoint.calls.size() == callsBefore);
 
 	f.connect(kConnC);
-	f.server->dispatchFrame();
-	f.server->flushFrame();
+	f.server->drain();
+	f.server->afterInlineBatch(f.host.tick);
 	std::array<std::byte, kMaxSimMessageBytes> expected{};
 	const size_t expectedSize = simEnvelope::writeRoster(expected, snapshotBefore.view());
 	const std::vector<RecordingEndpoint::Call> controlCalls = f.endpoint.on(ognet::Lane::Control);
@@ -765,10 +765,9 @@ TEST_CASE("SimNetServer.AnAddWithALiveSimIdOrALiveSlotIsRefusedAndChangesNothing
 	CHECK(controlCalls.back().id == kConnC);
 	CHECK(controlCalls.back().bytes == toU8(std::span<const std::byte>(expected.data(), expectedSize)));
 
-	f.host.tick = 100;
 	f.push(kConnA, inputSet({{kSimA0, {{110u, 1}}}}));
 	f.push(kConnB, inputSet({{kSimA0, {{111u, 2}}}}));
-	f.server->dispatchFrame();
+	f.server->drain();
 	CHECK(f.server->coordinator().claimCount() == 1u);
 	CHECK(f.server->stats().refusedNotOwner == 1u);
 
@@ -786,9 +785,9 @@ TEST_CASE("SimNetServer.AnAddTheRosterRefusesAsFullOrDuplicateOwnerSlotReturnsNu
 	Fixture f;
 	f.connect(kConnA);
 	f.connect(kConnB);
-	f.server->dispatchFrame();
+	f.server->drain();
 	f.addRecorded<SimA>(1u, 0u, kConnA, 0u);
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	const std::uint16_t revisionBefore = f.server->roster().revision();
 	std::size_t callsBefore = f.endpoint.calls.size();
 
@@ -798,13 +797,13 @@ TEST_CASE("SimNetServer.AnAddTheRosterRefusesAsFullOrDuplicateOwnerSlotReturnsNu
 	CHECK(f.server->stager(2u) == nullptr);
 	CHECK(f.server->roster().revision() == revisionBefore);
 	CHECK(f.server->roster().liveCount() == 1u);
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	CHECK(f.endpoint.calls.size() == callsBefore);
 
 	for (std::uint8_t simId = 10u; simId <= 16u; ++simId)
 		f.addRecorded<SimA>(simId, static_cast<std::uint8_t>(simId - 9u), kInvalidSimConnection, kRosterNotLocal);
 	REQUIRE(f.server->roster().liveCount() == 8u);
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	const RosterMessage snapshotBefore = f.server->roster().snapshotFor(kConnC);
 	const std::uint16_t revisionFull = f.server->roster().revision();
 	callsBefore = f.endpoint.calls.size();
@@ -818,12 +817,12 @@ TEST_CASE("SimNetServer.AnAddTheRosterRefusesAsFullOrDuplicateOwnerSlotReturnsNu
 	CHECK(f.server->stager(20u) == nullptr);
 	CHECK(f.server->roster().revision() == revisionFull);
 	CHECK(f.server->roster().liveCount() == 8u);
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	CHECK(f.endpoint.calls.size() == callsBefore);
 
 	f.connect(kConnC);
-	f.server->dispatchFrame();
-	f.server->flushFrame();
+	f.server->drain();
+	f.server->afterInlineBatch(f.host.tick);
 	std::array<std::byte, kMaxSimMessageBytes> expected{};
 	const size_t expectedSize = simEnvelope::writeRoster(expected, snapshotBefore.view());
 	const std::vector<RecordingEndpoint::Call> controlCalls = f.endpoint.on(ognet::Lane::Control);
@@ -849,11 +848,13 @@ TEST_CASE("SimNetServer.ItsChannelIsTheSessionChannelTypeAndAnEmptyBundleIsCount
 	Fixture f;
 	f.addRecorded<SimA>(kSimA0, 0u, kConnA, 0u);
 	PendingInputQueue<SrvInput> queue;
+	f.transport->beginInputSends();
 	f.server->channel<SimA>(kSimA0)->sendLocalInputToAuthority(queue, 10u, 3u);
 	CHECK(f.server->stats().emptyBundles == 1u);
 	queue.enqueue(10u, SrvInput{4, 4u});
 	f.server->channel<SimA>(kSimA0)->sendLocalInputToAuthority(queue, 10u, 3u);
 	CHECK(f.server->stats().emptyBundles == 1u);
+	f.transport->endInputSends();
 }
 
 TEST_CASE("SimNetServer.AHostWithNoteDeliveredSeesOneCallPerMessageRecordAndNoneForEvents", "[NetTransport][SimNetServer]")
@@ -867,7 +868,7 @@ TEST_CASE("SimNetServer.AHostWithNoteDeliveredSeesOneCallPerMessageRecordAndNone
 	SimNetServer<MockGame, DeliveryHost, FakeTransport> server(host, *transport, config, size_t{4096});
 	transport->inbox().pushEvent(InboundKind::Connected, kConnA, ogsimnet::kNoReceiveSeconds);
 	transport->inbox().pushEvent(InboundKind::Connected, kConnB, ogsimnet::kNoReceiveSeconds);
-	server.dispatchFrame();
+	server.drain();
 	CHECK(host.deliveries.empty());
 	REQUIRE(server.addCharacter<SimA>(kSimA0, 0u, kConnA, 0u, "a") != nullptr);
 
@@ -879,7 +880,7 @@ TEST_CASE("SimNetServer.AHostWithNoteDeliveredSeesOneCallPerMessageRecordAndNone
 	REQUIRE(transport->inbox().pushMessage(kConnA, SimLane::SimInput, 1.75, bad));
 	REQUIRE(transport->inbox().pushMessage(kConnA, SimLane::Control, 2.0, inputSet({{kSimA0, {{103u, 3}}}})));
 	transport->inbox().pushEvent(InboundKind::Disconnected, kConnB, ogsimnet::kNoReceiveSeconds);
-	server.dispatchFrame();
+	server.drain();
 
 	CHECK(host.deliveries
 		== std::vector<std::pair<SimLane, double>>{{SimLane::SimInput, 1.25}, {SimLane::SimInput, 1.5}, {SimLane::SimInput, 1.75},
@@ -897,21 +898,21 @@ TEST_CASE("SimNetServer.TheWindowLineReportsEveryTenSecondsOfHostTime", "[NetTra
 	f.connect(kConnB);
 	f.addRecorded<SimA>(kSimA0, 0u, kConnA, 0u);
 	f.host.now = 50.0;
-	f.server->dispatchFrame();
-	f.server->flushFrame();
+	f.server->drain();
+	f.server->afterInlineBatch(f.host.tick);
 
 	f.push(kConnB, inputSet({{kSimA0, {{100u, 1}}}}));
 	f.push(kConnB, inputSet({{kSimUnknown, {{100u, 1}}}}));
 	std::vector<std::byte> bad = inputSet({{kSimA0, {{100u, 1}}}});
 	bad[0] = std::byte{0x7E};
 	f.push(kConnA, bad);
-	f.server->dispatchFrame();
+	f.server->drain();
 	f.host.now = 59.9;
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	CHECK(f.linesWith("[SimNet.Window]").empty());
 
 	f.host.now = 60.0;
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	REQUIRE(f.linesWith("[SimNet.Window]").size() == 1u);
 	CHECK(f.linesWith("[SimNet.Window]")[0]
 		== "[Warning][SimNet.Window] role=server drains=2 msgs=3 maxDepth=3 drops=0 tooLarge=0 badDecode=1 refusedNotOwner=1 "
@@ -919,7 +920,7 @@ TEST_CASE("SimNetServer.TheWindowLineReportsEveryTenSecondsOfHostTime", "[NetTra
 		   "eventsRefused=0 eventHighWater=2");
 
 	f.host.now = 70.0;
-	f.server->flushFrame();
+	f.server->afterInlineBatch(f.host.tick);
 	REQUIRE(f.linesWith("[SimNet.Window]").size() == 2u);
 	CHECK(f.linesWith("[SimNet.Window]")[1]
 		== "[Warning][SimNet.Window] role=server drains=0 msgs=0 maxDepth=0 drops=0 tooLarge=0 badDecode=0 refusedNotOwner=0 "
@@ -939,16 +940,16 @@ TEST_CASE("SimNetServer.AnOverBudgetFrameIsCountedAndStillSentInFull", "[NetTran
 	transport->inbox().pushEvent(InboundKind::Connected, kConnA, ogsimnet::kNoReceiveSeconds);
 	server.addCharacter<SimA>(kSimA0, 0u, kConnA, 0u, "a");
 	server.addCharacter<SimB>(kSimB1, 1u, kConnA, 1u, "b");
-	server.dispatchFrame();
+	server.drain();
 
 	server.channel<SimA>(kSimA0)->getSyncedCorrectionStateBuffer().write(stateWithX(1), 10u, 9u);
-	server.flushFrame();
+	server.afterInlineBatch(host.tick);
 	CHECK(server.stats().statesSent == 1u);
 	CHECK(server.stats().overBudget == 0u);
 
 	server.channel<SimA>(kSimA0)->getSyncedCorrectionStateBuffer().write(stateWithX(2), 11u, 10u);
 	server.channel<SimB>(kSimB1)->getSyncedCorrectionStateBuffer().write(stateWithX(3), 11u, 10u);
-	server.flushFrame();
+	server.afterInlineBatch(host.tick);
 	CHECK(server.stats().statesSent == 3u);
 	CHECK(server.stats().overBudget == 1u);
 }
@@ -978,19 +979,19 @@ TEST_CASE("SimNetServer.CandidatesCarryEachReceiversAgeAndOnlyAttachedConnection
 	std::vector<std::pair<SimConnectionId, std::vector<CorrectionCandidate>>> seen;
 	SimNetServer<MockGame, FakeHost, FakeTransport, RecordingPolicy> server(host, *transport, config, size_t{4096}, RecordingPolicy{&seen});
 	transport->inbox().pushEvent(InboundKind::Connected, kConnA, kNoReceiveSeconds);
-	server.dispatchFrame();
+	server.drain();
 	server.addCharacter<SimA>(kSimA0, 0u, kConnA, 0u, "a");
 
 	server.channel<SimA>(kSimA0)->getSyncedCorrectionStateBuffer().write(stateWithX(1), 10u, 9u);
-	server.flushFrame();
+	server.afterInlineBatch(host.tick);
 	transport->inbox().pushEvent(InboundKind::Connected, kConnB, kNoReceiveSeconds);
-	server.dispatchFrame();
+	server.drain();
 	server.channel<SimA>(kSimA0)->getSyncedCorrectionStateBuffer().write(stateWithX(2), 14u, 13u);
-	server.flushFrame();
+	server.afterInlineBatch(host.tick);
 	transport->inbox().pushEvent(InboundKind::Disconnected, kConnA, kNoReceiveSeconds);
-	server.dispatchFrame();
+	server.drain();
 	server.channel<SimA>(kSimA0)->getSyncedCorrectionStateBuffer().write(stateWithX(3), 15u, 14u);
-	server.flushFrame();
+	server.afterInlineBatch(host.tick);
 
 	REQUIRE(seen.size() == 4u);
 	CHECK(seen[0].first == kConnA);
@@ -1141,12 +1142,11 @@ struct Network
 		++step;
 		network.setNow(kStartSeconds + static_cast<double>(step) * kStepSeconds);
 		serverPeer->endpoint.serviceUntil(network.nowSeconds());
-		server->dispatchFrame();
-		server->flushFrame();
+		server->drain();
+		server->afterInlineBatch(host.tick);
 		for (auto& client : clients)
 		{
 			client->endpoint.serviceUntil(network.nowSeconds());
-			client->transport->flushFrame();
 			client->collect();
 		}
 	}
@@ -1226,6 +1226,7 @@ TEST_CASE("SimNetServer.AFramesRelayGoesToEveryConnectionButTheOwner", "[NetTran
 	net.host.tick = 100;
 	const InputBundleBuffer bundle = bundleOf({{101u, 42}});
 	auto adapter = net.clients[0]->transport->channelTransport(kSimA0);
+	net.clients[0]->transport->beginInputSends();
 	adapter.sendInputBundle(bundle.payload());
 	adapter.endInputSends();
 	REQUIRE(net.stepUntil([&] { return net.server->coordinator().claimCount() == 1u; }));
@@ -1347,10 +1348,10 @@ void flushOneCorrectionWith()
 	transport->installHandlers(endpoint);
 	ogsimnet::SimNetServer<MockGame, FakeHost, FakeTransport, PolicyT> server(host, *transport, config, size_t{4096});
 	transport->inbox().pushEvent(InboundKind::Connected, kConnA, ogsimnet::kNoReceiveSeconds);
-	server.dispatchFrame();
+	server.drain();
 	server.template addCharacter<SimA>(kSimA0, 0u, kConnA, 0u, "a");
 	server.template channel<SimA>(kSimA0)->getSyncedCorrectionStateBuffer().write(stateWithX(1), 1u, 0u);
-	server.flushFrame();
+	server.afterInlineBatch(host.tick);
 }
 } // namespace
 

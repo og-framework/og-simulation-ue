@@ -322,13 +322,12 @@ TEST_CASE("SimNetTransport.EverySimLaneDeliversInEachDirectionOgNetAllowsIntoThe
 	server.transport->broadcastClock(clock);
 	server.transport->relay(kInvalidSimConnection, relay);
 	server.transport->sendState(clientOnServer, state);
-	server.transport->flushFrame();
 
 	client.endpoint.send(serverOnClient, ognet::Lane::Control, control);
 	client.endpoint.send(serverOnClient, ognet::Lane::SimClock, clock);
+	client.transport->beginInputSends();
 	client.transport->channelTransport(3).sendInputBundle(input);
 	client.transport->endInputSends();
-	client.transport->flushFrame();
 
 	REQUIRE(session.stepUntil([&] {
 		const double passSeconds = session.network.nowSeconds();
@@ -378,7 +377,6 @@ TEST_CASE("SimNetTransport.EverySimLaneDeliversInEachDirectionOgNetAllowsIntoThe
 
 	const std::vector<std::byte> oversize = patternBytes(kMaxSimMessageBytes + 1u, 0x70);
 	server.transport->sendControl(clientOnServer, oversize);
-	server.transport->flushFrame();
 	REQUIRE(session.stepUntil([&] { return client.transport->inbox().stats().tooLarge == 1u; }));
 	client.collect();
 	CHECK(messagesOn(client.records, SimLane::Control).size() == 1u);
@@ -427,7 +425,6 @@ TEST_CASE("SimNetTransport.RelaySkipsExactlyTheOwner", "[NetTransport][SimNetTra
 
 	const std::vector<std::byte> ring = patternBytes(40, 0x11);
 	session.server->transport->relay(owner, ring);
-	session.server->transport->flushFrame();
 	for (int i = 0; i < 4; ++i)
 	{
 		session.servicePass();
@@ -448,9 +445,9 @@ TEST_CASE("SimNetTransport.RelaySkipsExactlyTheOwner", "[NetTransport][SimNetTra
 	}
 }
 
-TEST_CASE("SimNetTransport.HeldSendsLeaveOnlyAtFlushFrameInCallOrder", "[NetTransport][SimNetTransport]")
+TEST_CASE("SimNetTransport.EverySendReachesTheEndpointAtOnceInCallOrder", "[NetTransport][SimNetTransport]")
 {
-	SECTION("the calls reach the endpoint at flushFrame, in the order they were made")
+	SECTION("the calls reach the endpoint as they are made, in the order they were made")
 	{
 		RecordingEndpoint endpoint;
 		auto transport = std::make_unique<FakeTransport>();
@@ -472,12 +469,11 @@ TEST_CASE("SimNetTransport.HeldSendsLeaveOnlyAtFlushFrameInCallOrder", "[NetTran
 			transport->broadcastClock(a);
 			expected.push_back({true, ognet::kInvalidConnection, ognet::Lane::SimClock, toU8(a)});
 		}
+		transport->beginInputSends();
 		transport->channelTransport(2).sendInputBundle(testBundle(1, 0x22));
 		transport->endInputSends();
-		CHECK(endpoint.calls.empty());
-		CHECK(transport->stats().heldSends == expected.size() + 1u);
+		CHECK(transport->stats().directSends == expected.size() + 1u);
 
-		transport->flushFrame();
 		REQUIRE(endpoint.calls.size() == expected.size() + 1u);
 		for (size_t i = 0; i < expected.size(); ++i)
 		{
@@ -485,12 +481,9 @@ TEST_CASE("SimNetTransport.HeldSendsLeaveOnlyAtFlushFrameInCallOrder", "[NetTran
 		}
 		CHECK(endpoint.calls.back().id == 9u);
 		CHECK(endpoint.calls.back().lane == ognet::Lane::SimInput);
-		CHECK(transport->heldBytes() == 0u);
-		transport->flushFrame();
-		CHECK(endpoint.calls.size() == expected.size() + 1u);
 	}
 
-	SECTION("over og-net, nothing reaches the peer before flushFrame, and one lane's messages arrive in call order")
+	SECTION("over og-net, one lane's messages arrive in call order")
 	{
 		Session session(1);
 		REQUIRE(session.connectServerSide());
@@ -504,14 +497,6 @@ TEST_CASE("SimNetTransport.HeldSendsLeaveOnlyAtFlushFrameInCallOrder", "[NetTran
 			session.server->transport->sendState(conn, state);
 			sent.push_back(toU8(state));
 		}
-		for (int i = 0; i < 20; ++i)
-		{
-			session.servicePass();
-		}
-		client.collect();
-		CHECK(messagesOn(client.records, SimLane::SimState).empty());
-
-		session.server->transport->flushFrame();
 		REQUIRE(session.stepUntil([&] {
 			client.collect();
 			return messagesOn(client.records, SimLane::SimState).size() == sent.size();
@@ -522,28 +507,6 @@ TEST_CASE("SimNetTransport.HeldSendsLeaveOnlyAtFlushFrameInCallOrder", "[NetTran
 			CHECK(received[i].bytes == sent[i]);
 		}
 	}
-
-	SECTION("an overflowing send first releases the hold, so the order still equals the call order")
-	{
-		RecordingEndpoint endpoint;
-		auto transport = std::make_unique<FakeTransport>();
-		transport->installHandlers(endpoint);
-		std::vector<std::vector<uint8_t>> sent;
-		for (uint8_t i = 0; i < 100; ++i)
-		{
-			const std::vector<std::byte> state = patternBytes(1000u, i);
-			transport->sendState(4u, state);
-			sent.push_back(toU8(state));
-		}
-		CHECK(transport->stats().holdOverflows == 1u);
-		CHECK(endpoint.calls.size() == 65u);
-		transport->flushFrame();
-		REQUIRE(endpoint.calls.size() == sent.size());
-		for (size_t i = 0; i < sent.size(); ++i)
-		{
-			CHECK(endpoint.calls[i].bytes == sent[i]);
-		}
-	}
 }
 
 TEST_CASE("SimNetTransport.ImmediateSendsReachThePeerInTheSameServicePass", "[NetTransport][SimNetTransport]")
@@ -551,18 +514,18 @@ TEST_CASE("SimNetTransport.ImmediateSendsReachThePeerInTheSameServicePass", "[Ne
 	SECTION("the endpoint sees the call at once")
 	{
 		RecordingEndpoint endpoint;
-		auto transport = std::make_unique<FakeTransport>(ogsimnet::SimNetConfig{true});
+		auto transport = std::make_unique<FakeTransport>();
 		transport->installHandlers(endpoint);
 		const std::vector<std::byte> state = patternBytes(12, 3);
 		transport->sendState(4u, state);
 		REQUIRE(endpoint.calls.size() == 1u);
 		CHECK(endpoint.calls[0] == RecordingEndpoint::Call{false, 4u, ognet::Lane::SimState, toU8(state)});
-		CHECK(transport->stats().heldSends == 0u);
+		CHECK(transport->stats().directSends == 1u);
 	}
 
 	SECTION("over og-net, one service pass of each peer delivers it")
 	{
-		Session session(1, ogsimnet::SimNetConfig{true});
+		Session session(1);
 		REQUIRE(session.connectServerSide());
 		session.clearRecords();
 		Peer& client = *session.clientsList[0];
@@ -627,13 +590,13 @@ TEST_CASE("SimNetTransport.OneBundleSetCarriesFourLocalPlayersBundlesAsOneMessag
 	Peer& client = *session.clientsList[0];
 
 	std::vector<std::vector<std::byte>> bundles;
+	client.transport->beginInputSends();
 	for (uint8_t simId = 1; simId <= 4; ++simId)
 	{
 		bundles.push_back(testBundle(static_cast<uint8_t>(simId % 3u + 1u), static_cast<uint8_t>(simId * 16u)));
 		client.transport->channelTransport(simId).sendInputBundle(bundles.back());
 	}
 	client.transport->channelTransport(1).endInputSends();
-	client.transport->flushFrame();
 	REQUIRE(session.stepUntil([&] {
 		session.server->collect();
 		return !messagesOn(session.server->records, SimLane::SimInput).empty();
@@ -682,10 +645,10 @@ TEST_CASE("SimNetTransport.TwoChannelsBundlesInOneSendArriveAsOneSetWithBothSimI
 
 	const std::vector<std::byte> firstBundle = testBundle(2, 0x31);
 	const std::vector<std::byte> secondBundle = testBundle(1, 0x41);
+	transport->beginInputSends();
 	first.sendInputBundle(firstBundle);
 	second.sendInputBundle(secondBundle);
 	transport->endInputSends();
-	transport->flushFrame();
 
 	REQUIRE(endpoint.calls.size() == 1u);
 	CHECK(endpoint.calls[0].id == 9u);
@@ -710,7 +673,7 @@ TEST_CASE("SimNetTransport.TwoChannelsBundlesInOneSendArriveAsOneSetWithBothSimI
 TEST_CASE("SimNetTransport.ASetThatWouldOutgrowOneSimMessageIsSplitAndRefusalsAreCounted", "[NetTransport][SimNetTransport]")
 {
 	RecordingEndpoint endpoint;
-	auto transport = std::make_unique<FakeTransport>(ogsimnet::SimNetConfig{true});
+	auto transport = std::make_unique<FakeTransport>();
 	transport->installHandlers(endpoint);
 
 	transport->beginInputSends();

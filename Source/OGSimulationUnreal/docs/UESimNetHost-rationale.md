@@ -36,7 +36,7 @@ the engine primitives the hosts and the world session read: `LogOGRtt`, the RTT 
 | `rttMs(conn)` | the og-net connection's engine ping, plus the probe's wire sample (§2) | — |
 | `serverRttSeconds` | — | the server connection's engine ping (§5) |
 | `receptionTick` | the session's `getServerReceptionTick` (§3) | — |
-| `stampServerReceived`, `stampHanded` | the latency probe (§4) | — |
+| `stampServerReceived`, `stampHanded` | the latency probe (§4), through the lanes' derived host on the authority runner | — |
 | `stampClientReceived` | — | the latency probe (§4) |
 | `onTimingInfo`, `onRelayFloor`, `onConnectionTier` | — | the world session's consumers (§6) |
 | `onRosterAdded`, `onRosterRemoved` | — | the bindings, and the session's unregister (§7) |
@@ -50,7 +50,7 @@ template body, instantiated where the session is complete. The calls use its pub
 **Bound and unbound.** The client host is made by the lanes at driver start and bound to a world session later
 (`bindSession`), so each member that needs the session forwards to it when bound and drops otherwise. The exceptions act
 unbound too: the roster's bindings (§7), the mismatch report (§8), the log and the delivery note. The server host is made by the
-world session with a pointer to it. A null pointer is allowed, for a test or a detached world: the stamps then drop, and
+world session with a pointer to it. A null pointer is allowed, for a test: the stamps then drop, and
 `receptionTick` `checkf`s, because og-sim-net only asks for it while draining a received input, which a server with no session
 never does.
 
@@ -111,8 +111,9 @@ never does.
   checks no argument against its `%s` here: the engine's format check, `UE_VALIDATE_FORMAT_STRINGS`, is 0 in this module's
   build, because the game's targets set `DefaultBuildSettings` V4 and Unreal Build Tool enables the check from V5. The client
   has the same split (§5), made in og-input-latency task P5-17, rework 2.
-- **Game thread only.** `FindConnection` `checkf`s the game thread, and so does the probe. Ph3's server drains on the game
-  thread. Ph4's authority loop drains on its runner thread and needs another source there.
+- **Game thread only.** `FindConnection` `checkf`s the game thread, and so does the probe. The authority drains on its
+  runner, so the runner reads the round trip from the table the game thread fills through this member each frame
+  (`FRunnerRttTable`, `UESimNetLanes-rationale.md` §12).
 
 ## §3 The reception tick
 
@@ -127,24 +128,27 @@ the sim id (`toStorageKey` is the identity cast; the brawler's concept test asse
 | call | stream | stamps |
 |---|---|---|
 | `stampServerReceived(simId, tick, recv)` | Input | `ServerReceived` at now; `NetReceived` at `recv` |
-| `stampHanded(simId, tick)` | Input | `Handed` at now (each relayed entry) |
+| `stampHanded(simId, tick)` | Input | `Handed` and `LeftProcess` at now (each relayed entry) |
 | `stampClientReceived(Input, simId, tick, recv)` | Input | `ClientReceived` at now; `NetReceived` at `recv` |
-| `stampClientReceived(State, simId, tick, recv)` | State | `stampCorrectionReceived` (`ClientReceived` at now, and the heal stamp); `NetReceived` at `recv` |
+| `stampClientReceived(State, simId, tick, recv)` | State | `ClientReceived` at now, and the heal stamp; `NetReceived` at `recv` |
 
 "Now" is the drain, which is where today's receipt stamps are taken (the replication callback). `recv` is og-net's receive time
-of the datagram, on the same clock (`FPlatformTime::Seconds`), taken on og-net's thread; `stampAt` is the diagnostics' door for
-a stamp at a time the caller measured. The hops that read `NetReceived` are masked off until the switch ORs them in.
+of the datagram, on the same clock (`FPlatformTime::Seconds`), taken on og-net's thread.
 
-**An immediate client's stamps** (og-input-latency task P5-17). Its drain runs on the step's thread, and the diagnostics'
-`stamp`, `stampAt` and `stampCorrectionReceived` are game-thread doors that `checkf` it. So `stampClientReceived` hands an
-immediate host's stamps to `stampClientReceived_Internal`, which posts the same stamps, in the same order and at the same
-times, through the diagnostics' mailbox (`UELatencyBudgetDiagnostics-rationale.md` §13). The host knows its mode from
-construction (`immediate`, from the lanes, which decide it in `beforeStart`).
+**Every stamp goes through the mailbox.** A client's drain runs on the step's thread (og-input-latency task P5-17) and the
+server's on the authority runner (task P5-19), and the diagnostics' probe is the game thread's. So `stampClientReceived` hands
+every stamp to `stampClientReceived_Internal`, and the server's two stamps are the lanes' derived host's
+(`UESimNetLanes-rationale.md` §12): each posts its stamps, in order and at their times, through the diagnostics' mailbox
+(`UELatencyBudgetDiagnostics-rationale.md` §13, §14). The base server host has no stamp members since og-session-runtime task 14,
+so it is not og-sim-net's server host on its own (a `static_assert` in `UESimNetHostsConceptTest.cpp`). Until then its two
+stamped through the diagnostics' game-thread doors for the in-frame server (and a frame-locked client host through them until
+og-session-runtime task 12); task 14 deleted the two stamps and the three doors.
 
 ## §5 The client's round trip
 
-`serverRttSeconds` reads the driver's `ServerConnection` engine ping, `RoundTrip`, in seconds. Its body is the one the timing
-relay's `.cpp` held until og-input-latency task P5-9 deleted the relay, with the same one-shot `[RttSample] CLIENT …` warning text and the
+`serverRttSeconds` returns the driver's `ServerConnection` engine ping, `RoundTrip`, in seconds, as the lanes last published it
+(below); `readServerRoundTrip` reads the connection. That read is the body the timing relay's `.cpp` held until
+og-input-latency task P5-9 deleted the relay, with the same one-shot `[RttSample] CLIENT …` warning text and the
 same causes; "no UWorld" is gone because the host reads its driver directly.
 
 - **The sentinel.** Every failure returns `kNoRttReadingSeconds` (−1), which the network time estimator rejects and counts
@@ -163,16 +167,14 @@ same causes; "no UWorld" is gone because the host reads its driver directly.
   relay returned before its read when no listener existed, so a warm-up "accumulator is empty" read in the join window would
   spend that cause's warning on a reading nobody uses. Unbound, it returns the sentinel without reading or warning.
 - **The causes are an enum** (`EClientRttUnavailable`, og-input-latency task P5-17), and `clientRttUnavailableText` gives each
-  one the warning text the body returned before, word for word. `NotPublished` is new and immediate-only.
-- **An immediate client reads a published copy** (og-input-latency task P5-17). Its drain runs on the step's thread, and the
-  driver's `ServerConnection` and its `FNetPing` are game-thread state. So the lanes call `publishServerRtt_GameThread()` at each
-  `afterDispatch`, which reads the connection as the frame-locked body does and stores the round trip (the sentinel on any
-  failure) and the cause in two lock-free atomics; `serverRttSeconds()` then reads them. The round trip is stored with release
+  one the warning text the body returned before, word for word. `NotPublished` (P5-17) is new: nothing published yet.
+- **The client reads a published copy** (og-input-latency task P5-17). Its drain runs on the step's thread, and the driver's
+  `ServerConnection` and its `FNetPing` are game-thread state. So the lanes call `publishServerRtt_GameThread()` at each
+  `afterDispatch`, which reads the connection (`readServerRoundTrip`) and stores the round trip (the sentinel on any failure) and the cause in two lock-free atomics; `serverRttSeconds()` then reads them. The round trip is stored with release
   and loaded with acquire, the cause relaxed, before and after it: a cause read from one frame beside a round trip from the next
   can only pick the warning's text, and a negative round trip with no cause reads as `NotPublished`. The warning stays once per cause
-  and is issued where the reading is used, on the drain's thread, so it fires when the frame-locked client would: at the first
-  clock delivered with no reading, not at the first frame. The copy is at most one frame old, as the frame-locked read is at
-  most one drain old.
+  and is issued where the reading is used, on the drain's thread, so it fires at the first clock delivered with no reading,
+  not at the first frame. The copy is at most one frame old.
 
 ## §6 The session's consumers
 
@@ -199,7 +201,8 @@ session's two replay members had no caller since, and og-input-latency task P5-9
 
 - `onRosterAdded(simId)` looks the entry up in the roster mirror (`RosterMirror::entryFor`; the mirror reports an Add after it
   applied it) and hands it to `SimNetBindings::onRosterAdded`. It acts unbound: the bindings belong to the lanes, not to a
-  world. In an immediate client both roster calls run inside the step's drain, so the mirror is read on its writer's thread,
+  world. In a client both roster calls run inside the drain, so
+  the mirror is read on its writer's thread,
   and the bindings are reached through their lock (§12).
 - `onRosterRemoved(simId)` tells the bindings first. They return true exactly once if the sim id was registered, and then the
   host calls the world session's unregister handler (`setOnRegisteredRemoved`), at once (`UESimNetHost-guards.md` G-03). A
@@ -229,7 +232,7 @@ og-sim-net's message kind. The rest of the line, its category and its level are 
     other `[Warning]` line does; the tools strip it. Other token-less lines (`[ReceiveCorrectionState]`, `[RelayFlush]`) keep
     their row's level.
 - `noteDelivered(lane, recv)` is the endpoint's `noteDelivered(lane, recv, now)`, which writes the driver's `[OGNet.Window]`
-  sim-lane rows. og-sim-net calls it once per drained message, before decoding it. A detached endpoint ignores it.
+  sim-lane rows. og-sim-net calls it once per drained message, before decoding it.
 
 ## §10 Tests
 
@@ -242,7 +245,8 @@ nothing drove them but the brawler's `UESimNetHostsConceptTest.cpp`, which still
   an `FServerRttWarnings` lets each cause through once, a second cause after the first (og-input-latency task P5-26); four
   routed lines (three `[Warning]` lines and a token-less `[Roster.` line) reach `LogOGNet`, the token-less one with the
   `[Warning]` token `routeLine` adds (it was checked at Log until P5-7), with `LogOGNet` raised to Log for the probe and restored
-  after; a detached server flushes a staged clock to nothing, counted; an `FServerConnectionLookup` (og-input-latency task
+  after; a server's batch hook sends a staged clock once, at once, to an endpoint that counts and drops it, and an unchanged
+  clock is not sent again; an `FServerConnectionLookup` (og-input-latency task
   P5-17, rework 1) with an unstarted driver, so that every lookup misses: a graceful leave (an id it found, then missed) has
   no cause, so a later unknown og-net id still warns through the same `FServerRttWarnings`; the leaver's next bundle in its
   drained close has no cause either; an id found and then dropped by the driver before any miss has none (the sweep); an id
@@ -306,8 +310,8 @@ As it stood:
 > are properties of the WIRE, not of a viewport, so all siblings must resolve to a single table entry. GetRootNetConnection
 > walks UChildConnection::Parent to guarantee that.
 
-*R0:* the one caller is the world session's `addSimNetCharacter`, which casts the root to `UOGNetConnection` and takes its
-og-net id as the roster entry's owner. A child connection is not an og-net connection, so without the walk a second local
+*R0:* the one caller is the world session's `tryRegisterOnRunner` (since og-session-runtime task 14; until then also its
+in-frame twin), which casts the root to `UOGNetConnection` and takes its og-net id as the roster entry's owner. A child connection is not an og-net connection, so without the walk a second local
 player's pawn would have no owner. The "single table entry" is now og-sim-net's: the reception coordinator keys a connection
 by that og-net id and the local index (§11.4).
 
@@ -412,13 +416,13 @@ returned −1000, negative and so skipped downstream by accident, and the check 
 ## §12 The locked bindings (og-input-latency task P5-17)
 
 `FLockedSimNetBindings` is og-sim-net's `SimNetBindings` behind a `std::mutex`, with the same members plus
-`markRegisteredIfReady`, and the lanes hold one per client (`UESimNetLanes-rationale.md` §1). In an immediate client the drain
-writes the bindings on the step's thread (`onRosterAdded`, `onRosterRemoved`) while the world session reads and marks them on the
-game thread (`clientBindStep`'s verdict, `tryRegister`, `physicsSlotFor`, `forgetSimNetCharacter`, the detach). A frame-locked
-client takes the same lock on one thread, uncontended, so nothing changes there but the lock.
+`markRegisteredIfReady`, and the lanes hold one per client (`UESimNetLanes-rationale.md` §1). In a client the drain writes the
+bindings on the step's thread (`onRosterAdded`, `onRosterRemoved`) while the world session reads and marks them on the game
+thread (`clientBindStep`'s verdict, `tryRegister`, `physicsSlotFor`, `forgetSimNetCharacter`, the detach). Until
+og-session-runtime task 12 a frame-locked client took the same lock on one thread, uncontended.
 
 - **`markRegisteredIfReady(simId, engineSaysLocal)`** asks the verdict and, when it is `Ready`, marks the id registered, in one
-  hold. An immediate client's registration decides on the verdict and then queues the register for the step's drain; a verdict
+  hold. A client's registration decides on the verdict and then queues the register for the step's drain; a verdict
   and a separate mark would let a drain between them apply a Remove whose `onRosterRemoved` found the id unregistered (so the
   session never heard of it), after which the mark would `OG_CHECK` on an entry that is gone.
 - **Every call is short** and takes no other lock; nothing calls out while holding it.

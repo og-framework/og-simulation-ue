@@ -39,8 +39,9 @@ tree this document's lint can resolve against.
   ⚠ **Since og-input-latency task P5-7 the switch back also switches the simulation's traffic off** (the user's ruling Q2).
   Inputs, corrections, relay rings, the clock, the tier, the floor and the roster ride og-net's sim lanes, which only this
   driver creates (its `IOGNetSimLanes`, from the factory the game registers); on IpNetDriver a networked world's session logs
-  `[SimNet.Host] refused role=… driver=IpNetDriver: simulation traffic needs the og-net driver`, shows a toast and runs
-  detached (`UESimulationSession-rationale.md` §16.2). The IpNetDriver section stays, for the beacon and config parity. For one run of a
+  `[SimNet.Host] refused role=… driver=IpNetDriver: simulation traffic needs the og-net driver`, shows a toast and starts no
+  session; a dedicated server then exits with code 3 (`UESimulationSession-rationale.md` §23; until og-session-runtime task
+  14 the session ran detached). The IpNetDriver section stays, for the beacon and config parity. For one run of a
   non-Shipping build the engine's three-part override does the same:
   `-NetDriverOverrides="GameNetDriver,/Script/OnlineSubsystemUtils.IpNetDriver,/Script/OnlineSubsystemUtils.IpNetDriver"`.
   The override is compiled out of Shipping (UnrealEngine.cpp, line 14431). A one-part or two-part override keeps the

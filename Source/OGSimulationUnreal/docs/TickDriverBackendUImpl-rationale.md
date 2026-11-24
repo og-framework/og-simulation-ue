@@ -209,17 +209,18 @@ hooks. This section is the
 map; the details are in the sections and documents it points to.
 
 **The shape is Chaos's async mode** (design D1). The same tick groups, the same wait rule (a client's end
-of physics waits only for steps dispatched in earlier frames), the same per-frame cadence for the probes
-and the reap, and the same roles on the same threads: the authority steps inline on the game thread, a
-client on a worker task.
+of physics waits for steps dispatched in earlier frames; since og-input-latency task P5-35 also for its own frame's single
+step, §16) and the same per-frame cadence for a client's probes. A client steps on a worker task; the authority steps
+on its runner (§15). Until og-session-runtime task 14 the authority could also step inline on the game thread, as under
+Chaos; this class keeps that path (`startStepping` with `FrameWait::EarlierFrames`), which no session takes now (§4).
 
 | concern | who | where it is described |
 |---|---|---|
 | the two tick functions at `TG_StartPhysics` and `TG_EndPhysics`, the engine port and the task-graph executor | the frame host, OGSimulationUnreal's `UETickDriverHost` | `UETickDriverHost-rationale.md` |
 | the scheduler, the world-delta time base, the catch-up cap of 60, the batch, the wait rule and the window | og-simulation's tick driver | `SimulationTickDriver-rationale.md` |
-| which thread steps: the authority inline; a client one task per frame chained after the previous frame's, or inline under `og.Sim.RunInline` 1; block mode 0 | the tick driver, by this class's stepping mode | `SimulationTickDriver-rationale.md` §4; §3 |
+| which thread steps: a client one task per frame chained after the previous frame's, block mode 0; the authority its runner (§15) | the tick driver, by this class's stepping mode | `SimulationTickDriver-rationale.md` §4; §3 |
 | one step: the world mutex, then the step driver's `runTick` and the four hooks | the tick driver's per-step body, through the world host's lock; og-simulation's step hooks | §4; `TickDriverStepHooks-rationale.md` |
-| the per-frame input work before the steps (PROBE A, PROBE 6), the reap after the inline steps, the drain per authority step | the tick driver and its hooks, through the game binding, and the session (the owner's per-frame work until og-ue-simulationcomponentandmanagersplit task 26b) | `BrawlerTickDriverGameUImpl-rationale.md`; `UESimulationSession-rationale.md` §9.7, §9.9; `OGBrawlerSimulationManager-rationale.md` §7, §8 |
+| the per-frame input work before the steps (PROBE A), the reap after the authority's batch, the input release per authority step | the tick driver and its hooks, through the game binding, and the session (the owner's per-frame work until og-ue-simulationcomponentandmanagersplit task 26b) | `BrawlerTickDriverGameUImpl-rationale.md`; `UESimulationSession-rationale.md` §9.7, §9.9; `OGBrawlerSimulationManager-rationale.md` §7, §8 |
 | the world, its statics, the character slots, the bind and the release | og-simulation-jolt's world host, with this class's static import, configuration and slot glue | §3; `JoltTickWorldHost-rationale.md` |
 | the render publish, the interpolation, the correction smoothing and the capsule apply | og-simulation's presenter, through the hooks and this class's two game-thread doors; the actor move through OGSimulationUnreal's render sink | §5, §7 and §8; `TickDriverPresenter-rationale.md`; `UERenderTargetTable-rationale.md` |
 | the game-thread shadow world | og-simulation-jolt's world host | §6; `JoltTickWorldHost-rationale.md` §11 |
@@ -238,17 +239,18 @@ client on a worker task.
    (J7), then takes the latency start time; after the step,
    `afterTick` stamps the step end, publishes the render snapshot (J5), hands the saved state slot to the
    shadow world, and publishes the tick offset (J3).
-3. `TG_EndPhysics`, game thread: wait for earlier frames' task (on an immediate client also for this frame's when
-   it holds one step, §16), then the session's `onPostPhysicsStep` (the owner's
+3. `TG_EndPhysics`, game thread: wait for earlier frames' task, and for this frame's when it holds one step (§16),
+   then the session's `onPostPhysicsStep` (the owner's
    `OnPostPhysicsStep` until og-ue-simulationcomponentandmanagersplit task 27a), whose
    first backend call is `beforePresent_GameThread`: restore the
    shadow world from the newest slot, blend the render pose two steps behind the host time, add what
-   remains of each correction, move the capsules there and write it into the shadow world, then the shared body (the sends, the timing-relay
-   write, the visualization copy with the rendered poses, the ring-out score push, the latency probe).
+   remains of each correction, move the capsules there and write it into the shadow world; then the session collects
+   the lifecycle outcomes, acquires the display snapshot and overlays the rendered poses on its visualization copy, and
+   ticks the latency probe. The client's sends run in its step (at capture), not here.
 
-On the authority step 2 runs inside step 1, on the game thread: its `beforeTick` also releases the
-delayed inputs due for that step, and the reap follows the frame's steps. It has no shadow world, and
-`TG_EndPhysics` never has anything to wait for.
+The authority does not step in its tick functions: its runner pumps, steps (each step's `beforeTick` releases the
+delayed inputs due for it) and reaps after each batch (§15), and its `TG_EndPhysics` runs only the post-physics pass. It
+has no shadow world. The session's thread table is `UESimulationSession-rationale.md` §24.
 
 **How the game-thread visualizations see the physics world** (design D17; the user's ruling OQ13 = (e),
 2026-10-08). The block-prediction and target visualizations query a world every frame from the game
@@ -267,8 +269,9 @@ is the long-term answer is decided at the decoupling gate, from the shadow world
 cost on Android and from whether step-rate arcs are noticeable on the target displays.
 
 **Lifecycle** (design §9.1). `BeginPlay` builds the Jolt world, its statics and adapters before the role
-branches, the shadow world on a worker client (`buildWorld`), and at the end starts the stepping (`startStepping`:
-the tick driver with its hooks, step driver and scheduler, then the two tick functions). `EndPlay` first unregisters
+branches, the shadow world on a worker client (`buildWorld`), and at the end starts the stepping: on a client
+`startStepping` (the tick driver with its hooks, step driver and scheduler, then the two tick functions), on the
+authority the runner (`runAuthorityLoop_GameThread`, §15). `EndPlay` first unregisters
 the tick functions and waits for every outstanding step (`onEndPlayBegin`, `⛔G-01`), before any teardown.
 
 **Lines.** `[SimHost.Backend]` (printed by both configurations until og-session-runtime task 3), `[SimHost.Mode]`, `[SimHost.World]`,
@@ -293,7 +296,8 @@ says which is which.
   2. splits the import into the queryable and the PhysicsOnly shapes by the importer's per-shape `physicsOnly`
      flags, with the world host's `splitStatics` (reached through the engine traits' `splitStatics` since
      og-tickdriver task 15e, §12);
-  3. fills the world host's configuration: the role, `og.Sim.RunInline` (read once), the movement gravity (a
+  3. fills the world host's configuration: the role, `runInline` false (`og.Sim.RunInline`, read once, until
+     og-session-runtime task 11 retired it), the movement gravity (a
      scalar from the game binding, placed along `simFrame`'s up by `simFrame::withHeight`, which keeps the other two
      components `+0`; G-06),
      `og.Jolt.ContactCounts` (read once, through the engine binding's `contactCountsEnabled`,
@@ -317,11 +321,12 @@ says which is which.
   import and its two lines now come first and `[SimHost.Mode]` follows them, in the same frame on the same thread.
   The order of the `LogOGSimHost` lines among themselves, every line's text and the world are unchanged.
 * **The stepping mode** is fixed in `build` and printed once as
-  `[SimHost.Mode] role=<Authority|Client> stepping=<inline|worker> viz=<stepWorld|shadowWorld>`. The authority
-  always steps inline on the game thread: its pre-step input release touches UObjects. A client steps on a worker
-  task, or inline when `og.Sim.RunInline` is 1. The decision is the role, never the engine's
-  ShouldUseThreadingForPerformance, which would put a listen or standalone authority on a worker as Chaos does
-  (design D2). The tick driver's threading follows it (§4).
+  `[SimHost.Mode] role=<Authority|Client> stepping=<inline|worker|runner> viz=<stepWorld|shadowWorld|none>`. A client
+  steps on a worker task (`worker`, `shadowWorld`); the authority, which only a dedicated server starts, steps on its
+  runner (`runner`, `none`; §15). The decision is the role, never the engine's ShouldUseThreadingForPerformance (design
+  D2). The world host still builds an inline authority (`inline`, `stepWorld`: the steps on the game thread, which
+  queries the step world between them) when it is not free-running; no session builds one since og-session-runtime
+  task 14, which retired the in-frame server. The tick driver's threading follows it (§4).
 * **The world lock (J2)** is the world host's `UEFMutexLockableUImpl`, a `UE::FMutex` (as this class's
   world mutex was until og-tickdriver task 10; `UEFMutexLockableUImpl-rationale.md`), taken through
   og-simulation's `WorldLockScope`, which also opens a `JoltWorldAccessScope` and sets this role's bit in a
@@ -333,8 +338,8 @@ says which is which.
 * **Access predicates.** `JoltSpatialQueryAdapter` asserts every call through the function pointer it is given:
   og-simulation's `TickDriverThreadContext` predicates, chosen by the role and the stepping mode when `build`
   configures the context (`TickDriverThreadContext-rationale.md` §4). A worker client's adapter accepts "this role's
-  step is running on this thread, or this thread holds this role's J2"; an inline host's also accepts the game
-  thread, because there the game thread runs the steps and queries between them. The "step is running" bit is set
+  step is running on this thread, or this thread holds this role's J2"; an inline host's (which no session builds,
+  above) also accepts the game thread, because there the game thread runs the steps and queries between them. The "step is running" bit is set
   by the tick driver's `StepScope` around each step.
 * **The slot table** (task 66). A character owns one of the world's fixed slots from the first time the manager
   hears of it until it leaves, and it owns the **same** slot on every peer. A slot's bodies have fixed Jolt body ids
@@ -440,15 +445,16 @@ og-simulation-jolt's `JoltTickWorldHost`, held in `m_physicsBackendWorlds` (§1,
     requires: `hasShadowWorld`, `restore_GameThread` (the frame number and the presenter's restore note) and
     `overwriteShadowPoses_GameThread`, the world half of the shadow overwrite (§6, §7).
 * **The thread context** (og-tickdriver BL1). The world host's `build` calls its context's `configure` with the role
-  bit and the stepping mode before anything else, at world build on the game thread, before any adapter is emplaced,
-  so the og-simulation owner mark is set on the game thread from then on: it is what the driver's owner-thread checks
+  bit and the stepping mode before anything else, at world build on the building thread (the game thread on a client, the
+  runner on the authority, §15), before any adapter is emplaced, so the og-simulation owner mark is set on that thread from
+  then on: it is what the driver's owner-thread checks
   (the old IsInGameThread checks), its `[SimHost.FirstStep]` `thread=` word and an inline host's access predicate
   read. Task 8 had made the same call from this class's stepping-mode decision; task 10 moved it into `build`.
 * **`startDriverStepping`**, at the end of `BeginPlay` (design §9.1 steps 7–9), through the seam's `startStepping`
   (where the former Chaos configuration registered its callback, until og-session-runtime task 3): it reads `og.Sim.MaxCatchUpSteps` once and calls the tick
-  backend's `start` with `dt`, the role, that cap and the frame wait: `ThisFramesSingleStep` on an immediate client,
-  `EarlierFrames` otherwise (§16). A `checkf` first refuses a client whose og-sim-net lanes are not bound yet, since
-  the lanes decide whether it is immediate (§11). `start` hands the world host the manager as the contact
+  backend's `start` with `dt`, the role, that cap and the frame wait: `ThisFramesSingleStep` on a client,
+  `EarlierFrames` on the authority (§16; an arm no session takes since og-session-runtime task 14, because the authority
+  starts through `runAuthorityLoop_GameThread`, §15, and design Q6 keeps the mode in og-tickdriver). `start` hands the world host the manager as the contact
   records' tick source (`bindIntegratedTickSource`, §9), builds the presenter (§5) with the role, `dt` and the world
   host's root declaration index, then the driver with `dt`, the role, the threading (`Inline` when the world host's
   context steps inline, else `FrameBounded`) and the cap (the driver's constructor builds the hooks and the step
@@ -457,9 +463,10 @@ og-simulation-jolt's `JoltTickWorldHost`, held in `m_physicsBackendWorlds` (§1,
   `m_frameHost.begin` with it, which registers the two tick functions.
 * **The frame's console variables** are OGSimulationUnreal's since og-tickdriver task 15c (`UETickDriverHost.cpp`;
   `UETickDriverHost-rationale.md` §4): `og.Sim.MaxCatchUpSteps`, `og.Sim.BlockMode`, `og.Sim.RunInline` and
-  `TaskGraph.TaskPriorities.OGSimStepTask`, with their names, defaults and help texts. `buildWorld` reads the stepping
-  mode through `UETickDriverHost::runInline` and `startDriverStepping` reads the cap through
-  `UETickDriverHost::requestedMaxCatchUpSteps`, each once, where this file read the variables itself before; the
+  `TaskGraph.TaskPriorities.OGSimStepTask`, with their names, defaults and help texts. `startDriverStepping` reads the cap through
+  `UETickDriverHost::requestedMaxCatchUpSteps` once, where this file read the variable itself before (`buildWorld`
+  read the stepping mode the same way until og-session-runtime task 11 retired `og.Sim.RunInline`, and now sets the
+  world host configuration's `runInline` to false); the
   frame host reads the block mode every frame and its engine reads the priority at every dispatch, as they did through
   the getters. From task 11 until task 15c the four objects were this file's, and two free functions declared in the
   header (tickDriverBackendUImpl::stepTaskPriority and tickDriverBackendUImpl::blockMode, deleted by task 15c) were the
@@ -488,8 +495,9 @@ authority's and a client's (`s_instances`), on one game thread. With one process
 inline would satisfy a worker client's predicate on the game thread, and a game-thread bind in one manager would make
 the other's adapter accept a call it should refuse. So the masks have one bit per role, fixed by `build`, and each
 manager's adapter gets the predicate instantiated for its own bit; the reasoning moved with the masks to
-og-simulation (`TickDriverThreadContext-rationale.md` §2). Two client managers in one process are already refused at
-`BeginPlay` (`s_instances`).
+og-simulation (`TickDriverThreadContext-rationale.md` §2). A second client manager in one process starts no session: the
+start rule refuses it (`UESimulationSession-rationale.md` §23.1, og-session-runtime task 16b); before that task the
+registry's `checkf` on a taken role slot stopped it, by asserting.
 
 **Character contact solving and slots** (task 53 review N2, fixed by task 66). Jolt orders contact
 constraints by body id, and a character's body ids are its slot's. Until task 66 each peer handed out
@@ -630,8 +638,9 @@ its hand-over, its restore and its window are og-simulation-jolt's world host's 
 the brawler's:
 
 * **Who.** Worker clients only: the stepping mode decides it at `BeginPlay` and it never changes. The
-  authority and a client with `og.Sim.RunInline` 1 step on the game thread, so their visualizations
-  query the step world between steps and they build no shadow.
+  authority steps on its runner and has no viz world (§15), so it builds no shadow. Until og-session-runtime tasks 11
+  and 14 an inline role (the in-frame authority, and a client with og.Sim.RunInline 1) stepped on the game thread and
+  queried the step world between steps.
 * **Construction** (the end of the world host's `build`): the step world's configuration with the ring depth 0 and
   the 64 KiB temp allocator, instead of the step world's 16 MB (the shadow never steps; og-simulation-jolt's two-world
   tests restored and queried such a world), the same two static builds, its own three adapters, and the shadow
@@ -728,9 +737,8 @@ results manager). This configuration now does the same (design D §8).
     declaration except the root (the weapon axis, the guard, the projectile pool), so those drawings follow the
     rendered character. The root body keeps the newest tick (`OGBrawlerSimulatableComponent-rationale.md` §10, "The
     movement draw and the input-history poll").
-  * Inline roles (the authority, and a client under `og.Sim.RunInline`) have no shadow: their
-    visualizations query the step world between steps, at the newest tick. A dedicated server draws
-    nothing.
+  * The authority has no shadow and no viz world (§15): a dedicated server draws nothing. (Until og-session-runtime
+    tasks 11 and 14 an inline role's visualizations queried the step world between steps, at the newest tick.)
 * **`og.Render.NewestSnapshot` 1** draws the newest snapshot with no delay and no blend, task 55's
   apply, to measure the difference.
 * **Not done here:** Chaos's optional second results channel. The correction smoothing (task 57) adds
@@ -1149,9 +1157,10 @@ session's (`UESimulationSession-rationale.md` §14). Two assertion messages name
 
 ## §15 The authority loop: the world on the runner (og-input-latency task P5-19)
 
-With `og.Sim.AuthorityLoop=1` on a Jolt dedicated server (the session decides, `UESimulationSession-rationale.md` §19), the
+On a dedicated server, the only world that starts an authority session (`UESimulationSession-rationale.md` §19, §23), the
 authority's world is built, stepped and torn down by the runner thread `OGSimAuthority` (`UEAuthorityRunner-rationale.md`),
-following P11 design D7's start and stop table. Every other world keeps the paths above, unchanged.
+following P11 design D7's start and stop table. A client keeps the paths above. Until og-session-runtime task 14 the loop
+was a knob, and `og.Sim.AuthorityLoop=0` kept an in-frame authority on those paths; it is refused since.
 
 **Start.**
 
@@ -1164,7 +1173,7 @@ following P11 design D7's start and stop table. Every other world keeps the path
 | 5 | `m_frameHost.begin(owner, level, driver)`: the tick functions are registered with the driver the runner built. In `FreeRunning` `startFrame` returns at once and `endFrame` runs only `onPostPhysics` | the loop (`runAuthorityLoop` of the driver) |
 
 The statics are moved into the runner's packet and freed when it leaves the build scope; the configuration's `runInline` was
-read on the game thread at step 1, and the catch-up cap and the slack are read there too, so the runner reads no console
+set on the game thread at step 1 (false since og-session-runtime task 11; read from `og.Sim.RunInline` before), and the catch-up cap and the slack are read there too, so the runner reads no console
 variable. A `static_assert` at step 1 checks that the world host's configuration has `freeRunning`, the only world host that builds
 `FreeRunning` (Jolt's).
 
@@ -1191,20 +1200,22 @@ and `releaseSlot` off the runner (its `OG_CHECK`s), so the session reaches them 
 
 **No game-thread viz world.** A free-running authority has none (`viz=none`), and the tick backend refuses `registerVizVolume`,
 `editVizQuery`, `getVizReader` and `overlayRenderPoses` (its `OG_CHECK`s). This class forwards all four unchanged: nothing on a
-loop-on server calls them. The callers ask the session first (`hasGameThreadVizWorld()`, false exactly while the loop runs,
+dedicated server calls them. The callers ask the session first (`hasGameThreadVizWorld()`, false on an authority and in a world without a session,
 `UESimulationSession-rationale.md` §21.4): the character component registers no viz volume and skips its visualization
 (`OGBrawlerSimulatableComponent-rationale.md` §24, in OGBrawlerUnreal's docs), and the session publishes no display snapshot,
 so the overlay is never reached. A new caller that forgets to ask fails loudly on the tick backend's check. (From
 og-input-latency task P5-19 until P5-20, `registerVizVolume` here answered `QueryVolumeId{}` while the runner existed, through
 a `freeRunning()` member; both are gone.)
 
-## §16 The immediate client's frame wait (og-input-latency task P5-35)
+## §16 The client's frame wait (og-input-latency task P5-35)
 
-`startDriverStepping` hands the tick backend's `start` the frame wait `FrameWait::ThisFramesSingleStep` when the session
-is an immediate client (`m_owner.m_immediateClient`, which `beginClientSimNet` sets inside the session's configuration,
-before `startStepping`), and `EarlierFrames` otherwise: the authority, and a client whose sim traffic is frame-locked. A
-`checkf` refuses a client whose og-sim-net lanes are not bound yet, because before the bind the flag still reads false. With
-it, a worker client's end of physics waits for the step its own frame dispatched when that frame dispatched exactly one step
+`startDriverStepping` hands the tick backend's `start` the frame wait `FrameWait::ThisFramesSingleStep` on a client and
+`EarlierFrames` on the authority, from the role alone (`worldIsAuthority`); no session takes the authority's arm since
+og-session-runtime task 14 (§15). Until og-session-runtime task 12 it read the
+session's immediate-client flag (set by `beginClientSimNet` inside the session's configuration, before `startStepping`), so a
+client whose sim traffic was frame-locked kept `EarlierFrames`, and a `checkf` refused a client whose og-sim-net lanes were not
+bound yet, because before the bind the flag still read false. Every client is immediate since task 12, so the flag, its read
+and that `checkf` are gone. With `ThisFramesSingleStep`, a worker client's end of physics waits for the step its own frame dispatched when that frame dispatched exactly one step
 (`SimulationTickDriver-rationale.md` §4; the frame host still passes `og.Sim.BlockMode`, `UETickDriverHost-rationale.md` §2).
 
 **Why: one frame, and the race it held.**
@@ -1217,9 +1228,9 @@ it, a worker client's end of physics waits for the step its own frame dispatched
    the newest pending step end. Since og-input-latency task P5-36 a client's fill runs instead after its batch, on the
    step's thread (`UESimulationSession-rationale.md` §17.2); the pass only acquires, and a one-step frame's wait covers the
    fill.
-3. The step's `afterTick` stamps the step end and then publishes the render snapshot (J5). An immediate client's step
-   also carries og-sim-net's drain (`receiveForStep`) and the send at capture (`onStepStarted`); a frame-locked client
-   runs both on the game thread outside this window.
+3. The step's `afterTick` stamps the step end and then publishes the render snapshot (J5). A client's step also carries
+   og-sim-net's drain (`receiveForStep`) and the send at capture (`onStepStarted`); the frame-locked client, until
+   og-session-runtime task 12, ran both on the game thread outside this window.
 
 So whether the pass shows the frame's step is a race between the worker step and the game thread's short way from the
 dispatch to the end of physics.
@@ -1253,7 +1264,7 @@ p50/p99/max, not p95):
 The wait (p50 ~0.16 ms, at most 0.47 ms in any window) fits inside the 100 fps frame's idle time. The frame time is unchanged
 and the frame count stays at the cap. The display gains one frame period (~9.8 ms at p50).
 
-**What it leaves alone.** Frame-locked clients keep `EarlierFrames`. They are the reference arm of Ph4's gate, and the
-same wait would make their display deterministic too: that is a decision for the lead, not taken here. A catch-up frame (two
-or more steps) is not waited for (`SimulationTickDriver-guards.md` G-10). `og.Sim.RunInline=1` steps inline, where the
-setting changes nothing. The former Chaos configuration (removed by og-session-runtime tasks 3–6) did not use this class.
+**What it leaves alone.** Frame-locked clients kept `EarlierFrames` as the reference arm of Ph4's gate, until
+og-session-runtime task 12 retired them. A catch-up frame (two
+or more steps) is not waited for (`SimulationTickDriver-guards.md` G-10). `og.Sim.RunInline=1` stepped inline, where the
+setting changed nothing, until og-session-runtime task 11 retired it. The former Chaos configuration (removed by og-session-runtime tasks 3–6) did not use this class.

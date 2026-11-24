@@ -95,7 +95,7 @@ void UESimulatableOwnerBinding<OwnerT, TraitsT>::tryInitializeWithManager()
 
 	// ⛔G-07  docs/UESimulatableOwnerBinding-guards.md
 	const bool isAuthority = (derived().GetNetMode() != NM_Client);
-	typename TraitsT::SessionOwner* manager = TraitsT::SessionOwner::instanceFor(isAuthority);
+	typename TraitsT::SessionOwner* manager = TraitsT::SessionOwner::instanceFor(derived().GetWorld(), isAuthority);
 	AActor* Owner = derived().GetOwner();
 	if (manager == nullptr)
 	{
@@ -178,7 +178,7 @@ void UESimulatableOwnerBinding<OwnerT, TraitsT>::tryRegisterWithNewFramework()
 	++m_registrationAttempts;
 
 	const bool isAuthority = (derived().GetNetMode() != NM_Client);
-	typename TraitsT::SessionOwner* regManager = TraitsT::SessionOwner::instanceFor(isAuthority);
+	typename TraitsT::SessionOwner* regManager = TraitsT::SessionOwner::instanceFor(derived().GetWorld(), isAuthority);
 	if (regManager == nullptr)
 	{
 		if (m_registrationAttempts >= kMaxRegistrationAttempts)

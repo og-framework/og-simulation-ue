@@ -18,7 +18,6 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <span>
 #include <thread>
@@ -26,7 +25,6 @@
 
 namespace ogsimnet
 {
-inline constexpr size_t kHoldArenaBytes = size_t{64} << 10;
 inline constexpr double kNoReceiveSeconds = -1.0;
 inline constexpr uint64_t kDefaultControlReceiveDepth =
 	ognet::lanes::receiveDepthMessages(ognet::lanes::kDefaultLaneTable[ognet::lanes::laneIndex(ognet::Lane::Control)]);
@@ -69,16 +67,14 @@ concept SimNetEndpoint = requires(E& e, ognet::ConnectionId id, ognet::Lane lane
 
 struct SimNetConfig
 {
-	bool immediate = false;
 	size_t maxConnections = ognet::handshake::kDefaultMaxConnections;
 	uint64_t controlReceiveDepth = kDefaultControlReceiveDepth;
 	uint64_t connectsPerDrainGap = kDefaultConnectsPerDrainGap;
 };
 
-constexpr SimNetConfig simNetConfigFor(const ognet::EndpointConfig& endpoint, bool immediate = false)
+constexpr SimNetConfig simNetConfigFor(const ognet::EndpointConfig& endpoint)
 {
 	SimNetConfig config;
-	config.immediate = immediate;
 	config.maxConnections = endpoint.role == ognet::Role::Client ? size_t{1} : endpoint.maxConnections;
 	config.controlReceiveDepth = ognet::lanes::receiveDepthMessages(endpoint.lanes[ognet::lanes::laneIndex(ognet::Lane::Control)]);
 	config.connectsPerDrainGap = endpoint.role == ognet::Role::Client ? kClientConnectsPerDrainGap : kDefaultConnectsPerDrainGap;
@@ -147,8 +143,6 @@ static_assert(simNetInboxConfig<2048>(SimNetConfig{}).eventSlots == 816u
 
 struct SimNetTransportStats
 {
-	uint64_t heldSends = 0u;
-	uint64_t releasedSends = 0u;
 	uint64_t directSends = 0u;
 	uint64_t holdOverflows = 0u;
 	uint64_t holdHighWaterBytes = 0u;
@@ -169,7 +163,7 @@ struct SimNetTransportStats
 };
 
 static_assert(std::atomic<std::thread::id>::is_always_lock_free,
-	"SimNetTransport: an immediate transport's input set belongs to the thread that opened it (beginInputSends), and every "
+	"SimNetTransport: the transport's input set belongs to the thread that opened it (beginInputSends), and every "
 	"append and end reads that owner from one lock-free atomic, so a refused call from another thread never waits");
 
 template <typename TransportT>
@@ -202,7 +196,6 @@ public:
 		, m_quotaOwner(std::make_unique<std::atomic<SimConnectionId>[]>(simNetConnectionSlots(config)))
 		, m_closing(std::make_unique<bool[]>(simNetConnectionSlots(config)))
 		, m_presence(std::make_unique<SlotPresence[]>(simNetConnectionSlots(config)))
-		, m_hold(std::make_unique<std::byte[]>(kHoldArenaBytes))
 	{
 		OG_CHECK(config.controlReceiveDepth != 0u,
 			"SimNetTransport: Control's receive depth sizes the Control ring. An uncapped Control lane (depth 0) has no bound, so no "
@@ -213,7 +206,6 @@ public:
 		OG_CHECK(config.connectsPerDrainGap != 0u,
 			"SimNetTransport: the event ring keeps two slots for each connection that opens between two drains, so it is sized for "
 			"at least one; with none, a client's ring could never hold a Connected and its Disconnected");
-		std::fill_n(m_hold.get(), kHoldArenaBytes, std::byte{0});
 	}
 
 	SimNetTransport(const SimNetTransport&) = delete;
@@ -271,14 +263,10 @@ public:
 
 	void beginInputSends()
 	{
-		if (!m_config.immediate)
-		{
-			return;
-		}
 		std::thread::id none{};
 		const bool opened = m_inputSender.compare_exchange_strong(none, std::this_thread::get_id(), std::memory_order_acq_rel);
 		OG_CHECK(opened,
-			"SimNetTransport::beginInputSends: an immediate transport's input set is already open. The client session opens it "
+			"SimNetTransport::beginInputSends: the transport's input set is already open. The client session opens it "
 			"once per captured tick (SimNetClient::afterCaptureTick_Step) and ends it before the next");
 	}
 
@@ -291,10 +279,7 @@ public:
 	{
 		withInputSet([&] {
 			emitInputSet();
-			if (m_config.immediate)
-			{
-				m_inputSender.store(std::thread::id{}, std::memory_order_release);
-			}
+			m_inputSender.store(std::thread::id{}, std::memory_order_release);
 		});
 	}
 
@@ -302,10 +287,6 @@ public:
 	void sendState(SimConnectionId conn, std::span<const std::byte> bytes) { submit(SendOp::Send, conn, SimLane::SimState, bytes); }
 	void sendControl(SimConnectionId conn, std::span<const std::byte> bytes) { submit(SendOp::Send, conn, SimLane::Control, bytes); }
 	void broadcastClock(std::span<const std::byte> bytes) { submit(SendOp::BroadcastExcept, kInvalidSimConnection, SimLane::SimClock, bytes); }
-
-	void flushFrame() { releaseHold(); }
-
-	size_t heldBytes() const { return m_holdUsed; }
 
 	uint16_t slotOf(SimConnectionId conn) const
 	{
@@ -325,11 +306,7 @@ public:
 	SimNetTransportStats stats() const
 	{
 		SimNetTransportStats out;
-		out.heldSends = m_heldSends.load(std::memory_order_relaxed);
-		out.releasedSends = m_releasedSends.load(std::memory_order_relaxed);
 		out.directSends = m_directSends.load(std::memory_order_relaxed);
-		out.holdOverflows = m_holdOverflows.load(std::memory_order_relaxed);
-		out.holdHighWaterBytes = m_holdHighWaterBytes.load(std::memory_order_relaxed);
 		out.inputBundles = m_inputBundles.load(std::memory_order_relaxed);
 		out.inputBundlesRefused = m_inputBundlesRefused.load(std::memory_order_relaxed);
 		out.inputSets = m_inputSets.load(std::memory_order_relaxed);
@@ -382,12 +359,11 @@ private:
 	template <class SetFn>
 	void withInputSet(SetFn&& onSet)
 	{
-		const bool owned = !m_config.immediate || m_inputSender.load(std::memory_order_acquire) == std::this_thread::get_id();
+		const bool owned = m_inputSender.load(std::memory_order_acquire) == std::this_thread::get_id();
 		OG_CHECK(owned,
-			"SimNetTransport: an immediate transport's input set is appended to and ended only on the thread that opened it, "
-			"inside the client session's afterCaptureTick_Step on the step's thread. A send from anywhere else (the game "
-			"thread's onPostSimulationGameThread send, or SimNetClient::flushFrame or endInputSends in immediate mode) would "
-			"race the step's set");
+			"SimNetTransport: the input set is appended to and ended only on the thread that opened it (beginInputSends), "
+			"inside the client session's afterCaptureTick_Step on the step's thread. An append or an end from any other thread, "
+			"or with no set open, would race the step's set");
 		// ⛔G-07  docs/SimNetTransport-guards.md
 		if (!owned)
 		{
@@ -421,14 +397,6 @@ private:
 		m_inputSetUsed = used;
 		count(used == 0u ? m_inputBundlesRefused : m_inputBundles);
 	}
-
-	struct HeldHeader
-	{
-		SendOp op = SendOp::Send;
-		SimLane lane = SimLane::Control;
-		SimConnectionId conn = kInvalidSimConnection;
-		uint32_t size = 0u;
-	};
 
 	static void onLaneMessage(void* ctx, ognet::ConnectionId id, ognet::Lane lane, std::span<const std::byte> bytes, double recvSeconds)
 	{
@@ -586,51 +554,6 @@ private:
 
 	void submit(SendOp op, SimConnectionId conn, SimLane lane, std::span<const std::byte> bytes)
 	{
-		if (m_config.immediate)
-		{
-			transmit(op, conn, lane, bytes);
-			return;
-		}
-		const size_t need = sizeof(HeldHeader) + bytes.size();
-		if (need > kHoldArenaBytes - m_holdUsed)
-		{
-			count(m_holdOverflows);
-			// ⛔G-03  docs/SimNetTransport-guards.md
-			releaseHold();
-			transmit(op, conn, lane, bytes);
-			return;
-		}
-		const HeldHeader header{op, lane, conn, static_cast<uint32_t>(bytes.size())};
-		std::memcpy(m_hold.get() + m_holdUsed, &header, sizeof(header));
-		if (!bytes.empty())
-		{
-			std::memcpy(m_hold.get() + m_holdUsed + sizeof(header), bytes.data(), bytes.size());
-		}
-		m_holdUsed += need;
-		count(m_heldSends);
-		if (m_holdUsed > m_holdHighWaterBytes.load(std::memory_order_relaxed))
-		{
-			m_holdHighWaterBytes.store(m_holdUsed, std::memory_order_relaxed);
-		}
-	}
-
-	void releaseHold()
-	{
-		size_t offset = 0u;
-		while (offset < m_holdUsed)
-		{
-			HeldHeader header;
-			std::memcpy(&header, m_hold.get() + offset, sizeof(header));
-			const std::span<const std::byte> bytes(m_hold.get() + offset + sizeof(header), header.size);
-			dispatch(header.op, header.conn, header.lane, bytes);
-			count(m_releasedSends);
-			offset += sizeof(header) + header.size;
-		}
-		m_holdUsed = 0u;
-	}
-
-	void transmit(SendOp op, SimConnectionId conn, SimLane lane, std::span<const std::byte> bytes)
-	{
 		dispatch(op, conn, lane, bytes);
 		count(m_directSends);
 	}
@@ -663,17 +586,11 @@ private:
 	std::unique_ptr<SlotPresence[]> m_presence;
 	std::atomic<SimConnectionId> m_serverConnection{kInvalidSimConnection};
 
-	std::unique_ptr<std::byte[]> m_hold;
-	size_t m_holdUsed = 0u;
 	std::array<std::byte, kMaxSimMessageBytes> m_inputSet{};
 	size_t m_inputSetUsed = 0u;
 	std::atomic<std::thread::id> m_inputSender{};
 
-	std::atomic<uint64_t> m_heldSends{0};
-	std::atomic<uint64_t> m_releasedSends{0};
 	std::atomic<uint64_t> m_directSends{0};
-	std::atomic<uint64_t> m_holdOverflows{0};
-	std::atomic<uint64_t> m_holdHighWaterBytes{0};
 	std::atomic<uint64_t> m_inputBundles{0};
 	std::atomic<uint64_t> m_inputBundlesRefused{0};
 	std::atomic<uint64_t> m_inputSets{0};

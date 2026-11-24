@@ -21,9 +21,11 @@
 #include "OGSimulationUnreal/OGSimulationUnreal.h"
 #include "OGSimulationUnreal/UEAuthorityRunner.h"
 #include "OGSimulationUnreal/UELatencyBudgetDiagnostics.h"
+#include "OGSimulationUnreal/UESessionRefusal.h"
 #include "OGSimulationUnreal/UESimulationLogRoutes.h"
 #include "OGSimulationUnreal/UESimNetHost.h"
 #include "OGSimulationUnreal/UESimNetLanes.h"
+#include "OGSimulationUnreal/UETickDriverHost.h"
 #include "OGNet/Endpoint/EndpointConfig.h"
 #include "OGNet/NetTypes.h"
 #include "OGNetUnreal/OGNetConnection.h"
@@ -57,6 +59,7 @@
 #include "OGSimulation/PCTimeManagement/TimeConfig.h"
 
 #include <array>
+#include <atomic>
 #include <concepts>
 #include <cstdio>
 #include <functional>
@@ -87,12 +90,10 @@ inline constexpr char kSimNetHostLineFormat[] =
 	"[Warning][SimNet.Host] role=%s immediate=%d rttSource=EnginePing driver=%s inbox=%u";
 inline constexpr size_t kSimNetHostLineBytes = 128u;
 inline constexpr size_t kSessionDisplayWindowTicks = kLocalInputCacheCapacityTicks;
-inline constexpr uint64 kSimNetDriverRefusedToastKey = 0x4F47534EF0000002ull;
-inline constexpr float kSimNetDriverRefusedToastSeconds = 15.f;
 
-static_assert(kSimNetHostLineBytes >= sizeof(kSimNetHostLineFormat) + sizeof("server") + sizeof("detached") + 10u,
-	"kSimNetHostLineBytes must hold the [SimNet.Host] proof line with the longer role, the longer driver name and a 10-digit "
-	"inbox size");
+static_assert(kSimNetHostLineBytes >= sizeof(kSimNetHostLineFormat) + sizeof("server") + sizeof("OGNet") + 10u,
+	"kSimNetHostLineBytes must hold the [SimNet.Host] proof line with the longer role, the driver name and a 10-digit inbox "
+	"size");
 
 namespace clockDilationDoors
 {
@@ -245,12 +246,10 @@ public:
 	const ClientPredictionClock& getClientClock() const { return m_manager->getClientClock(); }
 	bool runsPrediction() const { return m_manager->runsPrediction(); }
 
-	void onPostSimulationGameThread();
-
 	typename EngineTraits::VizQuery&        editVizQuery();
 	const typename EngineTraits::VizReader& getVizReader() const;
 	std::optional<QueryVolumeId> registerVizVolume(const QueryVolumeDescriptor& descriptor, AActor& owner);
-	bool hasGameThreadVizWorld() const { return !m_authorityLoop; }
+	bool hasGameThreadVizWorld() const { return m_manager.has_value() && runsPrediction(); }
 
 	using DisplaySnapshot = SimulationDisplaySnapshotT<Simulatable, kMaxSimulatableSlots, kSessionDisplayWindowTicks,
 	                                                   kSessionDisplayWindowTicks>;
@@ -316,9 +315,15 @@ public:
 	getRegisteredComponentsById() const { return m_registeredComponentsById; }
 
 	// ⛔G-11  docs/UESimulationSession-guards.md
-	static UESimulationSession* instanceFor(bool isAuthority)
+	static UESimulationSession* instanceFor(const UWorld* world, bool isAuthority)
 	{
-		return isAuthority ? s_instances[0] : s_instances[1];
+		for (const std::atomic<UESimulationSession*>& slot : s_instances)
+		{
+			UESimulationSession* const session = slot.load(std::memory_order_acquire);
+			if (session != nullptr && session->m_registeredWorld == world && session->m_registeredAsAuthority == isAuthority)
+				return session;
+		}
+		return nullptr;
 	}
 
 	void setOnTimingInfoReceivedCallback(std::function<void(uint32_t, double)> fn)
@@ -328,10 +333,7 @@ public:
 
 	void onTimingInfoReceived(uint32_t authorityTick, double roundTripTime)
 	{
-		if (m_immediateClient)
-			m_latencyBudgetDiagnostics.noteWireSample_Internal(roundTripTime);
-		else
-			m_latencyBudgetDiagnostics.noteWireSample(roundTripTime);
+		m_latencyBudgetDiagnostics.noteWireSample_Internal(roundTripTime);
 		if (m_onTimingInfoReceivedCallback)
 		{
 			m_onTimingInfoReceivedCallback(authorityTick, roundTripTime);
@@ -415,9 +417,7 @@ private:
 
 	SimNetLanes* findDriverSimNetLanes(UWorld& world, ognet::Role role);
 
-	void beginServerSimNet(UWorld& world, ENetMode netMode);
-
-	bool decideAuthorityLoop(UWorld& world, bool worldIsAuthority);
+	void beginServerSimNet(UWorld& world);
 
 	IdleWake idleUntil_Runner(double deadlineSeconds);
 
@@ -453,9 +453,17 @@ private:
 
 	void beginClientSimNet(UWorld& world);
 
-	void logSimNetHostLine(bool isServer, bool detached, bool immediate) const;
+	void logSimNetHostLine(bool isServer) const;
 
-	void logSimTrafficImmediateRefusal(ESimTrafficImmediate decision) const;
+	bool refuseToStart(UWorld& world, ENetMode netMode);
+
+	bool refuseNetModeOrDriver(UWorld& world, ENetMode netMode);
+
+	bool refuseRetiredKnobs(UWorld& world, ENetMode netMode);
+
+	bool refuseSecondSessionOfRole(UWorld& world, ENetMode netMode);
+
+	void refuseRegistrationWithoutSession(unsigned int id);
 
 	typename SimNetLanes::Client* boundImmediateClient_Step() const;
 
@@ -487,17 +495,9 @@ private:
 
 	void detachFromSimNetLanes();
 
-	SimChannel* addSimNetCharacter(unsigned int id, typename TraitsT::Component& owner);
-
-	SimChannel* registeredChannelFor(unsigned int id) const;
-
-	void forgetSimNetCharacter(unsigned int id, const AActor* pawn, bool isAuthority);
-
-	void unregisterCharacter(unsigned int id, typename TraitsT::Component* owner, bool isAuthority);
+	void forgetSimNetCharacter(unsigned int id, const AActor* pawn);
 
 	void onSimNetRegisteredRemoved(uint8_t simId);
-
-	void publishServerClock_GameThread();
 
 	int32 applyReplicatedConnectionTier(uint8 tier);
 
@@ -562,11 +562,7 @@ private:
 
 	void onPostPhysicsStep();
 
-	void publishDisplaySnapshot_GameThread();
-
 	bool publishesDisplayOnStep() const;
-
-	void stageDisplayRelay_GameThread();
 
 	void refreshDisplayView_GameThread();
 
@@ -579,9 +575,6 @@ private:
 	std::optional<uint32> physicsSlotFor(AActor& owner, uint64 key, unsigned int storageKey) const;
 
 	void recordAuthoritativeSlot(AActor& owner, uint64 key, uint32 slot);
-
-	template <typename FunctionT>
-	void forEachAuthorityCorrectionTick(FunctionT&& function) const;
 
 	static void bindCorrectionFieldDiffGate()
 	{
@@ -631,14 +624,14 @@ private:
 
 	int32 m_lastPublishedEffectiveInputDelayTicks = 0;
 
-	TUniquePtr<SimNetLanes> m_detachedSimNetLanes;
 	SimNetLanes* m_simNetLanes = nullptr;
 	std::optional<SimNetServerHost> m_simNetServerHost;
 	std::optional<SimNetServer> m_simNetServer;
 	std::optional<ogsimnet::SimNetIdle<ognetunreal::SimLaneEndpoint>> m_simNetIdle;
 	UESimNetClockServer* m_clockServer = nullptr;
-	bool m_detachedClientAbandonLogged = false;
-	bool m_authorityLoop = false;
+	bool m_noSessionRegisterRefused = false;
+	const char* m_noSessionReason = "no-session";
+	bool m_noSessionRegisterRaisesMessage = false;
 	bool m_runnerStopped = false;
 	std::optional<double> m_releaseStepSeconds_Step;
 	std::optional<double> m_clockTickStartSeconds_Step;
@@ -664,11 +657,8 @@ private:
 
 	FrameHealthProbe m_frameHealthProbe;
 
-	ConnectionBudgetProbe m_connectionBudgetProbe;
-
 	std::unordered_map<unsigned int, TWeakObjectPtr<typename TraitsT::Component>>
 		m_registeredComponentsById;
-	std::unordered_map<unsigned int, SimChannel*> m_simChannelsById;
 	std::unordered_map<const AActor*, uint32> m_authoritativeSlotsByActor;
 	std::unordered_set<unsigned int> m_simUnregisteredIds;
 
@@ -680,7 +670,14 @@ private:
 		std::make_unique<std::array<DisplayVizState, kMaxSimulatableSlots>>();
 	const DisplaySnapshot* m_heldDisplaySnapshot = nullptr;
 
-	inline static UESimulationSession* s_instances[2] = { nullptr, nullptr };
+	inline static constexpr size_t kInstanceSlots = 128u;
+	inline static std::atomic<UESimulationSession*> s_instances[kInstanceSlots] = {};
+	inline static UESimulationSession* s_startedSessions[2] = { nullptr, nullptr };
+	const UWorld* m_registeredWorld = nullptr;
+	bool m_registeredAsAuthority = false;
+
+	void registerInstance();
+	void unregisterInstance();
 
 	struct PendingRegistration
 	{
@@ -726,7 +723,6 @@ private:
 		m_lifecycleOutcomes.push_back(LifecycleOutcome{ id, kind, slot });
 	}
 
-	bool m_immediateClient = false;
 	bool m_immediateStepsStopped = false;
 	double m_engineRttWindowSeconds = kNoRttReadingSeconds;
 	std::optional<double> m_clockWindowStartSeconds;
@@ -743,8 +739,6 @@ private:
 	std::unordered_map<unsigned int, TStrongObjectPtr<typename TraitsT::Component>> m_pendingUnregisters;
 	std::unordered_map<unsigned int, TStrongObjectPtr<typename TraitsT::Component>> m_componentsHeldForRunner;
 	std::unique_ptr<TripleBuffer<DisplayTierReading>> m_displayTier = std::make_unique<TripleBuffer<DisplayTierReading>>();
-	using DisplayRelay = DisplayRelayStage<typename Simulatable::InputType, kMaxSimulatableSlots>;
-	std::unique_ptr<TripleBuffer<DisplayRelay>> m_displayRelay = std::make_unique<TripleBuffer<DisplayRelay>>();
 
 	static constexpr bool compositionContractsHold()
 	{
@@ -842,16 +836,13 @@ private:
 			"that holds the manager, and only the owner's EndPlay reset kept it from outliving that TimeConfig.");
 		static_assert(__builtin_offsetof(UESimulationSession, m_manager)
 		                  < __builtin_offsetof(UESimulationSession, m_simNetServer)
-		           && __builtin_offsetof(UESimulationSession, m_detachedSimNetLanes)
-		                  < __builtin_offsetof(UESimulationSession, m_simNetServerHost)
 		           && __builtin_offsetof(UESimulationSession, m_simNetServerHost)
 		                  < __builtin_offsetof(UESimulationSession, m_simNetServer),
 			"UESimulationSession members destruct in REVERSE declaration order. og-sim-net's server keeps a reference to the "
-			"manager's TimeConfig (and its reception coordinator borrows it too), to its host and to the lanes' transport, and "
-			"a standalone or foreign-driver world's lanes are the session's own detached ones. So the server is destroyed "
-			"before the manager, its host and the detached lanes. Keep m_manager < m_simNetServer and m_detachedSimNetLanes < "
-			"m_simNetServerHost < m_simNetServer. Was the m_manager < m_receptionCoordinator row (task 26a); the coordinator "
-			"is the server's own since og-input-latency task P5-7.");
+			"manager's TimeConfig (and its reception coordinator borrows it too) and to its host, so the server is destroyed "
+			"before the manager and its host. Keep m_manager < m_simNetServer and m_simNetServerHost < m_simNetServer. Was the "
+			"m_manager < m_receptionCoordinator row (task 26a); the coordinator is the server's own since og-input-latency task "
+			"P5-7. The session's own detached lanes left this row with them (og-session-runtime task 14).");
 		static_assert(latencyKnobs::kMaxRelayResendEntries == relayedInputRing::kMaxResendEntries,
 			"TimeConfig::relayResendEntries' clamp and the relay codec's re-send bound must agree, or a session value the knob "
 			"accepts would be cut again at og-sim-net's relay flush. og-input-latency task 8; was beside the input relay's spawn "
@@ -896,14 +887,6 @@ UESimulationSession<TraitsT>::UESimulationSession(SessionOwner& owner, Game& gam
 }
 
 template <typename TraitsT>
-void UESimulationSession<TraitsT>::onPostSimulationGameThread()
-{
-	if (m_immediateClient)
-		return;
-	m_manager->onPostSimulationGameThread();
-}
-
-template <typename TraitsT>
 auto UESimulationSession<TraitsT>::editVizQuery() -> typename EngineTraits::VizQuery&
 {
 	return m_physicsBackend.editVizQuery();
@@ -930,10 +913,7 @@ template <typename TraitsT>
 UESimulationSession<TraitsT>::~UESimulationSession()
 {
 	// ⛔G-10  docs/UESimulationSession-guards.md
-	if (s_instances[0] == this)
-		s_instances[0] = nullptr;
-	if (s_instances[1] == this)
-		s_instances[1] = nullptr;
+	unregisterInstance();
 	detachFromSimNetLanes();
 }
 
@@ -959,63 +939,145 @@ auto UESimulationSession<TraitsT>::findDriverSimNetLanes(UWorld& world, ognet::R
 }
 
 template <typename TraitsT>
-void UESimulationSession<TraitsT>::logSimNetHostLine(bool isServer, bool detached, bool immediate) const
+void UESimulationSession<TraitsT>::logSimNetHostLine(bool isServer) const
 {
 	char line[kSimNetHostLineBytes];
-	std::snprintf(line, sizeof(line), kSimNetHostLineFormat, isServer ? "server" : "client", immediate ? 1 : 0,
-		detached ? "detached" : "OGNet", static_cast<unsigned>(kUESimNetInboxSlots));
+	std::snprintf(line, sizeof(line), kSimNetHostLineFormat, isServer ? "server" : "client", /*immediate=*/1, "OGNet",
+		static_cast<unsigned>(kUESimNetInboxSlots));
 	RouteOGMessage(line);
 }
 
 template <typename TraitsT>
-void UESimulationSession<TraitsT>::logSimTrafficImmediateRefusal(ESimTrafficImmediate decision) const
+bool UESimulationSession<TraitsT>::refuseToStart(UWorld& world, ENetMode netMode)
 {
-	const int32 requested = readSimTrafficImmediateKnob().value_or(0);
-	switch (decision)
+	m_registeredWorld = &world;
+	m_registeredAsAuthority = netMode != NM_Client;
+	if (!refuseNetModeOrDriver(world, netMode) && !refuseRetiredKnobs(world, netMode)
+		&& !refuseSecondSessionOfRole(world, netMode))
 	{
-	case ESimTrafficImmediate::Off:
-	case ESimTrafficImmediate::On:
-		return;
-	case ESimTrafficImmediate::RefusedServer:
-		UE_LOG(LogOGNet, Warning,
-			TEXT("[SimNet.Host] ini [OGNetcode] SimTrafficImmediate=%d refused on the server: the server's sim traffic stays "
-				 "frame-locked until its authority loop drains it; this server runs frame-locked (0)"), requested);
-		return;
-	case ESimTrafficImmediate::RefusedRunInline:
-		UE_LOG(LogOGNet, Warning,
-			TEXT("[SimNet.Host] ini [OGNetcode] SimTrafficImmediate=%d refused: og.Sim.RunInline=1 steps this client on the game "
-				 "thread; this client runs frame-locked (0)"), requested);
-		return;
-	case ESimTrafficImmediate::RefusedDetached:
-		UE_LOG(LogOGNet, Warning,
-			TEXT("[SimNet.Host] ini [OGNetcode] SimTrafficImmediate=%d refused: this world has no og-net sim lanes; this client "
-				 "runs frame-locked (0)"), requested);
-		return;
+		s_startedSessions[m_registeredAsAuthority ? 0 : 1] = this;
+		return false;
+	}
+	registerInstance();
+	ueSessionRefusal::requestServerExit();
+	return true;
+}
+
+template <typename TraitsT>
+bool UESimulationSession<TraitsT>::refuseSecondSessionOfRole(UWorld& world, ENetMode netMode)
+{
+	if (s_startedSessions[m_registeredAsAuthority ? 0 : 1] == nullptr)
+		return false;
+	ueSessionRefusal::refuse(m_registeredAsAuthority ? "role=authority netMode=DedicatedServer" : "role=client netMode=Client",
+		world.IsPlayInEditor() ? "pie" : "-", "one-session-per-role-per-process");
+	m_noSessionReason = "one-session-per-role-per-process";
+	return true;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::registerInstance()
+{
+	for (std::atomic<UESimulationSession*>& slot : s_instances)
+	{
+		UESimulationSession* expected = nullptr;
+		if (slot.compare_exchange_strong(expected, this, std::memory_order_acq_rel))
+			return;
+	}
+	checkf(false, TEXT("UESimulationSession::registerInstance: all %d registry slots are taken, one per world with a session ")
+		TEXT("owner in this process"), static_cast<int32>(kInstanceSlots));
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::unregisterInstance()
+{
+	for (std::atomic<UESimulationSession*>& slot : s_instances)
+	{
+		UESimulationSession* expected = this;
+		slot.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+	}
+	for (UESimulationSession*& started : s_startedSessions)
+	{
+		if (started == this)
+			started = nullptr;
 	}
 }
 
 template <typename TraitsT>
-void UESimulationSession<TraitsT>::beginServerSimNet(UWorld& world, ENetMode netMode)
+bool UESimulationSession<TraitsT>::refuseNetModeOrDriver(UWorld& world, ENetMode netMode)
 {
-	SimNetLanes* lanes = findDriverSimNetLanes(world, ognet::Role::Server);
-	const bool detached = lanes == nullptr;
-	if (detached)
+	if (netMode == NM_Standalone)
 	{
-		if (netMode != NM_Standalone)
-		{
-			const UNetDriver* const driver = world.GetNetDriver();
-			UE_LOG(LogOGNet, Error,
-				TEXT("[SimNet.Host] refused role=server driver=%s: simulation traffic needs the og-net driver"),
-				driver != nullptr ? *driver->GetClass()->GetName() : TEXT("none"));
-			if (GEngine != nullptr)
-			{
-				GEngine->AddOnScreenDebugMessage(kSimNetDriverRefusedToastKey, kSimNetDriverRefusedToastSeconds, FColor::Red,
-					TEXT("Simulation traffic needs the og-net driver: this server simulates alone"));
-			}
-		}
-		m_detachedSimNetLanes = SimNetLanes::makeDetached(ognet::Role::Server, ognet::EndpointConfig{});
-		lanes = m_detachedSimNetLanes.Get();
+		UE_LOG(LogOGSimHost, Warning, TEXT("[SimHost.Session] none netMode=Standalone"));
+		m_noSessionReason = "dedicated-server-only";
+		m_noSessionRegisterRaisesMessage = true;
+		return true;
 	}
+	if (netMode == NM_ListenServer)
+	{
+		ueSessionRefusal::refuse("role=authority netMode=ListenServer", "-", "dedicated-server-only");
+		m_noSessionReason = "dedicated-server-only";
+		return true;
+	}
+	const bool isServer = netMode != NM_Client;
+	if (findDriverSimNetLanes(world, isServer ? ognet::Role::Server : ognet::Role::Client) != nullptr)
+		return false;
+	const UNetDriver* const driver = world.GetNetDriver();
+	UE_LOG(LogOGNet, Error, TEXT("[SimNet.Host] refused role=%s driver=%s: simulation traffic needs the og-net driver"),
+		isServer ? TEXT("server") : TEXT("client"), driver != nullptr ? *driver->GetClass()->GetName() : TEXT("none"));
+	if (GEngine != nullptr)
+	{
+		GEngine->AddOnScreenDebugMessage(kSimNetDriverRefusedToastKey, kSimNetDriverRefusedToastSeconds, FColor::Red,
+			isServer ? TEXT("Simulation traffic needs the og-net driver: this server runs no simulation session")
+			         : TEXT("Simulation traffic needs the og-net driver: this client simulates nothing"));
+	}
+	return true;
+}
+
+template <typename TraitsT>
+bool UESimulationSession<TraitsT>::refuseRetiredKnobs(UWorld& world, ENetMode netMode)
+{
+	const int32 runInline = UETickDriverHost::retiredRunInlineValue();
+	if (runInline != 0)
+	{
+		char value[16];
+		std::snprintf(value, sizeof(value), "%d", static_cast<int>(runInline));
+		ueSessionRefusal::refuse("knob=og.Sim.RunInline", value, "retired");
+		return true;
+	}
+	if (netMode == NM_Client)
+	{
+		if (!findDriverSimNetLanes(world, ognet::Role::Client)->simTrafficImmediateRefused())
+			return false;
+		ueSessionRefusal::refuse("knob=SimTrafficImmediate", "0", "retired");
+		return true;
+	}
+	if (retiredAuthorityLoopValue() != 0)
+		return false;
+	ueSessionRefusal::refuse("knob=og.Sim.AuthorityLoop", "0", "retired");
+	return true;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::refuseRegistrationWithoutSession(unsigned int id)
+{
+	if (std::exchange(m_noSessionRegisterRefused, true))
+		return;
+	char subject[32];
+	std::snprintf(subject, sizeof(subject), "register id=%u", id);
+	if (m_noSessionRegisterRaisesMessage)
+		ueSessionRefusal::refuse(subject, "-", m_noSessionReason);
+	else
+		ueSessionRefusal::logRefusal(subject, "-", m_noSessionReason);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::beginServerSimNet(UWorld& world)
+{
+	SimNetLanes* const lanes = findDriverSimNetLanes(world, ognet::Role::Server);
+	checkf(lanes != nullptr && lanes->hostServiced(),
+		TEXT("UESimulationSession::beginServerSimNet: refuseToStart starts an authority session only on a dedicated server "
+			 "with the og-net driver, whose lanes are host-serviced. Was the detached server and the in-frame server's "
+			 "frame-point lanes (og-session-runtime task 14)"));
 	m_simNetLanes = lanes;
 
 	const ognet::EndpointConfig& config = lanes->endpoint().config();
@@ -1024,40 +1086,11 @@ void UESimulationSession<TraitsT>::beginServerSimNet(UWorld& world, ENetMode net
 		ogsimnet::correctionAllowanceBytes(config.lanes, config.budget, static_cast<double>(NetConfig::tickFrequencyHz)));
 	m_simNetServer->bindLifecycle(m_storage, m_reconciliation, m_inputResolution, m_netSync);
 	m_clockServer = lanes->clockServer();
-	checkf(m_simNetServer->immediate() == m_authorityLoop,
-		TEXT("UESimulationSession: the server's og-sim-net session reads its mode from the lanes' transport, which is immediate "
-			 "exactly when the lanes chose the authority loop; a session that disagreed would drain on the wrong thread"));
-	if (m_authorityLoop)
-	{
-		m_simNetServerHost->serveFromRunner();
-		m_simNetIdle.emplace(lanes->endpoint());
-		lanes->bindAuthorityRunner([this]() { m_simNetServerHost->publishRunnerRtt_GameThread(); },
-			[this]() { onAuthorityRunnerJoined_GameThread(); });
-	}
-	else
-	{
-		lanes->bindServerSession([this]() { m_simNetServer->dispatchFrame(); }, [this]() { m_simNetServer->flushFrame(); });
-	}
+	m_simNetIdle.emplace(lanes->endpoint());
+	lanes->bindAuthorityRunner([this]() { m_simNetServerHost->publishRunnerRtt_GameThread(); },
+		[this]() { onAuthorityRunnerJoined_GameThread(); });
 	lanes->setStopHandler([this]() { onSimNetLanesStopping(/*isServer=*/true); });
-	logSimTrafficImmediateRefusal(lanes->immediateDecision());
-	logSimNetHostLine(/*isServer=*/true, detached, /*immediate=*/m_authorityLoop);
-}
-
-template <typename TraitsT>
-bool UESimulationSession<TraitsT>::decideAuthorityLoop(UWorld& world, bool worldIsAuthority)
-{
-	if (!worldIsAuthority)
-		return false;
-	SimNetLanes* const lanes = findDriverSimNetLanes(world, ognet::Role::Server);
-	if (lanes != nullptr)
-		return lanes->authorityLoop();
-	if (readAuthorityLoopKnob() != 0)
-	{
-		UE_LOG(LogOGSimHost, Warning,
-			TEXT("[SimHost.Runner] og.Sim.AuthorityLoop=%d refused: this world has no og-net sim lanes (detached); this server "
-				 "steps inline on the game thread"), readAuthorityLoopKnob());
-	}
-	return false;
+	logSimNetHostLine(/*isServer=*/true);
 }
 
 template <typename TraitsT>
@@ -1090,8 +1123,6 @@ void UESimulationSession<TraitsT>::beforePump_Owner(double hostNowSeconds, TickR
 	}
 	if (m_manager.has_value())
 		noteAuthorityRateDoor_Owner(hostNowSeconds, rate);
-	if (!m_authorityLoop)
-		return;
 	std::vector<TUniqueFunction<void()>> requests;
 	{
 		const std::scoped_lock lock(m_lifecycleBridgeMutex);
@@ -1165,55 +1196,36 @@ void UESimulationSession<TraitsT>::beginClientSimNet(UWorld& world)
 		TEXT("UESimulationSession: the client binds the og-net session after the manager and the tier consumer exist: the "
 			 "bind replays the latched relay-delay floor (the manager's) and connection tier (the tier consumer's), and either "
 			 "apply returns early without its target. Was G-07's bind-then-pull order, on the timing and connection relays"));
-	SimNetLanes* lanes = findDriverSimNetLanes(world, ognet::Role::Client);
-	const bool detached = lanes == nullptr;
-	if (detached)
-	{
-		const UNetDriver* const driver = world.GetNetDriver();
-		UE_LOG(LogOGNet, Error,
-			TEXT("[SimNet.Host] refused role=client driver=%s: simulation traffic needs the og-net driver"),
-			driver != nullptr ? *driver->GetClass()->GetName() : TEXT("none"));
-		if (GEngine != nullptr)
-		{
-			GEngine->AddOnScreenDebugMessage(kSimNetDriverRefusedToastKey, kSimNetDriverRefusedToastSeconds, FColor::Red,
-				TEXT("Simulation traffic needs the og-net driver: this client simulates nothing"));
-		}
-		m_detachedSimNetLanes = SimNetLanes::makeDetached(ognet::Role::Client, ognet::EndpointConfig{});
-		lanes = m_detachedSimNetLanes.Get();
-	}
+	SimNetLanes* const lanes = findDriverSimNetLanes(world, ognet::Role::Client);
+	checkf(lanes != nullptr,
+		TEXT("UESimulationSession::beginClientSimNet: refuseToStart starts a client session only on the og-net driver. Was the "
+			 "detached client's lanes (og-session-runtime task 14)"));
 	m_simNetLanes = lanes;
-	m_immediateClient = lanes->isImmediate();
 	lanes->setOnRegisteredRemoved([this](uint8_t simId) { onSimNetRegisteredRemoved(simId); });
 	lanes->setStopHandler([this]() { onSimNetLanesStopping(/*isServer=*/false); });
-	if (m_immediateClient)
-		lanes->client()->bindLifecycle(m_storage, m_reconciliation, m_inputResolution, m_netSync);
+	lanes->client()->bindLifecycle(m_storage, m_reconciliation, m_inputResolution, m_netSync);
 	lanes->bindClientSession(*this);
-	if (!m_immediateClient)
-	{
-		m_displayTier->write() = readDisplayTier(*m_replicatedTierConsumer, m_manager->getTimeConfig(),
-			m_inputResolution.getClientEffectiveInputDelayTicks());
-		m_displayTier->publish();
-	}
-	logSimTrafficImmediateRefusal(lanes->immediateDecision());
-	logSimNetHostLine(/*isServer=*/false, detached, m_immediateClient);
+	logSimNetHostLine(/*isServer=*/false);
 }
 
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::onSimNetLanesStopping(bool isServer)
 {
 	if (!isServer)
+	{
 		teardownImmediateClient_GameThread();
+		checkf(m_registeredComponentsById.empty(),
+			TEXT("UESimulationSession::onSimNetLanesStopping: a client's teardown unregisters every character it registered, so "
+				 "nothing is left for the lanes' stop to unregister. Was the client arm of the in-frame unregistration "
+				 "(og-session-runtime task 14)"));
+	}
 	std::vector<unsigned int> ids;
 	ids.reserve(m_registeredComponentsById.size());
 	for (const auto& entry : m_registeredComponentsById)
 		ids.push_back(entry.first);
 	for (const unsigned int id : ids)
 	{
-		typename TraitsT::Component* const component = m_registeredComponentsById[id].Get();
-		if (isServer && m_authorityLoop)
-			requestRunnerUnregister_GameThread(id, component);
-		else
-			unregisterCharacter(id, component, isServer);
+		requestRunnerUnregister_GameThread(id, m_registeredComponentsById[id].Get());
 		m_simUnregisteredIds.insert(id);
 	}
 	m_simNetIdle.reset();
@@ -1364,13 +1376,6 @@ int32 UESimulationSession<TraitsT>::recomputeAndPublishEffectiveInputDelay()
         m_manager.has_value() ? (int)m_manager->getTimeConfig().relayDelayFloorTicks : 0);
 
     return deltaDelayTicks;
-}
-
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::publishServerClock_GameThread()
-{
-	if (m_manager.has_value() && !m_manager->runsPrediction() && m_simNetServer.has_value())
-		m_simNetServer->publishClock(static_cast<uint32_t>(getServerClock().getTick()));
 }
 
 template <typename TraitsT>
@@ -1895,14 +1900,13 @@ void UESimulationSession<TraitsT>::maybeLogClockSourceWindow()
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::onFrameStepsDue_Step(int32 firstUpcomingSimTick, int32 numSteps)
 {
-    if (publishesDisplayOnStep() && !m_immediateClient)
-        stageDisplayRelay_GameThread();
     static_assert(kFrameHealthProbeWindowSamples == kResimGateProbeWindowSamples,
         "PROBE A's window must stay the same length as ResimGateProbe's, so one [ResimProbe.Frame] "
         "window lines up against the surrounding [ResimProbe.Gate] windows without a resim-tick "
         "count on the line. Was the COMPARABLE WITH ResimGateProbe caution in PROBE A's banner.");
     {
-        const uint64 probeFrame = m_authorityLoop ? ++m_authorityWakes_Runner : static_cast<uint64>(GFrameCounter);
+        const bool isClient = m_manager.has_value() && m_manager->runsPrediction();
+        const uint64 probeFrame = isClient ? static_cast<uint64>(GFrameCounter) : ++m_authorityWakes_Runner;
         FrameHealthWindowSummary frameSummary;
         const bool frameWindowClosed = m_frameHealthProbe.noteFrame(
             probeFrame,
@@ -1913,7 +1917,6 @@ void UESimulationSession<TraitsT>::onFrameStepsDue_Step(int32 firstUpcomingSimTi
 
         if (frameWindowClosed)
         {
-            const bool isClient = m_manager.has_value() && m_manager->runsPrediction();
             char line[256];
 
             if (isClient)
@@ -1958,84 +1961,6 @@ void UESimulationSession<TraitsT>::onFrameStepsDue_Step(int32 firstUpcomingSimTi
             }
         }
     }
-
-    // ⛔G-18  docs/UESimulationSession-guards.md
-    if (!m_simNetServer.has_value())
-        return;
-
-    if (m_authorityLoop)
-        return;
-
-    checkf(IsInGameThread(),
-        TEXT("UESimulationSession: PROBE 6 ([RelayProbe.Budget], [PacketBudget]) reads the UNetDriver's client connections, "
-             "which are game-thread state. It runs only where onFrameStepsDue runs on the game thread (inline Jolt); "
-             "with the authority loop on, onFrameStepsDue runs on the runner once per stepping wake and PROBE 6 is retired "
-             "(the return above). Was og-input-latency P5-19's interim skip"));
-
-    if (const UWorld* world = m_owner.GetWorld())
-    {
-        if (const UNetDriver* netDriver = world->GetNetDriver())
-        {
-            const uint32 tickRateHz =
-                static_cast<uint32>(FMath::Max(1, netDriver->GetNetServerMaxTickRate()));
-            const uint64 nowMicros =
-                static_cast<uint64>(FPlatformTime::Seconds() * 1000000.0);
-
-            for (UNetConnection* conn : netDriver->ClientConnections)
-            {
-                if (conn == nullptr)
-                    continue;
-
-                {
-                    static bool s_loggedPacketBudget = false;
-                    if (!s_loggedPacketBudget)
-                    {
-                        s_loggedPacketBudget = true;
-                        const int32 usableBits = conn->GetMaxSingleBunchSizeBits();
-                        UE_LOG(LogOGNet, Warning,
-                            TEXT("[PacketBudget] usableSingleBunchBytes = %d, handlerBits = %d "
-                                 "(maxPacket=%d, usableBits=%d)"),
-                            // ∴D-01  docs/UESimulationSession-rationale.md
-                            (usableBits / 32) * 4, conn->MaxPacketHandlerBits,
-                            conn->MaxPacket, usableBits);
-                    }
-                }
-
-                ConnectionBudgetWindowSummary budget;
-                // ⛔G-19  docs/UESimulationSession-guards.md
-                const bool budgetWindowClosed = m_connectionBudgetProbe.noteSample(
-                    static_cast<uint32>(conn->GetUniqueID()),
-                    conn->CurrentNetSpeed,
-                    conn->QueuedBits,
-                    static_cast<uint64>(FMath::Max(0, conn->OutTotalBytes)),
-                    static_cast<uint64>(FMath::Max(0, conn->OutTotalPackets)),
-                    static_cast<uint64>(FMath::Max(0, conn->OutTotalPacketsLost)),
-                    tickRateHz, nowMicros, budget);
-
-                if (!budgetWindowClosed)
-                    continue;
-
-                char line[256];
-
-                std::snprintf(line, sizeof(line),
-                    "[Warning][RelayProbe.Budget] conn=%u frames=%u elapsedMs=%u "
-                    "netSpeedBps=%d allowanceBytesPerTick=%u outBytes=%u "
-                    "bytesPerTick=%u occupancyPctX10=%u",
-                    budget.connectionId, budget.samples, budget.elapsedMs,
-                    budget.netSpeedBps, budget.allowanceBytesPerTick,
-                    budget.outBytes, budget.bytesPerSample, budget.occupancyPctX10);
-                RouteOGMessage(line);
-
-                std::snprintf(line, sizeof(line),
-                    "[Warning][RelayProbe.Budget] conn=%u queuedBits min=%d max=%d "
-                    "mean=%d notReadyFrames=%u outPackets=%u bytesPerPacket=%u lost=%u",
-                    budget.connectionId, budget.queuedBitsMin, budget.queuedBitsMax,
-                    budget.queuedBitsMean, budget.notReadySamples,
-                    budget.outPackets, budget.bytesPerPacket, budget.outPacketsLost);
-                RouteOGMessage(line);
-            }
-        }
-    }
 }
 
 OGSIM_OPTIMIZE_ON
@@ -2069,11 +1994,6 @@ void UESimulationSession<TraitsT>::afterAuthorityBatch(int32 firstUpcomingSimTic
 {
     if (!m_simNetServer.has_value())
         return;
-    if (!m_authorityLoop)
-    {
-        m_simNetServer->afterBatch(firstUpcomingSimTick);
-        return;
-    }
     checkf(firstUpcomingSimTick != 0 || m_simNetServer->attachedConnections().empty(),
         TEXT("UESimulationSession::afterAuthorityBatch: the authority loop's first batch reports tick 0 (the driver publishes its "
              "offset after a tick ran), and a client capture reaped against it is refused by the coordinator's domain gate. The "
@@ -2119,7 +2039,7 @@ void UESimulationSession<TraitsT>::publishAuthorityPresentation_Runner()
             { Game::authorityPresentationSlice_Step(systems, id) } -> std::same_as<AuthorityPresentationSlice>;
             Game::presentAuthoritySlice(session, id, slice);
         },
-        "UESimulationSession<TraitsT>: with the authority loop on, the game's presentation of authority-only state is "
+        "UESimulationSession<TraitsT>: the game's presentation of authority-only state is "
         "two static hooks of TraitsT::Game over its AuthorityPresentationSlice: authorityPresentationSlice_Step(systems, id), "
         "read on the runner after each batch, and presentAuthoritySlice(session, id, slice), applied on the game thread "
         "from the newest published snapshot. Was the loop's skip of afterVisualization, whose ring-out score push read the "
@@ -2192,100 +2112,34 @@ void UESimulationSession<TraitsT>::recordAuthoritativeSlot(AActor& owner, [[mayb
 }
 
 template <typename TraitsT>
-template <typename FunctionT>
-void UESimulationSession<TraitsT>::forEachAuthorityCorrectionTick(FunctionT&& function) const
-{
-    if (!m_simNetServer.has_value())
-        return;
-    for (const auto& entry : m_simChannelsById)
-    {
-        const uint32 correctionTick = correctionTickOf(*entry.second);
-        if (correctionTick == 0u)
-            continue;
-        function(entry.first, correctionTick);
-    }
-}
-
-template <typename TraitsT>
-auto UESimulationSession<TraitsT>::addSimNetCharacter(unsigned int id, typename TraitsT::Component& owner) -> SimChannel*
-{
-    if (!m_simNetServer.has_value())
-        return nullptr;
-    checkf(id != 0u && id <= 0xFFu,
-        TEXT("UESimulationSession::addSimNetCharacter: og-sim-net's roster keys a character by its sim id (1..255); id %u is "
-             "not one"), id);
-    AActor* const pawn = owner.GetOwner();
-    const auto foundSlot = m_authoritativeSlotsByActor.find(pawn);
-    const uint8_t physicsSlot =
-        foundSlot != m_authoritativeSlotsByActor.end() ? static_cast<uint8_t>(foundSlot->second) : ogsimnet::kRosterNoSlot;
-    const UOGNetConnection* const ownerConnection = Cast<UOGNetConnection>(GetRootNetConnection(pawn));
-    const SimConnectionId ownerConn = ownerConnection != nullptr ? ownerConnection->OGNetId : kInvalidSimConnection;
-    const uint8_t localIndex = GetPlayerSlotForActor(pawn);
-    const FTCHARToUTF8 debugName(pawn != nullptr ? *pawn->GetName() : TEXT("none"));
-    return m_simNetServer->template addCharacter<Simulatable>(static_cast<uint8_t>(id), physicsSlot, ownerConn, localIndex,
-        std::string(debugName.Get()));
-}
-
-template <typename TraitsT>
-auto UESimulationSession<TraitsT>::registeredChannelFor(unsigned int id) const -> SimChannel*
-{
-    const auto found = m_simChannelsById.find(id);
-    return found != m_simChannelsById.end() ? found->second : nullptr;
-}
-
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::forgetSimNetCharacter(unsigned int id, const AActor* pawn, bool isAuthority)
+void UESimulationSession<TraitsT>::forgetSimNetCharacter(unsigned int id, const AActor* pawn)
 {
     m_registeredComponentsById.erase(id);
-    m_simChannelsById.erase(id);
     m_authoritativeSlotsByActor.erase(pawn);
     if (id == 0u || id > 0xFFu)
         return;
-    const uint8_t simId = static_cast<uint8_t>(id);
-    if (isAuthority)
-    {
-        if (m_simNetServer.has_value() && m_simNetServer->template channel<Simulatable>(simId) != nullptr)
-            m_simNetServer->removeCharacter(simId, ogsimnet::RosterRemoveReason::Left);
-        return;
-    }
     if (m_simNetLanes != nullptr)
-        m_simNetLanes->editBindings().markUnregistered(simId);
+        m_simNetLanes->editBindings().markUnregistered(static_cast<uint8_t>(id));
 }
 
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::onSimNetRegisteredRemoved(uint8_t simId)
 {
     const unsigned int id = simId;
-    if (m_immediateClient)
-    {
-        m_systemsNotified_Step.erase(id);
-        postLifecycleOutcome(id, LifecycleOutcomeKind::RosterRemoved);
-        return;
-    }
-    const auto found = m_registeredComponentsById.find(id);
-    checkf(found != m_registeredComponentsById.end(),
-        TEXT("UESimulationSession::onSimNetRegisteredRemoved: sim id %u is registered in the roster bindings and not in the "
-             "session; the session marks an id registered only after it registered it (tryRegister)"), id);
-    if (found == m_registeredComponentsById.end())
-        return;
-    unregisterCharacter(id, found->second.Get(), /*isAuthority=*/false);
-    m_simUnregisteredIds.insert(id);
+    m_systemsNotified_Step.erase(id);
+    postLifecycleOutcome(id, LifecycleOutcomeKind::RosterRemoved);
 }
 
 template <typename TraitsT>
 ClientBindStep UESimulationSession<TraitsT>::clientBindStep(unsigned int id, bool engineSaysLocal)
 {
-    if (m_simNetLanes == nullptr || m_simNetLanes->isDetached())
+    if (!m_manager.has_value())
     {
-        if (!m_detachedClientAbandonLogged)
-        {
-            m_detachedClientAbandonLogged = true;
-            UE_LOG(LogOGMgmt, Error,
-                TEXT("DeferredReg: id=%u is not registered: this client's world has no og-net sim lanes, so no roster entry "
-                     "will ever arrive. Characters stay unsimulated on this peer (one-shot)"), id);
-        }
+        refuseRegistrationWithoutSession(id);
         return ClientBindStep::Abandon;
     }
+    if (m_simNetLanes == nullptr)
+        return ClientBindStep::Abandon;
     checkf(id != 0u && id <= 0xFFu,
         TEXT("UESimulationSession::clientBindStep: the roster keys a character by its sim id (1..255); id %u is not one"), id);
     const ogsimnet::BindVerdict verdict = m_simNetLanes->bindings().verdict(static_cast<uint8_t>(id), engineSaysLocal);
@@ -2336,6 +2190,9 @@ void UESimulationSession<TraitsT>::beginPlay()
 	if (uWorld == nullptr)
 		checkf(false, TEXT("UESimulationSession: unexpected state"));
 
+	if (refuseToStart(*uWorld, m_owner.GetNetMode()))
+		return;
+
 	m_game.beforeWorldBuild(*uWorld, m_owner.GetNetMode(),
 		m_manager.has_value() || m_integrationLayer.has_value(), m_staticData);
 
@@ -2353,17 +2210,11 @@ void UESimulationSession<TraitsT>::beginPlay()
 
 	auto sessionKnobs = readSessionKnobs(worldIsAuthority);
 
-	m_authorityLoop = decideAuthorityLoop(*uWorld, worldIsAuthority);
-
 	auto configureSession = [&]()
 	{
 		if (worldIsAuthority)
 		{
-			if (s_instances[0] != nullptr)
-			{
-				checkf(false, TEXT("UESimulationSession: unexpected state"));
-			}
-			s_instances[0] = this;
+			registerInstance();
 			auto pctmloggerServer = [](const char* msg) { RouteOGMessage(msg); };
 			m_integrationLayer.emplace(m_storage, m_staticData, *m_physAdapter, *m_queryAdapter);
 			Game::emplaceSystems(m_systemsExec, *m_physAdapter, *m_queryAdapter);
@@ -2377,7 +2228,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 			// ⛔G-23  docs/UESimulationSession-guards.md
 			m_inputResolution.template setNeutralInput<Simulatable>(Game::neutralInput());
 
-			beginServerSimNet(*uWorld, worldNetMode);
+			beginServerSimNet(*uWorld);
 
 			applySessionKnobs(sessionKnobs);
 
@@ -2390,11 +2241,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 		}
 		else
 		{
-			if (s_instances[1] != nullptr)
-			{
-				checkf(false, TEXT("UESimulationSession: unexpected state"));
-			}
-			s_instances[1] = this;
+			registerInstance();
 			auto pctmlogger = [](const char* msg) { RouteOGMessage(msg); };
 			m_integrationLayer.emplace(m_storage, m_staticData, *m_physAdapter, *m_queryAdapter);
 			Game::emplaceSystems(m_systemsExec, *m_physAdapter, *m_queryAdapter);
@@ -2437,7 +2284,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 		}
 	};
 
-	if (m_authorityLoop)
+	if (worldIsAuthority)
 	{
 		const bool highResolutionWait = findDriverSimNetLanes(*uWorld, ognet::Role::Server)->endpoint().hasHighResolutionWait();
 		m_physicsBackend.buildWorld(*uWorld, dt, worldIsAuthority, /*freeRunning=*/true);
@@ -2460,7 +2307,12 @@ void UESimulationSession<TraitsT>::endPlay()
 {
 	// ⛔G-20  docs/UESimulationSession-guards.md
 	m_physicsBackend.onEndPlayBegin();
-	m_runnerStopped = m_authorityLoop;
+	if (!m_manager.has_value())
+	{
+		unregisterInstance();
+		return;
+	}
+	m_runnerStopped = !m_manager->runsPrediction();
 
 	teardownImmediateClient_GameThread();
 
@@ -2472,7 +2324,6 @@ void UESimulationSession<TraitsT>::endPlay()
 	m_simNetServer.reset();
 	m_simNetServerHost.reset();
 	m_registeredComponentsById.clear();
-	m_simChannelsById.clear();
 	m_authoritativeSlotsByActor.clear();
 	m_simUnregisteredIds.clear();
 	m_pendingUnregisters.clear();
@@ -2484,10 +2335,7 @@ void UESimulationSession<TraitsT>::endPlay()
 		m_displayPublisher->release_GameThread(m_heldDisplaySnapshot);
 	m_heldDisplaySnapshot = nullptr;
 
-	if (s_instances[0] == this)
-		s_instances[0] = nullptr;
-	if (s_instances[1] == this)
-		s_instances[1] = nullptr;
+	unregisterInstance();
 
 	if (UWorld* World = m_owner.GetWorld())
 	{
@@ -2507,73 +2355,20 @@ void UESimulationSession<TraitsT>::onPostPhysicsStep()
 
 	m_physicsBackend.beforePresent_GameThread();
 
-	if (m_immediateClient || m_authorityLoop)
-		collectLifecycleOutcomes_GameThread();
+	collectLifecycleOutcomes_GameThread();
 
-	if (m_authorityLoop)
+	if (!runsPrediction())
 	{
 		presentAuthority_GameThread();
 		m_latencyBudgetDiagnostics.tick_GameThread();
 		return;
 	}
 
-	onPostSimulationGameThread();
-
-	publishServerClock_GameThread();
-
-	if (m_detachedSimNetLanes.IsValid() && m_simNetLanes == m_detachedSimNetLanes.Get())
-	{
-		m_detachedSimNetLanes->afterDispatch();
-		m_detachedSimNetLanes->onTickFlush();
-	}
-
-	if (!publishesDisplayOnStep())
-		publishDisplaySnapshot_GameThread();
-
 	refreshDisplayView_GameThread();
 
 	Game::afterVisualization(*this);
 
 	m_latencyBudgetDiagnostics.tick_GameThread();
-}
-
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::publishDisplaySnapshot_GameThread()
-{
-	checkf(!m_authorityLoop,
-		TEXT("UESimulationSession::publishDisplaySnapshot_GameThread fills the display snapshot from storage, the "
-			 "reconciliation and the input resolution on the game thread; with the authority loop on the runner writes them, "
-			 "and a dedicated server shows nothing. Was og-input-latency P5-19's loop return alone (P5-16 F6)"));
-	if (!m_manager.has_value())
-		return;
-
-	DisplayClockReading clock;
-	DisplayTierReading  tier;
-	if (m_manager->runsPrediction())
-	{
-		clock = readDisplayClock(m_manager->getClientClock(), m_manager->getNetworkEstimator());
-		if (m_immediateClient)
-		{
-			if (const DisplayTierReading* const published = m_displayTier->acquireLatest())
-				tier = *published;
-		}
-		else if (m_replicatedTierConsumer.has_value())
-		{
-			tier = readDisplayTier(*m_replicatedTierConsumer, m_manager->getTimeConfig(),
-				m_inputResolution.getClientEffectiveInputDelayTicks());
-		}
-	}
-	else
-	{
-		const SimulationTimeStep step = m_manager->getServerClock().getSimulationStep();
-		clock.predictionTick   = step.getTick();
-		clock.stepDeltaSeconds = step.getDeltaSeconds();
-	}
-
-	m_displayPublisher->publish_Step([&](DisplaySnapshot& snapshot)
-	{
-		fillSimulationDisplaySnapshot(snapshot, m_storage, m_inputResolution, m_reconciliation, clock, tier);
-	});
 }
 
 template <typename TraitsT>
@@ -2587,7 +2382,8 @@ void UESimulationSession<TraitsT>::publishDisplaySnapshot_Step()
 {
 	checkf(publishesDisplayOnStep(),
 		TEXT("UESimulationSession::publishDisplaySnapshot_Step is the driver-scheduled client's display publish, after its step "
-			 "batch on the step thread; an authority publishes on its own thread in onPostPhysicsStep. "
+			 "batch on the step thread; an authority publishes its presentation on its runner instead "
+			 "(publishAuthorityPresentation_Runner) and fills no display snapshot. "
 			 "Was the game-thread fill racing the worker step (og-input-latency task P5-36)"));
 
 	const DisplayClockReading clock = readDisplayClock(m_manager->getClientClock(), m_manager->getNetworkEstimator());
@@ -2595,30 +2391,10 @@ void UESimulationSession<TraitsT>::publishDisplaySnapshot_Step()
 	if (const DisplayTierReading* const published = m_displayTier->acquireLatest())
 		tier = *published;
 
-	if (m_immediateClient)
-	{
-		m_displayPublisher->publish_Step([&](DisplaySnapshot& snapshot)
-		{
-			fillSimulationDisplaySnapshot(snapshot, m_storage, m_inputResolution, m_reconciliation, clock, tier);
-		});
-		return;
-	}
-
-	const DisplayRelay* const staged = m_displayRelay->acquireLatest();
-	checkf(staged != nullptr,
-		TEXT("UESimulationSession::publishDisplaySnapshot_Step: a frame-locked client's batch ended before any relay stage. "
-			 "onFrameStepsDue_Step stages the game thread's relay fields before every batch is dispatched"));
 	m_displayPublisher->publish_Step([&](DisplaySnapshot& snapshot)
 	{
-		fillSimulationDisplaySnapshot(snapshot, m_storage, m_inputResolution, m_reconciliation, clock, tier, *staged);
+		fillSimulationDisplaySnapshot(snapshot, m_storage, m_inputResolution, m_reconciliation, clock, tier);
 	});
-}
-
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::stageDisplayRelay_GameThread()
-{
-	stageDisplayRelay<Simulatable>(m_displayRelay->write(), m_storage, m_inputResolution);
-	m_displayRelay->publish();
 }
 
 template <typename TraitsT>
@@ -2662,6 +2438,12 @@ TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
         "isAuthority) on the session's Game& (they reach the game's own parts). Added by "
         "og-ue-simulationcomponentandmanagersplit task 28 (manager design 4.3).");
 
+    if (!m_manager.has_value())
+    {
+        refuseRegistrationWithoutSession(id);
+        return TryRegisterStatus::Refused;
+    }
+
     auto it = m_pendingRegistrations.find(id);
     if (it == m_pendingRegistrations.end())
     {
@@ -2678,7 +2460,7 @@ TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
     if (record.queued)
         return finishQueuedRegistration(id, owner);
 
-    if (record.isAuthority && m_authorityLoop)
+    if (record.isAuthority)
         return tryRegisterOnRunner(id, owner);
 
     if (!record.bodiesCreated)
@@ -2720,70 +2502,7 @@ TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
     if (!allResolvable)
         return TryRegisterStatus::Pending;
 
-    if (!record.isAuthority && m_immediateClient)
-        return tryRegisterQueued(id, owner);
-
-    SimChannel* channel = nullptr;
-    if (record.isAuthority)
-    {
-        channel = addSimNetCharacter(id, owner);
-        if (channel == nullptr)
-        {
-            UE_LOG(LogOGMgmt, Error,
-                TEXT("tryRegister: id=%u refused by the og-sim-net server (its [Roster.Refused] line names why); the character "
-                     "stays unsimulated"), id);
-            m_pendingRegistrations.erase(it);
-            return TryRegisterStatus::Refused;
-        }
-        registerSimulatable<Simulatable>(
-            m_storage, m_reconciliation, m_inputResolution, m_netSync,
-            id, std::move(*record.simulatable),
-            /*predictionOwner=*/*channel,
-            /*authorityOwner=*/*channel);
-    }
-    else
-    {
-        typename SimNetLanes::Client* const client = m_simNetLanes != nullptr ? m_simNetLanes->client() : nullptr;
-        channel = client != nullptr && id != 0u && id <= 0xFFu ? client->channel(static_cast<uint8_t>(id)) : nullptr;
-        if (channel == nullptr)
-            return TryRegisterStatus::Pending;
-        const bool hasProvider = static_cast<bool>(record.inputProvider);
-        checkf(m_simNetLanes->bindings().verdict(static_cast<uint8_t>(id), hasProvider).step == ogsimnet::BindStep::Ready,
-            TEXT("UESimulationSession::tryRegister: id=%u registers %s an input provider, and its roster entry says the other: "
-                 "the provider is built for the engine's autonomous proxy, which clientBindStep checked against the roster. Was "
-                 "the engine role alone (isLocallyPredicted)"), id, hasProvider ? TEXT("with") : TEXT("without"));
-        registerSimulatable<Simulatable>(
-            m_storage, m_reconciliation, m_inputResolution, m_netSync,
-            id, std::move(*record.simulatable),
-            /*owner=*/*channel,
-            /*inputProvider=*/m_latencyBudgetDiagnostics.wrapInputProvider(
-                id, owner, std::move(record.inputProvider)));
-        if (hasProvider)
-        {
-            channel->setOnInputHandedCallback([this, id](const InputBundleBuffer& bundle)
-            {
-                bundle.template forEachSlot<PlayerInput>([this, id](uint32 captureTick, const PlayerInput&)
-                {
-                    m_latencyBudgetDiagnostics.stamp(latencyBudget::Stream::Input, id, captureTick,
-                        latencyBudget::Point::Handed);
-                });
-            });
-        }
-        m_simNetLanes->editBindings().markRegistered(static_cast<uint8_t>(id));
-    }
-    m_registeredComponentsById[id] = &owner;
-    m_simChannelsById[id] = channel;
-    UE_LOG(LogOGMgmt, Log, TEXT("tryRegister: registered simulatable id=%u isAuthority=%d"), id, isAuthority ? 1 : 0);
-
-    m_game.afterRegistered(id, record.isAuthority);
-
-    // ⛔G-25  docs/UESimulationSession-guards.md
-    m_manager->notifyCharacterRegistered(id);
-
-    m_physicsBackend.onRegistered_GameThread(owner, id);
-
-    m_pendingRegistrations.erase(it);
-    return TryRegisterStatus::Ready;
+    return tryRegisterQueued(id, owner);
 }
 
 template <typename TraitsT>
@@ -2796,54 +2515,20 @@ void UESimulationSession<TraitsT>::unregisterFromNewFramework(
         "it replaced: after the reception forget, before the latency forget. Added by "
         "og-ue-simulationcomponentandmanagersplit task 28 (manager design 4.3).");
 
+    if (!m_manager.has_value())
+        return;
+
     // ⛔G-30  docs/UESimulationSession-guards.md
     if (m_simUnregisteredIds.erase(id) != 0u)
         return;
 
-    if (!isAuthority && m_immediateClient)
+    if (!isAuthority)
     {
         requestQueuedUnregister_GameThread(id, owner);
         return;
     }
 
-    if (isAuthority && m_authorityLoop)
-    {
-        requestRunnerUnregister_GameThread(id, &owner);
-        return;
-    }
-
-    unregisterCharacter(id, &owner, isAuthority);
-}
-
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::unregisterCharacter(unsigned int id, typename TraitsT::Component* owner, bool isAuthority)
-{
-    // ⛔G-26  docs/UESimulationSession-guards.md
-    if (m_storage.template has<Simulatable>(id))
-    {
-        m_manager->notifyCharacterUnregistered(id);
-    }
-
-    SimChannel* const channel = registeredChannelFor(id);
-    unregisterSimulatable<Simulatable>(
-        m_storage, m_reconciliation, m_inputResolution, m_netSync,
-        id,
-        /*predictionOwner=*/channel,
-        /*authorityOwner=*/isAuthority ? channel : nullptr);
-    if (channel != nullptr)
-        channel->clearOnInputHandedCallback();
-
-    // ⛔G-13  docs/UESimulationSession-guards.md
-    forgetSimNetCharacter(id, owner != nullptr ? owner->GetOwner() : nullptr, isAuthority);
-
-    m_game.onUnregistered(id);
-
-    m_latencyBudgetDiagnostics.forgetCharacter(id);
-
-    if (owner != nullptr)
-        m_physicsBackend.onUnregistered_GameThread(*owner, id);
-
-    UE_LOG(LogOGMgmt, Log, TEXT("NewFramework: unregistered simulatable id=%u"), id);
+    requestRunnerUnregister_GameThread(id, &owner);
 }
 
 OGSIM_OPTIMIZE_ON
@@ -2853,7 +2538,7 @@ OGSIM_OPTIMIZE_OFF
 template <typename TraitsT>
 typename UESimulationSession<TraitsT>::SimNetLanes::Client* UESimulationSession<TraitsT>::boundImmediateClient_Step() const
 {
-    if (!m_immediateClient)
+    if (!runsPrediction())
         return nullptr;
     SimNetLanes* const lanes = m_simNetLanes;
     typename SimNetLanes::Client* const client = lanes != nullptr ? lanes->client() : nullptr;
@@ -3019,7 +2704,7 @@ template <typename TraitsT>
 void UESimulationSession<TraitsT>::unregisterCharacterHostOnly(unsigned int id, typename TraitsT::Component* owner,
     bool releaseBodiesNow)
 {
-    forgetSimNetCharacter(id, owner != nullptr ? owner->GetOwner() : nullptr, /*isAuthority=*/false);
+    forgetSimNetCharacter(id, owner != nullptr ? owner->GetOwner() : nullptr);
     m_game.onUnregistered(id);
     m_latencyBudgetDiagnostics.forgetCharacter(id);
     if (releaseBodiesNow && owner != nullptr)
@@ -3276,7 +2961,7 @@ void UESimulationSession<TraitsT>::releaseOnRunner_Runner(unsigned int id, uint6
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::teardownImmediateClient_GameThread()
 {
-    if (!m_immediateClient || m_immediateStepsStopped)
+    if (!runsPrediction() || m_immediateStepsStopped)
         return;
     // ⛔G-34  docs/UESimulationSession-guards.md
     m_physicsBackend.onEndPlayBegin();

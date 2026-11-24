@@ -71,13 +71,14 @@ duplicate in `[LatencyBudget.Window]`.
 
 ## G-05 — the read shadow is the step thread's; `forgetCharacter` never touches it
 
-**Site:** the blank line after `m_lastHandedCorrectionTick.erase(id);` at the end of `forgetCharacter` (an absence
-tag).
+**Site:** the blank line after the lane forget (`m_probe->forgetLane(id);`) at the end of `forgetCharacter` (an absence
+tag). Re-sited by og-session-runtime task 14: the erase it followed (the in-frame server's game-thread last-handed map) went
+with its map.
 
 **The prohibition.** ⛔ Do not erase, clear or otherwise touch `m_seenReads_Physics` here, or anywhere else on the
-game thread, however natural it looks beside the erase above it. The same holds for `m_lastHandedCorrectionTick_Runner`
-(og-input-latency task P5-20): it is the authority runner's twin of the erased map above, and the erase must not be
-copied to it.
+game thread, however natural it looks beside the forget above it. The same holds for `m_lastHandedCorrectionTick_Runner`
+(og-input-latency task P5-20): it is the authority runner's dedup map. Until og-session-runtime task 14 its game-thread twin
+was erased here, and that erase must not be copied to it.
 
 **The consequence.** `forgetCharacter` runs on the game thread. `m_seenReads_Physics` is read and written only by
 `postRelayedReads_Internal`, on the step's thread, with no lock and no mailbox. An erase here races a client step
@@ -101,6 +102,7 @@ character that reuses the id and whose first correction carries the remembered t
 above `if (!component->isNetSyncBound()) continue;` in `tick_GameThread`'s server loop.
 
 **Why it retired.** Its subject moved. Task P5-5 moved the loop's walk of the session's delayed-input map (the null check,
-this skip, the correction-buffer read and the skip of tick 0) into the session's `forEachAuthorityCorrectionTick`, which
+this skip, the correction-buffer read and the skip of tick 0) into the session's correction-tick walk (deleted by
+og-session-runtime task 14), which
 `tick_GameThread` now calls with the per-id `Handed` stamp. The entry moved with its text, re-worded only for the new site.
 **Successor:** `UESimulationSession-guards.md` G-29.

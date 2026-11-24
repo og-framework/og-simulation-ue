@@ -95,7 +95,7 @@ the tick). An input set cannot frame a 0-byte entry: a transport that appended o
 set, which drops every other local player's bundle in it. `SimNetTransport` refuses the span itself, but counts it as a
 malformed bundle (`inputBundlesRefused`), which hides real refusals.
 
-**What breaks if it moves.** `SimNetClient.AFrameSendsOneHeldSetAndDropsEmptyBundles` fails: `emptyBundles` 0 and
+**What breaks if it moves.** `SimNetClient.ASetDropsEmptyBundlesAndCarriesEachNonEmptyOne` fails: `emptyBundles` 0 and
 `inputBundlesRefused` 1. `SimNetServer.ItsChannelIsTheSessionChannelTypeAndAnEmptyBundleIsCounted` fails on the server's
 `emptyBundles`.
 

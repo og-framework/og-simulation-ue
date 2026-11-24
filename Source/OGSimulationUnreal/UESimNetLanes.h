@@ -20,10 +20,8 @@
 #include "OGSimulation/LatencyBudgetProbe.h"
 #include "OGSimulation/Network/SimTransport.h"
 #include "OGSimulationUnreal/OGSimulationUnreal.h"
-#include "OGSimulationUnreal/UEAuthorityRunner.h"
 #include "OGSimulationUnreal/UESimNetHost.h"
 #include "OGSimulationUnreal/UESimulationLogRoutes.h"
-#include "OGSimulationUnreal/UETickDriverHost.h"
 #include "Templates/Function.h"
 #include "Templates/UniquePtr.h"
 
@@ -39,15 +37,6 @@
 
 inline constexpr size_t kUESimNetInboxSlots = 2048u;
 
-enum class ESimTrafficImmediate : uint8
-{
-	Off,
-	On,
-	RefusedServer,
-	RefusedRunInline,
-	RefusedDetached
-};
-
 inline std::optional<int32> readSimTrafficImmediateKnob()
 {
 	if (GConfig == nullptr)
@@ -61,40 +50,20 @@ inline std::optional<int32> readSimTrafficImmediateKnob()
 	return std::nullopt;
 }
 
-inline ESimTrafficImmediate decideSimTrafficImmediate(std::optional<int32> knob, bool isServer, bool runsInline, bool detached,
-	bool serverAuthorityLoop = false)
+constexpr bool simTrafficImmediateKnobRefused(std::optional<int32> knob)
 {
-	if (!knob.has_value() || *knob == 0)
-		return ESimTrafficImmediate::Off;
-	if (isServer)
-		return serverAuthorityLoop ? ESimTrafficImmediate::On : ESimTrafficImmediate::RefusedServer;
-	if (runsInline)
-		return ESimTrafficImmediate::RefusedRunInline;
-	if (detached)
-		return ESimTrafficImmediate::RefusedDetached;
-	return ESimTrafficImmediate::On;
+	return knob.has_value() && *knob == 0;
+}
+
+constexpr ognetunreal::IoMode simLanesIoMode(bool isServer, bool dedicatedServer)
+{
+	return isServer && dedicatedServer ? ognetunreal::IoMode::HostServiced : ognetunreal::IoMode::OwnThread;
 }
 
 using UESimNetTransport = ogsimnet::SimNetTransport<ognetunreal::SimLaneEndpoint, kUESimNetInboxSlots>;
 
 template <typename SimT>
 using UESimNetChannel = ogsimnet::SessionChannel<SimT, typename UESimNetTransport::ChannelTransport>;
-
-enum class EAuthorityLoop : uint8
-{
-	Off,
-	On,
-	RefusedNotDedicated
-};
-
-inline EAuthorityLoop decideAuthorityLoop(int32 knob, bool isServer, bool dedicatedServer)
-{
-	if (knob == 0 || !isServer)
-		return EAuthorityLoop::Off;
-	if (!dedicatedServer)
-		return EAuthorityLoop::RefusedNotDedicated;
-	return EAuthorityLoop::On;
-}
 
 struct FUEPlatformClock
 {
@@ -189,22 +158,10 @@ class UESimNetLanesServerHost : public UESimNetServerHost<TraitsT>
 public:
 	using Base::Base;
 
-	void serveFromRunner() { m_fromRunner = true; }
-
-	double rttMs(SimConnectionId conn)
-	{
-		if (!m_fromRunner)
-			return Base::rttMs(conn);
-		return m_runnerRtt.read(conn);
-	}
+	double rttMs(SimConnectionId conn) { return m_runnerRtt.read(conn); }
 
 	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds)
 	{
-		if (!m_fromRunner)
-		{
-			Base::stampServerReceived(simId, captureTick, recvSeconds);
-			return;
-		}
 		if (this->session() == nullptr)
 			return;
 		this->session()->editLatencyBudgetDiagnostics().stampServerReceived_Internal(simId, captureTick, recvSeconds);
@@ -212,11 +169,6 @@ public:
 
 	void stampHanded(uint8_t simId, uint32_t captureTick)
 	{
-		if (!m_fromRunner)
-		{
-			Base::stampHanded(simId, captureTick);
-			return;
-		}
 		if (this->session() != nullptr)
 			this->session()->editLatencyBudgetDiagnostics().stampHandedAndLeft_Internal(simId, captureTick);
 	}
@@ -229,7 +181,7 @@ public:
 
 	void publishRunnerRtt_GameThread()
 	{
-		checkf(IsInGameThread() && m_fromRunner,
+		checkf(IsInGameThread(),
 			TEXT("UESimNetLanesServerHost::publishRunnerRtt_GameThread: the game thread reads the driver's connections and "
 				 "publishes each one's round trip for the authority runner, which reads only the published copy"));
 		size_t slot = 0u;
@@ -258,7 +210,6 @@ private:
 		return roundTripMs;
 	}
 
-	bool m_fromRunner = false;
 	FRunnerRttTable m_runnerRtt;
 };
 
@@ -319,26 +270,14 @@ public:
 	UESimNetLanes(const UESimNetLanes&) = delete;
 	UESimNetLanes& operator=(const UESimNetLanes&) = delete;
 
-	static TUniquePtr<UESimNetLanes> makeDetached(ognet::Role role, const ognet::EndpointConfig& config)
-	{
-		ognet::EndpointConfig detachedConfig = config;
-		detachedConfig.role = role;
-		TUniquePtr<UESimNetLanes> lanes = MakeUnique<UESimNetLanes>(nullptr, role == ognet::Role::Server);
-		lanes->m_detachedEndpoint.reset(
-			new ognetunreal::SimLaneEndpoint(ognetunreal::SimLaneEndpoint::detached(detachedConfig)));
-		lanes->beforeStart(*lanes->m_detachedEndpoint);
-		lanes->afterStart();
-		return lanes;
-	}
-
 	virtual ognetunreal::IoMode ioMode(bool bIsServer) override
 	{
 		checkf(bIsServer == m_isServer,
 			TEXT("UESimNetLanes::ioMode: the driver asks for its own role's I/O mode, and the game's factory made these lanes "
 				 "for that role"));
-		m_authorityLoop = decideAuthorityLoop(readAuthorityLoopKnob(), m_isServer, IsRunningDedicatedServer());
-		logAuthorityLoopRefusal();
-		return m_authorityLoop == EAuthorityLoop::On ? ognetunreal::IoMode::HostServiced : ognetunreal::IoMode::OwnThread;
+		m_hostServiced = simLanesIoMode(m_isServer, m_driver != nullptr && m_driver->GetNetMode() == NM_DedicatedServer)
+			== ognetunreal::IoMode::HostServiced;
+		return m_hostServiced ? ognetunreal::IoMode::HostServiced : ognetunreal::IoMode::OwnThread;
 	}
 
 	virtual void beforeStart(ognetunreal::SimLaneEndpoint& simEndpoint) override
@@ -348,10 +287,9 @@ public:
 			TEXT("UESimNetLanes::beforeStart: the lanes were made for the %s role and the endpoint is the other role's"),
 			m_isServer ? TEXT("server") : TEXT("client"));
 		m_endpoint = &simEndpoint;
-		m_immediateDecision = decideSimTrafficImmediate(readSimTrafficImmediateKnob(), m_isServer, UETickDriverHost::runInline(),
-			isDetached(), authorityLoop());
-		const bool immediate = m_immediateDecision == ESimTrafficImmediate::On || authorityLoop();
-		m_transport.emplace(ogsimnet::simNetConfigFor(simEndpoint.config(), immediate));
+		if (!m_isServer)
+			m_simTrafficImmediateRefused = simTrafficImmediateKnobRefused(readSimTrafficImmediateKnob());
+		m_transport.emplace(ogsimnet::simNetConfigFor(simEndpoint.config()));
 		if (m_isServer)
 			m_clockServer.emplace(*m_transport, m_clock);
 		else
@@ -360,13 +298,10 @@ public:
 		simEndpoint.setConnectionHandler(m_transport->connectionHandler());
 		if (m_isServer)
 			return;
-		m_clientHost.emplace(m_driver, simEndpoint, m_bindings, immediate);
+		m_clientHost.emplace(m_driver, simEndpoint, m_bindings);
 		// ⛔G-01  docs/UESimNetLanes-guards.md
 		m_client.emplace(*m_clientHost, *m_transport);
 		m_clientHost->setRoster(m_client->roster());
-		checkf(m_client->immediate() == immediate,
-			TEXT("UESimNetLanes::beforeStart: the client session reads its mode from the transport's config(); a session that "
-				 "disagreed with the lanes would drain on the wrong thread"));
 	}
 
 	virtual void afterStart() override
@@ -381,19 +316,11 @@ public:
 		{
 			if (m_publishRunnerRtt)
 				m_publishRunnerRtt();
-			if (m_serverDispatch)
-				m_serverDispatch();
 			return;
 		}
 		checkf(m_client.has_value(), TEXT("UESimNetLanes::afterDispatch on a client before beforeStart"));
 		m_clockClient->servicePing();
 		publishAckSrtt_GameThread();
-		if (!m_client->immediate())
-		{
-			m_client->dispatchFrame();
-			actOnDisconnectRequest();
-			return;
-		}
 		m_clientHost->publishServerRtt_GameThread();
 		// ⛔G-02  docs/UESimNetLanes-guards.md
 		if (m_clientSessionBound.load(std::memory_order_relaxed))
@@ -405,13 +332,9 @@ public:
 	virtual void onTickFlush() override
 	{
 		if (m_isServer)
-		{
-			if (m_serverFlush)
-				m_serverFlush();
 			return;
-		}
 		checkf(m_client.has_value(), TEXT("UESimNetLanes::onTickFlush on a client before beforeStart"));
-		if (m_client->immediate() && m_clientSessionBound.load(std::memory_order_relaxed))
+		if (m_clientSessionBound.load(std::memory_order_relaxed))
 			return;
 		m_client->flushFrame();
 	}
@@ -419,11 +342,11 @@ public:
 	void drainClient_Step()
 	{
 		checkf(!IsInGameThread(),
-			TEXT("UESimNetLanes::drainClient_Step: an immediate client drains at the start of each step, on the step's thread; "
+			TEXT("UESimNetLanes::drainClient_Step: a bound client drains at the start of each step, on the step's thread; "
 				 "on the game thread every consumer the drain reaches would race the step. Was the game thread's frame-point "
 				 "drain (afterDispatch)"));
-		checkf(m_client.has_value() && m_client->immediate() && m_clientSessionBound.load(std::memory_order_relaxed),
-			TEXT("UESimNetLanes::drainClient_Step: only a bound, immediate client's session drains from its steps"));
+		checkf(m_client.has_value() && m_clientSessionBound.load(std::memory_order_relaxed),
+			TEXT("UESimNetLanes::drainClient_Step: only a bound client's session drains from its steps"));
 		m_client->drain();
 		actOnDisconnectRequest();
 		m_client->flushFrame();
@@ -431,8 +354,8 @@ public:
 
 	void drainClientWhileStopped_GameThread()
 	{
-		checkf(IsInGameThread() && m_client.has_value() && m_client->immediate(),
-			TEXT("UESimNetLanes::drainClientWhileStopped_GameThread: the game thread drains an immediate client only at its "
+		checkf(IsInGameThread() && m_client.has_value(),
+			TEXT("UESimNetLanes::drainClientWhileStopped_GameThread: the game thread drains a bound client only at its "
 				 "session's teardown, after the steps have stopped, to apply the unregistrations it queued"));
 		m_client->drain();
 	}
@@ -481,42 +404,28 @@ public:
 
 	void setStopHandler(FFrameFn onStop) { m_onStop = MoveTemp(onStop); }
 
-	void bindServerSession(FFrameFn dispatchFn, FFrameFn flushFn)
-	{
-		checkf(m_isServer, TEXT("UESimNetLanes::bindServerSession on a client's lanes"));
-		checkf(static_cast<bool>(dispatchFn) && static_cast<bool>(flushFn),
-			TEXT("UESimNetLanes::bindServerSession: a server session binds both frame points"));
-		m_serverDispatch = MoveTemp(dispatchFn);
-		m_serverFlush = MoveTemp(flushFn);
-	}
-
 	void unbindServerSession()
 	{
-		m_serverDispatch = nullptr;
-		m_serverFlush = nullptr;
 		m_publishRunnerRtt = nullptr;
 		m_joinRunner = nullptr;
 	}
 
 	void bindAuthorityRunner(FFrameFn publishRunnerRtt, FFrameFn joinRunner)
 	{
-		checkf(m_isServer && authorityLoop() && static_cast<bool>(publishRunnerRtt) && static_cast<bool>(joinRunner),
-			TEXT("UESimNetLanes::bindAuthorityRunner: only an authority-loop server's lanes hold the runner's RTT publish and its "
-				 "join"));
+		checkf(m_isServer && m_hostServiced && static_cast<bool>(publishRunnerRtt) && static_cast<bool>(joinRunner),
+			TEXT("UESimNetLanes::bindAuthorityRunner: only a dedicated server's host-serviced lanes hold the runner's RTT publish "
+				 "and its join"));
 		m_publishRunnerRtt = MoveTemp(publishRunnerRtt);
 		m_joinRunner = MoveTemp(joinRunner);
 	}
 
-	bool authorityLoop() const { return m_authorityLoop == EAuthorityLoop::On; }
+	bool hostServiced() const { return m_hostServiced; }
 	UESimNetClockServer* clockServer() { return m_clockServer.has_value() ? &*m_clockServer : nullptr; }
 	const UESimNetClockClient* clockClient() const { return m_clockClient.has_value() ? &*m_clockClient : nullptr; }
 	double ackSrttSeconds() const { return m_ackSrttSeconds.load(std::memory_order_relaxed); }
 	bool isServer() const { return m_isServer; }
-	bool isDetached() const { return m_detachedEndpoint != nullptr; }
-	bool serverSessionBound() const { return static_cast<bool>(m_serverFlush); }
 	bool clientSessionBound() const { return m_clientSessionBound.load(std::memory_order_relaxed); }
-	ESimTrafficImmediate immediateDecision() const { return m_immediateDecision; }
-	bool isImmediate() const { return m_immediateDecision == ESimTrafficImmediate::On; }
+	bool simTrafficImmediateRefused() const { return m_simTrafficImmediateRefused; }
 	UOGNetDriver* driver() const { return m_driver; }
 
 	ognetunreal::SimLaneEndpoint& endpoint()
@@ -537,22 +446,6 @@ public:
 	FLockedSimNetBindings& editBindings() { return m_bindings; }
 
 private:
-	void logAuthorityLoopRefusal() const
-	{
-		switch (m_authorityLoop)
-		{
-		case EAuthorityLoop::Off:
-		case EAuthorityLoop::On:
-			return;
-		case EAuthorityLoop::RefusedNotDedicated:
-			UE_LOG(LogOGSimHost, Warning,
-				TEXT("[SimHost.Runner] og.Sim.AuthorityLoop=%d refused: only a dedicated server runs the authority loop (a listen "
-					 "server presents the authority on its game thread); this server steps inline on the game thread"),
-				readAuthorityLoopKnob());
-			return;
-		}
-	}
-
 	void publishAckSrtt_GameThread()
 	{
 		const SimConnectionId server = m_transport->serverConnection();
@@ -575,10 +468,9 @@ private:
 
 	UOGNetDriver* m_driver;
 	bool m_isServer;
-	ESimTrafficImmediate m_immediateDecision = ESimTrafficImmediate::Off;
-	EAuthorityLoop m_authorityLoop = EAuthorityLoop::Off;
+	bool m_simTrafficImmediateRefused = false;
+	bool m_hostServiced = false;
 	std::atomic<bool> m_clientSessionBound{false};
-	std::unique_ptr<ognetunreal::SimLaneEndpoint> m_detachedEndpoint;
 	ognetunreal::SimLaneEndpoint* m_endpoint = nullptr;
 	FUEPlatformClock m_clock;
 	std::optional<Transport> m_transport;
@@ -588,8 +480,6 @@ private:
 	FLockedSimNetBindings m_bindings;
 	std::optional<ClientHost> m_clientHost;
 	std::optional<Client> m_client;
-	FFrameFn m_serverDispatch;
-	FFrameFn m_serverFlush;
 	FFrameFn m_publishRunnerRtt;
 	FFrameFn m_joinRunner;
 	FFrameFn m_onStop;

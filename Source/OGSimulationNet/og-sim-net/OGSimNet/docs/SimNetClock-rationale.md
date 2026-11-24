@@ -112,9 +112,10 @@ ping on the servicing thread needs a handler that decodes, so the clock takes th
    that wraps (§5), or 0 when the tick is `kNoServerTick`. It is measured to `t2`, not `t1`: the consumer adds the time
    from `t2` onwards itself, as half the RTT (og-simulation's `ServerTickEstimator`, og-time-dilation task 3), and the RTT
    excludes `t2 − t1` (§1), so half of it is the pong's flight from `t2`, not from `t1`.
-5. `sendClockNow` passes the pong straight to the endpoint's `send`, **bypassing the frame hold** (`SimNetTransport-rationale.md`
-   §7). A frame-locked server holds every session send until the frame flush; a held pong would carry the frame turnaround
-   the clock exists to remove. og-net flushes the commands a handler queues in the same service pass that delivered the
+5. `sendClockNow` passes the pong straight to the endpoint's `send` and counts it in `clockSends`, not in the session's
+   `directSends` (`SimNetTransport-rationale.md` §7, §13). Until og-session-runtime task 15 a frame-locked transport held
+   every session send until the frame flush, and the pong bypassed that hold, which would have added the frame turnaround the
+   clock exists to remove. og-net flushes the commands a handler queues in the same service pass that delivered the
    datagram (og-net's `EndpointCore-guards.md`, G-09), so the pong leaves in that pass.
 
 The clock needs no session and no host: it touches only the transport, its clock and its atomics.
@@ -142,11 +143,10 @@ no later than any `t2` that can read it: the caller takes it before the step and
 Until task 2b the function took only the tick and read the clock at the publish; a test-file `static_assert` checks that
 the one-argument form no longer compiles.
 
-The authority (the game thread in a frame-locked server, the authority loop's runner in Ph4) publishes after each step;
-the handler on the servicing thread never waits for it. So the server's clock is read on two threads, by the publisher
-for the start time and by the handler (`t2`) on the servicing thread: a `ClockT` must be callable from both (the Unreal
-host's `FPlatformTime::Seconds` is stateless). Nothing in og-sim-net calls `publishServerTick`: the Unreal session calls it
-after each authority step, with the tick it just stepped and that step's start time (its `afterStep_Step`).
+The authority publishes after each step, on its own thread; the handler on the servicing thread never waits for it. So the
+server's clock is read on two threads, by the publisher for the start time and by the handler (`t2`) on the servicing
+thread: a `ClockT` must be callable from both (a stateless clock is). Nothing in og-sim-net calls `publishServerTick`: its
+host calls it after each authority step, with the tick it just stepped and that step's start time.
 
 ## §6 The client: pings, and the sample at receipt
 
@@ -200,8 +200,8 @@ once per 60 Hz frame:
 - 20/30 ms lags, client clock 750 ms behind: every sample's RTT is 50 ms ± 0.1 and `theta` is 750 − 5 ms ± 0.1 (the
   asymmetry term of §1); `t2 − t1` is under 1 ms (0 in virtual time); `serverTick` is the tick published before `t1`;
 - 25/25 ms lags: `theta` is the configured offset ± 0.1 (750 ms, −312.5 ms and 0);
-- a frame-locked server that never flushes its hold answers every ping, with the same samples as an immediate one, and holds
-  nothing;
+- a server that never runs its session answers every ping at receipt, with the same samples, and counts each pong as a clock
+  send, none as a session send (`directSends` 0);
 - the client pings at 20 Hz (39 to 41 pings in 2 s), and after a 300 ms stall sends one ping, not a burst;
 - before the first publish, every pong carries `kNoServerTick`;
 - every sample's `serverTickAgeSeconds` is its pong's `t2` minus the start time its tick was published with, within 1 µs, at

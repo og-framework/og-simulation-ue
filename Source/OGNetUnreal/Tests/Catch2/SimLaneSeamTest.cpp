@@ -589,7 +589,6 @@ TEST_CASE("EngineLaneDriver.ARecordingAttachInstallsTheFiveSimLaneHandlersBefore
 	CHECK(rig.server->recording.endpoint->config().role == Role::Server);
 	CHECK(rig.server->recording.endpoint->config().maxConnections == 16);
 	CHECK(rig.client->recording.endpoint->config().role == Role::Client);
-	CHECK(rig.server->recording.endpoint->detachedDrops() == 0);
 	rig.run(0.05);
 
 	const ConnectionId atServer = rig.server->peerId();
@@ -902,8 +901,6 @@ TEST_CASE("EngineLaneDriver.AnAttachedSimNetTransportReceivesEachSimLaneIntoItsI
 	serverLanes.transport->broadcastClock(laneMessage(Lane::SimClock, Role::Server));
 	serverLanes.transport->relay(kInvalidSimConnection, laneMessage(Lane::SimRelay, Role::Server));
 	serverLanes.transport->sendState(atServer, laneMessage(Lane::SimState, Role::Server));
-	CHECK(serverLanes.transport->heldBytes() > 0);
-	serverLanes.transport->flushFrame();
 	rig.run(0.2);
 
 	const std::vector<Drained> atServerSide = drainAll(*serverLanes.transport);
@@ -936,43 +933,6 @@ TEST_CASE("EngineLaneDriver.AnAttachedSimNetTransportReceivesEachSimLaneIntoItsI
 	CHECK(rig.client->count(Kind::Deliver) == 0);
 	CHECK(serverLanes.transport->stats().unslottedRefused == 0);
 	CHECK(clientLanes.transport->stats().unslottedRefused == 0);
-}
-
-TEST_CASE("EngineLaneDriver.TheDetachedEndpointCountsAndDropsItsSendsAndDisconnects", "[OGNet][EngineLaneDriver]")
-{
-	const ognet::EndpointConfig config = configFor(Role::Server);
-	SimLaneEndpoint detached = SimLaneEndpoint::detached(config);
-	CHECK(detached.config().role == Role::Server);
-	CHECK(detached.config().maxConnections == 16);
-	CHECK(detached.detachedDrops() == 0);
-
-	SeamTransport transport(ogsimnet::simNetConfigFor(detached.config()));
-	transport.installHandlers(detached);
-	detached.setConnectionHandler(transport.connectionHandler());
-	transport.markEndpointStarted();
-	detached.send(1, Lane::SimState, text("state"));
-	detached.broadcastExcept(ognet::kInvalidConnection, Lane::SimRelay, text("relay"));
-	detached.disconnect(1);
-	detached.noteDelivered(Lane::SimInput, 1.0, 1.5);
-	CHECK(detached.detachedDrops() == 3);
-
-	transport.sendState(1, text("held state"));
-	transport.broadcastClock(text("held clock"));
-	CHECK(detached.detachedDrops() == 3);
-	transport.flushFrame();
-	CHECK(detached.detachedDrops() == 5);
-	CHECK(drainAll(transport).empty());
-}
-
-TEST_CASE("EngineLaneDriver.TheDetachedEndpointServicesNothingAndHasNoHighResolutionWait", "[OGNet][EngineLaneDriver]")
-{
-	SimLaneEndpoint detached = SimLaneEndpoint::detached(configFor(Role::Server));
-	const ognet::ServiceResult result = detached.serviceUntil(5.0);
-	CHECK(result.stopped);
-	CHECK_FALSE(result.reachedDeadline);
-	CHECK(result.datagrams == 0);
-	CHECK_FALSE(detached.hasHighResolutionWait());
-	CHECK(detached.detachedDrops() == 0);
 }
 
 TEST_CASE("EngineLaneDriver.NoteDeliveredOnTheSimEndpointWritesTheSimLaneRxLineOfTheCoresWindow", "[OGNet][EngineLaneDriver]")

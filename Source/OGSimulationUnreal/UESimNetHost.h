@@ -418,23 +418,6 @@ public:
 
 	void log(const char* line) { ueSimNetHost::routeLine(line); }
 
-	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds)
-	{
-		if (m_session == nullptr)
-			return;
-		UELatencyBudgetDiagnostics<TraitsT>& diagnostics = m_session->editLatencyBudgetDiagnostics();
-		diagnostics.stamp(latencyBudget::Stream::Input, simId, captureTick, latencyBudget::Point::ServerReceived);
-		diagnostics.stampAt(latencyBudget::Stream::Input, simId, captureTick, latencyBudget::Point::NetReceived, recvSeconds);
-	}
-
-	void stampHanded(uint8_t simId, uint32_t captureTick)
-	{
-		if (m_session == nullptr)
-			return;
-		m_session->editLatencyBudgetDiagnostics().stamp(latencyBudget::Stream::Input, simId, captureTick,
-			latencyBudget::Point::Handed);
-	}
-
 	void noteDelivered(SimLane lane, double recvSeconds) { ueSimNetHost::noteDelivered(m_endpoint, lane, recvSeconds); }
 
 	UOGNetDriver* driver() const { return m_driver; }
@@ -468,9 +451,8 @@ public:
 	using Session = UESimulationSession<TraitsT>;
 	using FRegisteredRemoved = TFunction<void(uint8_t simId)>;
 
-	UESimNetClientHost(UOGNetDriver* ognetDriver, ognetunreal::SimLaneEndpoint& laneEndpoint, FLockedSimNetBindings& simBindings,
-		bool immediate)
-		: m_driver(ognetDriver), m_endpoint(laneEndpoint), m_bindings(simBindings), m_immediate(immediate)
+	UESimNetClientHost(UOGNetDriver* ognetDriver, ognetunreal::SimLaneEndpoint& laneEndpoint, FLockedSimNetBindings& simBindings)
+		: m_driver(ognetDriver), m_endpoint(laneEndpoint), m_bindings(simBindings)
 	{
 	}
 
@@ -500,20 +482,12 @@ public:
 	{
 		if (m_session == nullptr)
 			return kNoRttReadingSeconds;
-		double roundTripSeconds = kNoRttReadingSeconds;
+		const double roundTripSeconds = m_publishedRttSeconds.load(std::memory_order_acquire);
 		EClientRttUnavailable unavailable = EClientRttUnavailable::None;
-		if (m_immediate)
-		{
-			roundTripSeconds = m_publishedRttSeconds.load(std::memory_order_acquire);
-			if (roundTripSeconds < 0.0)
-				unavailable = m_publishedRttUnavailable.load(std::memory_order_relaxed);
-			if (roundTripSeconds < 0.0 && unavailable == EClientRttUnavailable::None)
-				unavailable = EClientRttUnavailable::NotPublished;
-		}
-		else
-		{
-			unavailable = readServerRoundTrip(roundTripSeconds);
-		}
+		if (roundTripSeconds < 0.0)
+			unavailable = m_publishedRttUnavailable.load(std::memory_order_relaxed);
+		if (roundTripSeconds < 0.0 && unavailable == EClientRttUnavailable::None)
+			unavailable = EClientRttUnavailable::NotPublished;
 		if (unavailable == EClientRttUnavailable::None)
 			return roundTripSeconds;
 		warnClientRttUnavailableOnce(m_rttWarnings, unavailable);
@@ -589,27 +563,17 @@ public:
 		UELatencyBudgetDiagnostics<TraitsT>& diagnostics = m_session->editLatencyBudgetDiagnostics();
 		const latencyBudget::Stream probeStream =
 			stream == ogsimnet::SimNetStream::State ? latencyBudget::Stream::State : latencyBudget::Stream::Input;
-		if (m_immediate)
-		{
-			diagnostics.stampClientReceived_Internal(probeStream, simId, tick, recvSeconds);
-			return;
-		}
-		if (probeStream == latencyBudget::Stream::State)
-			diagnostics.stampCorrectionReceived(simId, tick);
-		else
-			diagnostics.stamp(probeStream, simId, tick, latencyBudget::Point::ClientReceived);
-		diagnostics.stampAt(probeStream, simId, tick, latencyBudget::Point::NetReceived, recvSeconds);
+		diagnostics.stampClientReceived_Internal(probeStream, simId, tick, recvSeconds);
 	}
 
 	void noteDelivered(SimLane lane, double recvSeconds) { ueSimNetHost::noteDelivered(m_endpoint, lane, recvSeconds); }
 
 	UOGNetDriver* driver() const { return m_driver; }
 	Session* session() const { return m_session; }
-	bool immediate() const { return m_immediate; }
 
 private:
 	static_assert(std::atomic<double>::is_always_lock_free && std::atomic<EClientRttUnavailable>::is_always_lock_free,
-		"UESimNetClientHost publishes the server connection's round trip from the game thread to an immediate client's "
+		"UESimNetClientHost publishes the server connection's round trip from the game thread to the client's "
 		"step-thread drain through two lock-free atomics. Was the drain's own game-thread read of the ServerConnection "
 		"(og-input-latency task P5-17)");
 
@@ -635,7 +599,6 @@ private:
 	UOGNetDriver* m_driver;
 	ognetunreal::SimLaneEndpoint& m_endpoint;
 	FLockedSimNetBindings& m_bindings;
-	const bool m_immediate;
 	const ogsimnet::RosterMirror* m_roster = nullptr;
 	Session* m_session = nullptr;
 	FRegisteredRemoved m_onRegisteredRemoved;

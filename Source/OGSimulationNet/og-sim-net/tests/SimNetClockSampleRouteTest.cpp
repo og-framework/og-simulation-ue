@@ -169,7 +169,7 @@ struct Rig
 		connected.kind = ognet::ConnectionEventKind::Connected;
 		connected.id = kServerConn;
 		transport.onConnectionEvent(connected);
-		session.dispatchFrame();
+		session.drain();
 		REQUIRE(session.serverConnection() == kServerConn);
 	}
 
@@ -202,7 +202,7 @@ struct Rig
 
 	CapturingEndpoint endpoint;
 	ManualClock clock;
-	CsTransport transport{};
+	CsTransport transport{ogsimnet::SimNetConfig{}};
 	CsClockClient clockClient{transport, clock};
 	HostT host;
 	ogsimnet::SimNetClient<CsGame, HostT, CsTransport> session{host, transport};
@@ -279,7 +279,7 @@ TEST_CASE("SimNetClockSample.APongReachesTheHostsHookAsItsSampleAndNeverTheEnvel
 	const double t3 = 10.0505;
 	rig.pong(pong, t3);
 	rig.clockPublish(4322u, 10.0510);
-	rig.session.dispatchFrame();
+	rig.session.drain();
 
 	const SimNetClockSample expected = ogsimnet::simNetClock::sampleOf(pong, t3);
 	REQUIRE(rig.host.samples.size() == 1u);
@@ -306,12 +306,12 @@ TEST_CASE("SimNetClockSample.APongReachesTheHostsHookAsItsSampleAndNeverTheEnvel
 			REQUIRE(size != 0u);
 			rig.endpoint.deliver(kServerConn, ognet::Lane::Control, std::span<const std::byte>(bytes.data(), size), 11.0);
 		}
-		rig.session.dispatchFrame();
+		rig.session.drain();
 		REQUIRE(rig.session.refused());
 
 		rig.clock.now = 11.5;
 		rig.pong(ogsimnet::SimNetClockPong{11.45, 12.2, 12.2005, 4400u}, 11.5);
-		rig.session.dispatchFrame();
+		rig.session.drain();
 		CHECK(rig.host.samples.size() == 1u);
 		CHECK(rig.session.stats().clockSamples == 1u);
 		CHECK(rig.session.stats().ignoredWhileRefused == 1u);
@@ -325,7 +325,7 @@ TEST_CASE("SimNetClockSample.AHostWithoutTheHookStaysWellFormedAndItsSamplesAreC
 	const double t0 = rig.ping(20.0);
 	rig.pong(ogsimnet::SimNetClockPong{t0, 20.31, 20.3102, 77u}, 20.061);
 	rig.clockPublish(78u, 20.062);
-	rig.session.dispatchFrame();
+	rig.session.drain();
 
 	CHECK(rig.session.stats().clockSamples == 1u);
 	CHECK(rig.session.stats().clockSamplesUnheard == 1u);
@@ -410,7 +410,7 @@ TEST_CASE("SimNetClockSample.TheSampleRecordCarriesTheServerTickAgeFromThePongTo
 	const double t0 = rig.ping(5.0);
 	const ogsimnet::SimNetClockPong routed{t0, 5.75, 5.7505, 900u, 4321u};
 	rig.pong(routed, 5.051);
-	rig.session.dispatchFrame();
+	rig.session.drain();
 	REQUIRE(rig.host.samples.size() == 1u);
 	CHECK(sameBits(rig.host.samples[0], ogsimnet::simNetClock::sampleOf(routed, 5.051)));
 	CHECK(rig.host.samples[0].serverTickAgeSeconds == 4321.0 * 1e-6);

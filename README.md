@@ -36,12 +36,15 @@ git submodule update --init --recursive Plugins/OGSimulation
 
 Then open your `.uproject` — UBT will discover `OGSimulation.uplugin` and compile the plugin.
 
-The plugin exposes five UE modules, all `Runtime` with loading phase `Default`, in this order:
+The plugin exposes eight UE modules, all `Runtime` with loading phase `Default`, in this order:
 
 - `OGSimulation` — the deterministic simulation core, engine-free (source from the `og-simulation` submodule at `Source/OGSimulation/og-simulation/`)
+- `OGNet` — og-net, the engine-free network transport (source from the `og-net` submodule at `Source/OGNet/og-net/`)
+- `OGNetUnreal` — og-net's Unreal net driver and its sim lanes' endpoint
+- `OGSimulationNet` — og-sim-net, the engine-free simulation traffic over og-net (source at `Source/OGSimulationNet/og-sim-net/`)
 - `glm` — the vendored GLM math library (header-only, from `Source/OGSimulation/og-simulation/glm/`)
 - `OGSimulationJolt` — the Jolt physics backend, engine-free (source from the `og-simulation-jolt` submodule at `Source/OGSimulationJolt/og-simulation-jolt/`, with Jolt vendored there)
-- `OGSimulationUnreal` — the Unreal adapter, game-agnostic: the tick driver's engine port and backend template, the Chaos adapters and engine traits, the replication relays, the input translator, the static-geometry importer and the startup timer-resolution honour
+- `OGSimulationUnreal` — the Unreal adapter, game-agnostic: the simulation session, its og-sim-net lanes and hosts and the authority's runner, the tick driver's engine port and backend template, the latency diagnostics, the input translator, the static-geometry importer and the startup timer-resolution honour (until og-session-runtime tasks 3–6 also the Chaos adapters and engine traits; the replication relays went in og-input-latency task P5-9)
 - `OGSimulationJoltUnreal` — the Unreal side of the Jolt engine: the Jolt engine traits
 
 `OGSimulationUnreal` uses Enhanced Input, so `OGSimulation.uplugin` declares a dependency on the engine's `EnhancedInput` plugin; enabling this plugin enables it. Chaos and PhysicsCore are engine modules and need no entry.

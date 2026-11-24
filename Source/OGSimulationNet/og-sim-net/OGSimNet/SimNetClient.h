@@ -42,17 +42,9 @@ concept SimNetClientTransport = requires(T& transport, uint8_t simId, SimConnect
 {
 	transport.inbox().drain([](const InboundSimRecord&) {});
 	{ transport.inbox().stats() } -> std::same_as<SimInboxStats>;
-	{ transport.flushFrame() } -> std::same_as<void>;
-	{ transport.endInputSends() } -> std::same_as<void>;
 	{ transport.channelTransport(simId) } -> ClientSimTransport;
 	{ transport.setServerConnection(conn) } -> std::same_as<void>;
 	{ transport.serverConnection() } -> std::same_as<SimConnectionId>;
-};
-
-template <class T>
-concept SimNetConfiguredTransport = requires(const T& transport)
-{
-	{ transport.config().immediate } -> std::convertible_to<bool>;
 };
 
 template <class T>
@@ -67,15 +59,6 @@ concept SimNetInputSender = requires(T& sender, uint32_t tick, uint32_t redundan
 {
 	sender.sendLocalInputToAuthorityAll(tick, redundancyDepthTicks, redundancyFrames);
 };
-
-template <class T>
-bool simNetTransportIsImmediate(const T& transport)
-{
-	if constexpr (SimNetConfiguredTransport<T>)
-		return transport.config().immediate;
-	else
-		return false;
-}
 
 template <class List>
 inline constexpr size_t kSimulatableCount = 0u;
@@ -189,7 +172,6 @@ public:
 	SimNetClient(HostT& host, TransportT& transport)
 		: m_host(host)
 		, m_transport(transport)
-		, m_immediate(simNetTransportIsImmediate(transport))
 	{
 		m_mirror.setAddedCallback([this](const RosterEntry& entry) { onRosterAdded(entry); });
 		m_mirror.setRemovedCallback([this](const RosterEntry& entry) { onRosterRemoved(entry); });
@@ -213,70 +195,25 @@ public:
 		return handled;
 	}
 
-	void dispatchFrame()
-	{
-		OG_CHECK(!m_immediate,
-			"SimNetClient::dispatchFrame: an immediate session (SimNetConfig::immediate) is drained by drain() at the start of "
-			"each step, on the step's thread; draining it at the frame point would run every consumer the drain reaches (inject, "
-			"relay ingest, estimator feed, tier delay, roster) on the game thread again");
-		drain();
-	}
-
-	bool immediate() const { return m_immediate; }
-
 	template <SimNetInputSender SenderT>
 	void afterCaptureTick_Step(SenderT& sender, uint32_t tick, const TimeConfig& timeConfig)
 		requires SimNetInputWindowTransport<TransportT>
 	{
-		OG_CHECK(m_immediate,
-			"SimNetClient::afterCaptureTick_Step: a frame-locked session sends once per frame, from the host's game-thread send "
-			"(SimulationManager::onPostSimulationGameThread) and flushFrame; the step-thread send at capture is immediate mode's "
-			"(SimNetConfig::immediate)");
 		m_transport.beginInputSends();
 		sender.sendLocalInputToAuthorityAll(
 			tick, static_cast<uint32_t>(timeConfig.redundancyDepthTicks), timeConfig.redundancyFrames);
 		m_transport.endInputSends();
 	}
 
-	void endInputSends()
-	{
-		OG_CHECK(!m_immediate,
-			"SimNetClient::endInputSends: an immediate session ends its input set in afterCaptureTick_Step, on the step's thread, "
-			"right after that tick's sends; the game thread's send (onPostSimulationGameThread) is refused in immediate mode");
-		m_transport.endInputSends();
-	}
-
-	void flushFrame()
-	{
-		if (!m_immediate)
-		{
-			// ⛔G-06  docs/SimNetClient-guards.md
-			m_transport.endInputSends();
-		}
-		m_transport.flushFrame();
-		maybeEmitWindow();
-	}
+	void flushFrame() { maybeEmitWindow(); }
 
 	void bindListener()
 	{
 		// ⛔G-10  docs/SimNetClient-guards.md
-		if (m_immediate)
-		{
-			m_listenerRequest.store(ListenerRequest::Bind, std::memory_order_release);
-			return;
-		}
-		applyBind();
+		m_listenerRequest.store(ListenerRequest::Bind, std::memory_order_release);
 	}
 
-	void unbindListener()
-	{
-		if (m_immediate)
-		{
-			m_listenerRequest.store(ListenerRequest::Unbind, std::memory_order_release);
-			return;
-		}
-		m_listenerBound = false;
-	}
+	void unbindListener() { m_listenerRequest.store(ListenerRequest::Unbind, std::memory_order_release); }
 
 	void bindLifecycle(SimulationObjectStorage<SimT>& storage, SimulationReconciliation<SimT>& reconciliation,
 		SimulationInputResolution<SimT>& inputResolution, SimulationNetSync<SimT>& netSync)
@@ -337,8 +274,7 @@ private:
 	};
 
 	static_assert(std::atomic<ListenerRequest>::is_always_lock_free,
-		"SimNetClient: an immediate session's listener request crosses from the binding thread to the drain as one lock-free "
-		"atomic");
+		"SimNetClient: the listener request crosses from the binding thread to the drain as one lock-free atomic");
 
 	void applyBind()
 	{
@@ -353,8 +289,6 @@ private:
 
 	void applyListenerRequest()
 	{
-		if (!m_immediate)
-			return;
 		switch (m_listenerRequest.exchange(ListenerRequest::None, std::memory_order_acquire))
 		{
 		case ListenerRequest::None:
@@ -803,7 +737,6 @@ private:
 
 	HostT& m_host;
 	TransportT& m_transport;
-	const bool m_immediate;
 	std::atomic<ListenerRequest> m_listenerRequest{ListenerRequest::None};
 
 	RosterMirror m_mirror;
@@ -845,14 +778,11 @@ namespace simNetClientSelfCheck
 using ReferenceClientTransport = simNetTransportSelfCheck::ReferenceTransport;
 
 static_assert(SimNetClientTransport<ReferenceClientTransport>,
-	"SimNetTransport is the client session's transport: inbox, flush, the set's end, the per-character adapter and the "
-	"server connection. Was SimNetClient-rationale.md §3");
-static_assert(SimNetConfiguredTransport<ReferenceClientTransport>,
-	"SimNetTransport exposes config(), so a session over it takes SimNetConfig::immediate from its transport; a transport "
-	"without config() runs a frame-locked session (SimNetClient-rationale.md §16)");
+	"SimNetTransport is the client session's transport: inbox, the per-character adapter and the server connection. "
+	"Was SimNetClient-rationale.md §3");
 static_assert(SimNetInputWindowTransport<ReferenceClientTransport>,
-	"SimNetTransport opens an immediate input set for the calling thread (beginInputSends) and ends it (endInputSends), so a "
-	"session over it can send at capture from the step's thread (afterCaptureTick_Step, SimNetClient-rationale.md §17)");
+	"SimNetTransport opens an input set for the calling thread (beginInputSends) and ends it (endInputSends), so a session "
+	"over it can send at capture from the step's thread (afterCaptureTick_Step, SimNetClient-rationale.md §17)");
 static_assert(ClientSimTransport<SimNetBundleTransport<ReferenceClientTransport::ChannelTransport>>,
 	"SimNetBundleTransport is a channel's ClientSimTransport: it wraps the transport's per-character adapter. Was "
 	"SimNetClient-rationale.md §11, for SimNetClientChannelTransport");

@@ -20,9 +20,9 @@ number is spent forever.
 
 **The prohibition.** Do not delete these four `= delete` declarations or replace them with defaulted ones.
 
-**The consequence.** The detached endpoint's context is its own address, so a copy's operations count into the original, and
-dangle once the original is gone. Both kinds are also kept by address: og-sim-net's `SimNetTransport::installHandlers` stores a
-pointer to the endpoint it is given, and sends through it from then on. A transport handed a temporary copy sends through a
-destroyed object.
+**The consequence.** The endpoint is kept by address: og-sim-net's `SimNetTransport::installHandlers` stores a pointer to the
+endpoint it is given, and sends through it from then on. A transport handed a temporary copy sends through a destroyed object.
+(Until og-session-runtime task 15 the detached endpoint's context was also its own address, so a copy's operations counted
+into the original and dangled once it was gone; that endpoint is retired.)
 
 **What breaks if it moves.** Nothing at compile time, and no test: a copy works until the original goes away.

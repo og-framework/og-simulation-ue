@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: m_immediate -- the client's mode member, deleted by og-session-runtime task 13 (the server's by task 15); quoted in G-10's re-site note and retired G-06's entry -->
 <!-- lint-external-ref: SimNetClientChannelTransport -- a RETIRED token -- og-input-latency task P5-1 renamed it SimNetBundleTransport and moved it to SimNetChannel.h; retired G-05 names it as it stood -->
 <!-- lint-external-ref: SimNetClientChannelTransport::sendInputBundle -- a RETIRED member -- the site of retired G-05, kept as it stood; the live site is SimNetBundleTransport::sendInputBundle in SimNetChannel.h -->
 # `SimNetClient.h` — guards
@@ -63,20 +64,6 @@ the consequence of ignoring it.
 - **What breaks if it moves:** `SimNetClient.ARevisionGapDisconnectsWithAReasonAndTheSessionFailsClosed` fails: the ring and
   the correction sent after the gap are delivered (`{ r3@12, c3@12, c3@13 }`), and `ignoredWhileRefused` stays 0.
 
-## G-06 — `flushFrame` ends the open input set before the transport flushes
-
-- **Site:** the `m_transport.endInputSends()` in `flushFrame`'s frame-locked branch (`if (!m_immediate)`).
-- **Prohibition:** do not delete it, and do not move it after `m_transport.flushFrame()`. (The branch around it is not this
-  guard's: an immediate session's set is ended by `afterCaptureTick_Step` on the step's thread, and the transport's own
-  `OG_CHECK` refuses a set end from `flushFrame` there, rationale §17.)
-- **Consequence:** a host that sends its channels' bundles and does not call `endInputSends()` would leave the set open in the
-  transport. The frame's input would not leave at this flush, and the next frame's bundles would be appended to the same set,
-  so one set would carry two bundles of one character and every input would reach the server a frame late.
-- **What breaks if it moves:** `SimNetClient.AFrameSendsOneHeldSetAndDropsEmptyBundles` fails (one SimInput message where
-  two are expected), and so do the cases that never call `endInputSends()`: the revision-gap case (no set without a server
-  is counted), the arrival-order case over og-net (4 relayed rings instead of at least 30) and the rate case (1.33 sets per
-  send instead of 2).
-
 ## G-07 — a ring is held only for a sim id the roster has never listed
 
 - **Site:** the `if (m_everListed.test(simId) || …)` in `holdRing`.
@@ -111,20 +98,21 @@ the consequence of ignoring it.
 
 ---
 
-## G-10 — in immediate mode, `bindListener` and `unbindListener` only post a request
+## G-10 — `bindListener` and `unbindListener` only post a request
 
-- **Site:** the `if (m_immediate)` in `bindListener`.
-- **Prohibition:** do not apply the bind (the floor and tier replay) or the unbind in the caller's call when the session is
-  immediate, and do not drop the request so that the next drain never applies it.
-- **Consequence:** in immediate mode the drain runs on the step's thread and writes the latched floor and tier and reads the
-  bound flag there. A bind applied in the caller's call runs the replay on the binding thread: in the Unreal host that is the
-  game thread (`UESimNetLanes::bindClientSession`), so the host's tier-delay write (`UESimulationSession::onConnectionTierReceived`)
-  and the floor write run on the game thread while a step task drains, which is the crossing immediate mode removes, and the
-  plain latches race.
+- **Site:** the `m_listenerRequest.store(ListenerRequest::Bind, …)` in `bindListener`.
+- **Prohibition:** do not apply the bind (the floor and tier replay) or the unbind in the caller's call, and do not drop the
+  request so that the next drain never applies it.
+- **Consequence:** the drain runs on the step's thread and writes the latched floor and tier and reads the bound flag there. A
+  bind applied in the caller's call runs the replay on the binding thread, which need not be the drain's: the host's
+  tier-delay and floor writes would then run on that thread while a step task drains, which is the crossing the step-start
+  drain removes, and the plain latches race.
 - **What breaks if it moves:** `SimNetClientImmediate.InImmediateModeTheNextDrainAppliesTheListenerBind` fails at its first
   `CHECK(host.calls.empty())` after `bindListener()`, and
   `SimNetClientImmediate.EveryRelayStoreCorrectionCacheAndEstimatorWriteRunsOnAStepTaskNeverOnTheGameThread` counts the floor
-  and tier replays on the game thread.
+  and tier replays on the test's main thread, the binding thread.
+- **Re-sited** by og-session-runtime task 13 (2026-11-24): the site was the `if (m_immediate)` in `bindListener`; its other
+  arm, a frame-locked session's bind applied at once, went with the frame-locked client, so the post is the whole member.
 
 ---
 
@@ -135,8 +123,8 @@ the consequence of ignoring it.
 - **Consequence:** a correction that arrives in the same drain as its character's registration reaches the channel before
   NetSync has bound its callbacks there: it is stored in the channel and never injected, so the first correction after a join is
   lost (a relay ring is read again at bind, a correction is not). Applied from another member, the facades run on that caller's
-  thread: in the Unreal host the game thread, while a step reads the containers they write, which is the crossing the queue
-  closes (og-sim `ThreadingCrossings.md` row 11).
+  thread, which need not be the drain's, while a step reads the containers they write: the crossing the queue closes (og-sim
+  `ThreadingCrossings.md` row 11).
 - **What breaks if it moves:** `SimNetLifecycleQueue.ARegisterThenTheFirstArrivalInTheSameDrainReachesTheRegisteredCharacter`
   fails at `CHECK( rig.landings() == 1u )` with `0 == 1`.
 
@@ -181,3 +169,13 @@ The empty-bundle drop left `SimNetClient.h` with its class: `SimNetClientChannel
 
 - **Site:** the `if (bundle.empty())` in `SimNetClientChannelTransport::sendInputBundle`.
 - **Prohibition:** do not delete the check, and do not forward the empty span to the wrapped transport.
+
+### G-06 — RETIRED by og-session-runtime task 13 (2026-11-24): none: removed by og-session-runtime task 13
+
+`flushFrame`'s frame-locked branch went with the frame-locked client. Every client sends at capture: `afterCaptureTick_Step`
+opens and ends each tick's input set on the step's thread, and `flushFrame` ends none. The session's own `endInputSends()` went
+too, and with it the transport concept's `endInputSends()` requirement (`SimNetInputWindowTransport` keeps it for the send at
+capture). The entry as it stood:
+
+- **Site:** the `m_transport.endInputSends()` in `flushFrame`'s frame-locked branch (`if (!m_immediate)`).
+- **Prohibition:** do not delete it, and do not move it after `m_transport.flushFrame()`.

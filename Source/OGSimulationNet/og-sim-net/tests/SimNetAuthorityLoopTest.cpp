@@ -182,7 +182,6 @@ using simNetEquivalence::InputRow;
 inline constexpr float kLoopDt = 1.f / 60.f;
 inline const double kLoopDtSeconds = static_cast<double>(kLoopDt);
 inline constexpr double kClientPhaseSeconds = 0.0005;
-inline constexpr double kFramePhaseSeconds = 0.0001;
 inline constexpr std::uint32_t kRingDepthTicks = 64u;
 inline constexpr std::uint32_t kLoopSteps = 150u;
 inline constexpr double kStallStartSeconds = 1.0;
@@ -379,8 +378,7 @@ public:
 	void beforePump(double, TickRateDoor&)
 	{
 		++wakes;
-		if (m_server.immediate())
-			m_server.drain();
+		m_server.drain();
 		if (beforePumpHook)
 			beforePumpHook();
 	}
@@ -392,10 +390,7 @@ public:
 		const std::uint32_t last = m_manager.serverTick();
 		m_stack.netSync.sendCorrectionAll(SimulationTimeStep(last, false), simNetEquivalence::kCorrectionRotationK);
 		m_server.publishClock(last);
-		if (m_server.immediate())
-			m_server.afterInlineBatch(firstUpcomingSimTick);
-		else
-			m_server.afterBatch(firstUpcomingSimTick);
+		m_server.afterInlineBatch(firstUpcomingSimTick);
 	}
 
 	void releaseInputsForAuthorityTick(SimTick tick)
@@ -600,14 +595,11 @@ inline double meanOf(const std::vector<double>& values)
 class LoopRig
 {
 public:
-	explicit LoopRig(bool immediate)
-		: m_immediate(immediate)
-		, clock(network, engine)
+	LoopRig()
+		: clock(network, engine)
 	{
 		clock.setNow(simNetEquivalence::kStartSeconds);
-		ogsimnet::SimNetConfig serverConfig;
-		serverConfig.immediate = immediate;
-		serverPeer = std::make_unique<LoopPeer>(network, clock, simNetEquivalence::kServerHostIndex, 100u, serverConfig);
+		serverPeer = std::make_unique<LoopPeer>(network, clock, simNetEquivalence::kServerHostIndex, 100u, ogsimnet::SimNetConfig{});
 		serverPeer->start(ognet::Role::Server);
 		serverHost.clock = [this] { return clock.now(); };
 		serverHost.manager = &manager;
@@ -682,31 +674,6 @@ public:
 		return collect(std::move(result), game);
 	}
 
-	ArmResult runFrameLocked(std::uint32_t steps, std::optional<StallWindow> gameThreadStall)
-	{
-		scheduleClientFrames(steps);
-		VirtualGame game(manager, *server, serverStack, nullptr);
-		tickDriverFakes::Events events;
-		tickDriverFakes::FakeWorldHost host(events, tickDriverThread::kAuthorityRoleBit, StepThreading::Inline, kRingDepthTicks);
-		tickDriverFakes::FakePresenter presenter(events);
-		VirtualDriver driver(game, host, presenter, engine, VirtualDriver::Config{kLoopDtSeconds, true, StepThreading::Inline, 60});
-		ArmResult result;
-		double previous = originSeconds;
-		frame(driver, originSeconds, 0.0);
-		for (std::uint32_t k = 1u; k < steps; ++k)
-		{
-			const double at = originSeconds + static_cast<double>(k) * kLoopDtSeconds + kFramePhaseSeconds;
-			if (gameThreadStall && gameThreadStall->holds(at - originSeconds))
-				continue;
-			frame(driver, at, at - previous);
-			previous = at;
-		}
-		driver.stop();
-		clock.clearEvents();
-		result.maxStepsPerFrame = driver.getDiagnostics().windowCounts().maxStepsPerFrame;
-		return collect(std::move(result), game);
-	}
-
 	double originSeconds = 0.0;
 
 private:
@@ -736,17 +703,6 @@ private:
 		serverHost.rtt[serverIds[index]] = simNetEquivalence::kClientRttMs[index];
 	}
 
-	void serverFramePoint()
-	{
-		if (m_immediate)
-		{
-			server->drain();
-			return;
-		}
-		server->dispatchFrame();
-		server->flushFrame();
-	}
-
 	template <class DoneT>
 	bool setupUntil(DoneT done)
 	{
@@ -757,13 +713,13 @@ private:
 			clock.setNow(clock.now() + simNetEquivalence::kSetupStepSeconds);
 			const double now = clock.now();
 			serverPeer->service(now);
-			serverFramePoint();
+			server->drain();
 			serverPeer->service(now);
 			for (auto& client : clients)
 			{
 				client->host.now = now;
 				client->peer->service(now);
-				client->session->dispatchFrame();
+				client->session->drain();
 				client->session->flushFrame();
 				client->peer->service(now);
 			}
@@ -776,11 +732,9 @@ private:
 		const double now = clock.now();
 		client.host.now = now;
 		client.peer->service(now);
-		client.session->dispatchFrame();
+		client.session->drain();
 		client.stack.stepClient(client.tick++, client.inputs);
-		client.stack.netSync.sendLocalInputToAuthorityAll(
-			client.tick - 1u, simNetEquivalence::kRedundancyDepthTicks, simNetEquivalence::kRedundancyFrames);
-		client.session->endInputSends();
+		client.session->afterCaptureTick_Step(client.stack.netSync, client.tick - 1u, simNetEquivalence::rigSendConfig());
 		client.session->flushFrame();
 		client.peer->service(now);
 	}
@@ -794,16 +748,6 @@ private:
 					clientFrame(*client);
 			});
 		}
-	}
-
-	void frame(VirtualDriver& driver, double at, double deltaSeconds)
-	{
-		while (clock.now() < at)
-			serverPeer->endpoint.serviceUntil(at);
-		server->dispatchFrame();
-		driver.startFrame(deltaSeconds);
-		driver.endFrame(nullptr, 0);
-		server->flushFrame();
 	}
 
 	ArmResult collect(ArmResult result, VirtualGame& game)
@@ -820,8 +764,6 @@ private:
 		result.originSeconds = originSeconds;
 		return result;
 	}
-
-	bool m_immediate;
 
 public:
 	ognet::test::VirtualNetwork network;
@@ -845,26 +787,17 @@ inline std::string describeLatencies(const char* arm, const std::vector<double>&
 		+ std::to_string(maxOf(latencies) * 1e3) + " ms";
 }
 
-TEST_CASE("SimNetAuthorityLoop.ASimInputArrivingMidIdleIsRelayedInTheSameWakeAgainstOneFrameFrameLocked", "[NetTransport]")
+TEST_CASE("SimNetAuthorityLoop.ASimInputArrivingMidIdleIsRelayedInTheSameWake", "[NetTransport]")
 {
-	LoopRig loopRig(true);
+	LoopRig loopRig;
 	const ArmResult loop = loopRig.runAuthorityLoop(kLoopSteps, std::nullopt, false);
-	LoopRig lockedRig(false);
-	const ArmResult locked = lockedRig.runFrameLocked(kLoopSteps, std::nullopt);
 
-	WARN(describeLatencies("authority loop, immediate", loop.relayLatencies));
-	WARN(describeLatencies("frame-locked", locked.relayLatencies));
+	WARN(describeLatencies("authority loop", loop.relayLatencies));
 
 	REQUIRE(loop.relayLatencies.size() >= (kLoopSteps - 2u) * simNetEquivalence::kCharacters.size());
-	REQUIRE(locked.relayLatencies.size() == loop.relayLatencies.size());
 	CHECK(std::all_of(loop.relayLatencies.begin(), loop.relayLatencies.end(), [](double latency) { return latency == 0.0; }));
 	CHECK(maxOf(loop.relayLatencies) == 0.0);
-	CHECK(std::all_of(locked.relayLatencies.begin(), locked.relayLatencies.end(), [](double latency) {
-		return latency >= kLoopDtSeconds - kClientPhaseSeconds + kFramePhaseSeconds - 1e-5 && latency <= kLoopDtSeconds;
-	}));
-	CHECK(minOf(locked.relayLatencies) > 0.9 * kLoopDtSeconds);
 	CHECK(unrelayedCount(loop.received, loop.handed, loop.originSeconds) == 0u);
-	CHECK(unrelayedCount(locked.received, locked.handed, locked.originSeconds) == 0u);
 
 	CHECK(std::all_of(loop.batches.begin(), loop.batches.end(), [](std::int32_t steps) { return steps == 1; }));
 	CHECK(loop.batches.size() == kLoopSteps);
@@ -873,24 +806,16 @@ TEST_CASE("SimNetAuthorityLoop.ASimInputArrivingMidIdleIsRelayedInTheSameWakeAga
 	CHECK(loop.stats.relaysSent > 0u);
 }
 
-TEST_CASE("SimNetAuthorityLoop.TheAuthoritysQueuedMovesEqualTheFrameLockedArmsForTheSameArrivals", "[NetTransport]")
+TEST_CASE("SimNetAuthorityLoop.TheAuthorityConsumesAMoveForEveryCharacterEveryStepAndRefusesNoArrival", "[NetTransport]")
 {
-	LoopRig loopRig(true);
+	LoopRig loopRig;
 	const ArmResult loop = loopRig.runAuthorityLoop(kLoopSteps, std::nullopt, false);
-	LoopRig lockedRig(false);
-	const ArmResult locked = lockedRig.runFrameLocked(kLoopSteps, std::nullopt);
 
 	REQUIRE(loop.consumed.size() == kLoopSteps * simNetEquivalence::kCharacters.size());
-	REQUIRE(locked.consumed.size() == loop.consumed.size());
-	CHECK(loop.consumed == locked.consumed);
 	CHECK(std::count_if(loop.consumed.begin(), loop.consumed.end(), [](const InputRow& row) { return row.move != 0; })
 		> static_cast<std::ptrdiff_t>(loop.consumed.size() / 2u));
-	CHECK(std::all_of(locked.batches.begin(), locked.batches.end(), [](std::int32_t steps) { return steps == 1; }));
 
 	REQUIRE_FALSE(loop.decisions.empty());
-	CHECK(loop.decisions == locked.decisions);
-	CHECK(firstStamps(loop.received) == firstStamps(locked.received));
-	CHECK(loop.stats.messages == locked.stats.messages);
 	CHECK(loop.stats.badDecode == 0u);
 	CHECK(loop.stats.unknownSim == 0u);
 	CHECK(loop.stats.refusedNotOwner == 0u);
@@ -899,9 +824,9 @@ TEST_CASE("SimNetAuthorityLoop.TheAuthoritysQueuedMovesEqualTheFrameLockedArmsFo
 TEST_CASE("SimNetAuthorityLoop.A200MsFrameThreadStallChangesNothingOnTheRunner", "[NetTransport]")
 {
 	const StallWindow stall{kStallStartSeconds, kStallSeconds};
-	LoopRig steadyRig(true);
+	LoopRig steadyRig;
 	const ArmResult steady = steadyRig.runAuthorityLoop(kLoopSteps, std::nullopt, true);
-	LoopRig stalledRig(true);
+	LoopRig stalledRig;
 	const ArmResult stalled = stalledRig.runAuthorityLoop(kLoopSteps, stall, true);
 
 	CHECK(stalled.stalledWakes >= 11u);
@@ -914,26 +839,12 @@ TEST_CASE("SimNetAuthorityLoop.A200MsFrameThreadStallChangesNothingOnTheRunner",
 	CHECK(stalled.handed == steady.handed);
 	CHECK(maxOf(stalled.relayLatencies) == 0.0);
 	CHECK(unrelayedCount(stalled.received, stalled.handed, stalled.originSeconds) == 0u);
-
-	LoopRig lockedRig(false);
-	const ArmResult locked = lockedRig.runFrameLocked(kLoopSteps, stall);
-	const std::size_t lockedUnrelayed = unrelayedCount(locked.received, locked.handed, locked.originSeconds);
-	WARN(describeLatencies("frame-locked with a 200 ms game-thread stall", locked.relayLatencies) + "; never relayed: "
-		+ std::to_string(lockedUnrelayed) + "; maxStepsPerFrame " + std::to_string(locked.maxStepsPerFrame));
-	CHECK(locked.maxStepsPerFrame >= 12u);
-	CHECK(maxOf(locked.relayLatencies) > 6.0 * kLoopDtSeconds);
-	CHECK(lockedUnrelayed > 0u);
 }
 
 TEST_CASE("SimNetAuthorityLoop.AnImmediateServerSendsAtOnceAndRefusesNothingTheLoopNeeds", "[NetTransport]")
 {
-	LoopRig rig(true);
-	CHECK(rig.server->immediate());
-	LoopRig lockedRig(false);
-	CHECK_FALSE(lockedRig.server->immediate());
-	CHECK(rig.serverPeer->transport->heldBytes() == 0u);
+	LoopRig rig;
 	const ArmResult loop = rig.runAuthorityLoop(kLoopSteps, std::nullopt, false);
-	CHECK(rig.serverPeer->transport->heldBytes() == 0u);
 	CHECK(loop.stats.statesSent >= kLoopSteps * simNetEquivalence::kClientCount);
 	CHECK(loop.stats.clocksSent >= kLoopSteps);
 	CHECK(loop.stats.relaysSent >= (kLoopSteps - 2u) * simNetEquivalence::kCharacters.size());
@@ -1022,27 +933,6 @@ TEST_CASE("SimNetAuthorityLoop.SimNetIdleMapsEachServiceResultOntoItsWakeAndPass
 	CHECK(endpoint.deadlines == std::vector<double>{1.25, 1.5, 1.75, 2.0});
 }
 
-TEST_CASE("SimNetAuthorityLoop.Death.FlushFrameOnAnImmediateServerFiresTheCheck", "[.][OGSimDeath]")
-{
-	LoopRig rig(true);
-	rig.server->flushFrame();
-	FAIL("SimNetServer::flushFrame was accepted on an immediate session");
-}
-
-TEST_CASE("SimNetAuthorityLoop.Death.DispatchFrameOnAnImmediateServerFiresTheCheck", "[.][OGSimDeath]")
-{
-	LoopRig rig(true);
-	rig.server->dispatchFrame();
-	FAIL("SimNetServer::dispatchFrame was accepted on an immediate session");
-}
-
-TEST_CASE("SimNetAuthorityLoop.Death.AfterInlineBatchOnAFrameLockedServerFiresTheCheck", "[.][OGSimDeath]")
-{
-	LoopRig rig(false);
-	rig.server->afterInlineBatch(static_cast<std::int32_t>(simNetEquivalence::kFirstServerTick));
-	FAIL("SimNetServer::afterInlineBatch was accepted on a frame-locked session");
-}
-
 TEST_CASE("SimNetAuthorityLoop.Death.AServiceResultWithNoWakeReasonFiresTheCheck", "[.][OGSimDeath]")
 {
 	ScriptedEndpoint endpoint;
@@ -1109,9 +999,7 @@ TEST_CASE("SimNetAuthorityLoop.Timing.ARealSocketIdleWithASpinPreciseApproachKee
 	BsdEndpoint serverEndpoint(serverServices, serverBackend);
 	BsdEndpoint clientEndpoint(clientServices, clientBackend);
 
-	ogsimnet::SimNetConfig transportConfig;
-	transportConfig.immediate = true;
-	BsdTransport transport(transportConfig);
+	BsdTransport transport(ogsimnet::SimNetConfig{});
 	transport.installHandlers(serverEndpoint);
 	serverEndpoint.setConnectionHandler(transport.connectionHandler());
 	ognet::EndpointConfig serverConfig;

@@ -23,8 +23,7 @@ the consequence of ignoring it.
   left unannounced, push the message into the inbox with its slot, ask the endpoint to disconnect a connection over its
   Control quota, and return.
 - **Consequence:** the handler runs on og-net's servicing thread. Every reader of sim state (the roster, the channels, the
-  reception coordinator) runs on the session's thread, which drains the inbox. Work done here races them, and in the
-  frame-locked mode it also runs before the frame point the message is meant to reach.
+  reception coordinator) runs on the session's thread, which drains the inbox. Work done here races them.
 - **What breaks if it moves:** nothing may move into it. A Ph4 handler that must answer on the servicing thread (the clock
   pong) gets its own handler for its lane, not code in this one.
 
@@ -36,14 +35,6 @@ the consequence of ignoring it.
   endpoint, and needs it: it reads the client's failed-connect `Disconnected` from it. Setting the transport's thunk instead
   replaces the driver's handler, so the driver never learns that a connect failed. The host chains `onConnectionEvent` from
   its own handler, or installs `connectionHandler()` when it has none.
-
-## G-03 — an overflow releases the hold before it sends
-
-- **Site:** the `releaseHold()` call in `submit`'s overflow branch.
-- **Prohibition:** do not delete the release, and do not move it after the `transmit` of the overflowing send.
-- **Consequence:** the overflowing send would leave ahead of every send held earlier in the same frame. On the Control lane
-  that reorders the roster: a delta that arrives before the one it follows is a revision gap, and the client disconnects.
-  On the other lanes, a newer correction or ring overtakes an older one.
 
 ## G-04 — the return after the endpoint check stays
 
@@ -73,14 +64,18 @@ the consequence of ignoring it.
 - **Prohibition:** do not delete the `if` and its return as dead code behind the check, and do not route an append or a set end
   around `withInputSet`.
 - **Consequence:** it runs only where `OG_CHECK` is compiled out (a Shipping build, and the standalone build with `NDEBUG`).
-  There an immediate transport's input set is written by the thread that opened it, the client's step, while a bundle or a set
-  end from another thread (the game thread's send, which an immediate host no longer makes) would write the same buffer and
-  length at the same time: a torn set on the wire, or a bundle appended into the middle of the step's set. The return drops
+  There the transport's input set is written by the thread that opened it, the client's step, while a bundle or a set end
+  from another thread, or with no set open, would write the same buffer and length at the same time: a torn set on the wire,
+  or a bundle appended into the middle of the step's set. The return drops
   that call instead, counted in `unwindowedRefused`. Where the check is live it stops the program, or ends the case in a test
   runner that reports a failed check as a failed case, so no test reaches the fallback and its deletion passes every test.
 
 ## §R Retired ids
 
+- **G-03** (2026-11-24) forbade deleting the frame hold's release in `submit`'s overflow branch, or moving it after the
+  overflowing send: that send would have left ahead of every send held earlier in the same frame, reordering the roster on
+  Control. Retired with its site: og-session-runtime task 15 deleted the hold arena, its release and its flush, so every send
+  leaves at once, in call order (rationale §7). Successor: none: removed by og-session-runtime task 15.
 - **G-05** (2026-11-15) forbade giving a freed slot to a new connection before its tag held no undrained message. The rule was
   replaced by its opposite: a slot is taken again at once, and the residue counts against the new connection (rationale
   §10). The wait it guarded let a connection that found no free slot push untagged, outside every quota, which is how

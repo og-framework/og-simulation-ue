@@ -34,13 +34,13 @@ its own load.
 
 ---
 
-## G-02 — an immediate client's game thread does not drain once a world session is bound
+## G-02 — a client's game thread does not drain once a world session is bound
 
 **Tag site:** `UESimNetLanes.h`, `afterDispatch`, the line above `if (m_clientSessionBound.load(std::memory_order_relaxed))`,
 the early return before the client's game-thread `drain()`.
 
 **The prohibition.** Do not drop this early return, do not make it depend on anything but the session's bind, and do not move
-the game-thread `drain()` above it. Once a world session is bound, the session's steps drain an immediate client from the step's
+the game-thread `drain()` above it. Once a world session is bound, the session's steps drain the client from the step's
 thread (`drainClient_Step`, rationale §11).
 
 **The consequence.** A game-thread drain then runs every consumer the drain reaches (the correction inject, the relay ingest, the
@@ -49,7 +49,7 @@ worker, and the lifecycle queue's registrations land in the middle of a step. og
 overlap in time (an `OG_CHECK`); one that does not overlap is caught by nothing and is a data race on every structure the step
 reads.
 
-**What breaks if it moves.** Nothing at compile time; a smoke with `SimTrafficImmediate=1` stays healthy on most runs.
+**What breaks if it moves.** Nothing at compile time; a smoke stays healthy on most runs.
 
 ---
 
@@ -58,7 +58,7 @@ reads.
 **Tag site:** `UESimNetLanes.h`, `beforeStop`, the line above `if (joinRunner)`.
 
 **The prohibition.** Do not drop the join, do not move it below the stop handler or the unbind, and do not move it into the
-lanes' destructor. On an authority-loop server the runner is the endpoint's servicing thread; it must have stopped before the
+lanes' destructor. On a dedicated server the runner is the endpoint's servicing thread; it must have stopped before the
 driver stops og-net, and before the session's stop handler tears down what the runner reads.
 
 **The consequence.** og-net's stop runs on the game thread right after `beforeStop` returns, and checks that no other thread
@@ -67,8 +67,9 @@ server aborts at every map change and shutdown. Below the stop handler, the hand
 og-sim-net's server while the runner drains and steps them. The driver's destructor never calls `beforeStop`, so a join in the
 lanes' destructor would come after og-net's stop (`DestroySimLanesAfterEndpoint`).
 
-**What breaks if it moves.** Nothing at compile time. With `og.Sim.AuthorityLoop=1` a dedicated server aborts in og-net's stop
-check (or races its runner) when its driver is destroyed; the loop-off servers bind no join and are unaffected.
+**What breaks if it moves.** Nothing at compile time. A dedicated server aborts in og-net's stop check (or races its runner)
+when its driver is destroyed. Every dedicated server runs the loop since og-session-runtime task 14; until then the in-frame
+servers bound no join and were unaffected.
 
 ---
 
@@ -86,9 +87,9 @@ Join UE may have sampled no ack, so the base's read answers `AccumulatorEmpty`, 
 server logs a false `[RttSample] SERVER tier RTT source unavailable (... accumulator is empty (no ack sampled yet))` line
 before the first login, and a later real `AccumulatorEmpty` outage is silent for the rest of the session.
 
-**What breaks if it moves.** Nothing at compile time, and the published values do not change. With
-`og.Sim.AuthorityLoop=1` a dedicated server's log carries the false warning shortly before its first `Login request`;
-loop-off servers never call the publish.
+**What breaks if it moves.** Nothing at compile time, and the published values do not change. A dedicated server's log
+carries the false warning shortly before its first `Login request` (until og-session-runtime task 14 the in-frame servers never
+called the publish).
 
 ---
 

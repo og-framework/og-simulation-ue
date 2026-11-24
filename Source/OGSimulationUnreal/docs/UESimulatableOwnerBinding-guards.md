@@ -42,14 +42,16 @@ skeleton's first role test. (Was `OGBrawlerSimulatableComponent-guards.md` G-02.
 
 **Correction (R0, carried from the game component's entry).** The stated mechanism is about the wrong actor. "Always true
 on a non-replicated actor" describes the session owner (the brawler's sets `bReplicates = false`); the component's owner is
-a replicated pawn. The prohibition stands for the other half of the sentence: `TraitsT::SessionOwner::instanceFor(isAuthority)`
-returns the owner of the session that `UESimulationSession::instanceFor` finds in the registry slot for that role, and the
-session's `beginPlay` fills that slot from `worldIsAuthority = (worldNetMode != NM_Client)`. Only the same world-level
-predicate is guaranteed to pick the session owner of this component's own world; an actor-role test answers differently for
-an actor spawned locally on a client.
+a replicated pawn. The prohibition stands for the other half of the sentence:
+`TraitsT::SessionOwner::instanceFor(world, isAuthority)` returns the owner of the session that `UESimulationSession::instanceFor`
+finds registered for this component's world and that role, and the session registers its role from
+`netMode != NM_Client` of its world (`refuseToStart`). Only the same world-level predicate is guaranteed to pick the session
+owner of this component's own world; an actor-role test answers differently for an actor spawned locally on a client.
 
-**Consequence.** A component resolving the other role's session owner registers into the wrong storage — in PIE both
-sessions live in one process, so the lookup succeeds and nothing fails loudly.
+**Consequence.** Since og-session-runtime task 16b the registry is keyed by world as well as role, so a component asking
+for the other role finds nothing in its own world: it retries and asserts after `kMaxRegistrationAttempts`. Until then the
+registry held one slot per role for the whole process, and in a single-process PIE the lookup found the OTHER world's
+session and registered into the wrong storage with nothing failing loudly.
 
 **Scope note.** The same predicate is computed again in `tryRegisterWithNewFramework`; a game component that reads the
 role elsewhere (the brawler's `EndPlay` and `TickComponent`) computes it the same way. Only this site carried the fence,

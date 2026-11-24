@@ -64,11 +64,13 @@ channel as soon as the call returns. The registered simulatable holds that chann
 unregistration clears the callbacks bound on it, so an unregister that runs later runs against a destroyed channel. A host
 that does defer it must keep the channel alive itself first (og-sim-net's `SimNetClient-rationale.md` §5).
 
-**An immediate client** (og-input-latency task P5-17) still makes the call here, at once, inside the drain on the step's thread.
+**A client** (og-input-latency task P5-17) makes the call here, at once, inside the drain on the step's thread.
 og-sim-net has already unregistered a queue-registered character before it (`SimNetClient-guards.md` G-12), so the session's
 handler runs no og-sim unregistration; it posts the host's own game-thread work to the game thread
-(`UESimulationSession-rationale.md` §18.5). The prohibition binds the call, which a deferral would still break for a frame-locked
-client.
+(`UESimulationSession-rationale.md` §18.5). Since og-session-runtime task 12 every client registers through that queue (until
+then a frame-locked client's handler unregistered against the channel here, which a deferral broke).
+So the destroyed-channel consequence above has no path left. The call still stays here, at once: the handler erases the id from
+the session's step-thread set (`m_systemsNotified_Step`), which the step's thread owns while the steps run.
 
 **What breaks if it moves.** Nothing at compile time; at run time a use of a destroyed object on the first leave.
 
@@ -117,8 +119,9 @@ join changes, and Ph3's identical row `[RelayDelayFloor] floor = 6 ticks, UPWARD
 **The prohibition.** Do not read the root connection here: not `GetRootNetConnection(actor)`, and not a walk to the parent.
 
 **The consequence.** A root connection is a parent connection, whose child connection id is 0. Every local player of a
-split-screen client would get local index 0. The world session hands that index to og-sim-net's `addCharacter`
-(`UESimulationSession::addSimNetCharacter`), and the roster refuses a second live character with the same owner and local
+split-screen client would get local index 0. The world session hands that index to og-sim-net's `registerCharacter`
+(`UESimulationSession::tryRegisterOnRunner`, through the authority runner), and the roster refuses a second live character with
+the same owner and local
 index (`RosterAuthority::add`, `RosterAddRefusal::DuplicateOwnerSlot`): the second local player's character is refused
 (`[Roster.Refused]`) and its registration abandons.
 

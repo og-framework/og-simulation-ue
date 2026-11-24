@@ -73,9 +73,6 @@ public:
 	void end(UWorld& world);
 	void forgetCharacter(unsigned int id);
 
-	void stamp(latencyBudget::Stream stream, unsigned int lane, uint32 tick, latencyBudget::Point point);
-	void stampAt(latencyBudget::Stream stream, unsigned int lane, uint32 tick, latencyBudget::Point point, double seconds);
-	void stampCorrectionReceived(unsigned int lane, uint32 correctionTick);
 	void noteWireSample(double roundTripSeconds);
 	void post_Internal(const latencyBudget::Event& event);
 	void stampClientReceived_Internal(latencyBudget::Stream stream, unsigned int lane, uint32 tick, double recvSeconds);
@@ -93,9 +90,9 @@ public:
 	void restartClockWindow();
 
 	template <typename FunctionT>
-	static void withInstance(bool isAuthority, FunctionT&& function)
+	static void withInstance(const UWorld* world, bool isAuthority, FunctionT&& function)
 	{
-		if (UELatencyBudgetDiagnostics* diagnostics = instanceFor(isAuthority))
+		if (UELatencyBudgetDiagnostics* diagnostics = instanceFor(world, isAuthority))
 			function(*diagnostics);
 	}
 
@@ -129,7 +126,7 @@ private:
 		bool                                                       primed = false;
 	};
 
-	static UELatencyBudgetDiagnostics* instanceFor(bool isAuthority);
+	static UELatencyBudgetDiagnostics* instanceFor(const UWorld* world, bool isAuthority);
 
 	InputProvider wrap(unsigned int id, const typename TraitsT::Component& owner, InputProvider inputProvider);
 	void postRelayedReads_Internal(unsigned int id, const RelayedReadObservationRing& ring, uint32 tick,
@@ -139,8 +136,7 @@ private:
 
 	static_assert(std::is_const_v<std::remove_reference_t<decltype(m_owner)>>,
 		"UELatencyBudgetDiagnostics reads its session's production state (m_manager, m_storage, m_inputResolution and "
-		"the client clock, and the delayed-input map through the session's const forEachAuthorityCorrectionTick) through "
-		"a CONST reference only. It is the session's friend, so a mutable reference here would be a write door from a "
+		"the client clock) through a CONST reference only. It is the session's friend, so a mutable reference here would be a write door from a "
 		"diagnostic into every private member of the session. Added by og-tickdriver task 18; moved to OGSimulationUnreal by "
 		"task 19a; its owner became the session in og-ue-simulationcomponentandmanagersplit task 24a, the delayed-input "
 		"map the session's own in task 26a, and its loop the session's in og-input-latency task P5-5.");
@@ -153,7 +149,6 @@ private:
 	ClockCounts                                        m_clockLatest;
 	ClockCounts                                        m_clockAtWindowStart;
 	uint64                                             m_mailboxDropped = 0u;
-	std::unordered_map<unsigned int, uint32>           m_lastHandedCorrectionTick;
 	std::unordered_map<unsigned int, uint32>           m_lastHandedCorrectionTick_Runner;
 	std::unordered_map<unsigned int, SeenReads>        m_seenReads_Physics;
 	FDelegateHandle                                    m_postTickFlushHandle;
@@ -164,9 +159,6 @@ private:
 	void end(UWorld&) {}
 	void forgetCharacter(unsigned int) {}
 
-	void stamp(latencyBudget::Stream, unsigned int, uint32, latencyBudget::Point) {}
-	void stampAt(latencyBudget::Stream, unsigned int, uint32, latencyBudget::Point, double) {}
-	void stampCorrectionReceived(unsigned int, uint32) {}
 	void noteWireSample(double) {}
 	void post_Internal(const latencyBudget::Event&) {}
 	void stampClientReceived_Internal(latencyBudget::Stream, unsigned int, uint32, double) {}
@@ -184,7 +176,7 @@ private:
 	void restartClockWindow() {}
 
 	template <typename FunctionT>
-	static void withInstance(bool, FunctionT&&) {}
+	static void withInstance(const UWorld*, bool, FunctionT&&) {}
 
 private:
 	InputProvider wrap(unsigned int, const typename TraitsT::Component&, InputProvider inputProvider)
@@ -199,9 +191,9 @@ private:
 OGSIM_OPTIMIZE_OFF
 
 template <typename TraitsT>
-UELatencyBudgetDiagnostics<TraitsT>* UELatencyBudgetDiagnostics<TraitsT>::instanceFor(bool isAuthority)
+UELatencyBudgetDiagnostics<TraitsT>* UELatencyBudgetDiagnostics<TraitsT>::instanceFor(const UWorld* world, bool isAuthority)
 {
-	typename TraitsT::SessionOwner* manager = TraitsT::SessionOwner::instanceFor(isAuthority);
+	typename TraitsT::SessionOwner* manager = TraitsT::SessionOwner::instanceFor(world, isAuthority);
 	return manager != nullptr ? &manager->editLatencyBudgetDiagnostics() : nullptr;
 }
 
@@ -232,7 +224,6 @@ void UELatencyBudgetDiagnostics<TraitsT>::forgetCharacter(unsigned int id)
 {
 	if (m_probe)
 		m_probe->forgetLane(id);
-	m_lastHandedCorrectionTick.erase(id);
 	// ⛔G-05  docs/UELatencyBudgetDiagnostics-guards.md
 
 }
@@ -264,48 +255,6 @@ typename UELatencyBudgetDiagnostics<TraitsT>::InputProvider UELatencyBudgetDiagn
 				id, tick, latencyBudget::Point::Captured, capturedSeconds));
 			return input;
 		};
-}
-
-template <typename TraitsT>
-void UELatencyBudgetDiagnostics<TraitsT>::stamp(
-	latencyBudget::Stream stream, unsigned int lane, uint32 tick, latencyBudget::Point point)
-{
-	checkf(IsInGameThread(),
-		TEXT("UELatencyBudgetDiagnostics::stamp is the GAME-THREAD door to the latency probe; ")
-		TEXT("the physics thread posts through post_Internal's mailbox instead."));
-	if (m_probe)
-		m_probe->stamp(stream, lane, tick, point, FPlatformTime::Seconds());
-}
-
-template <typename TraitsT>
-void UELatencyBudgetDiagnostics<TraitsT>::stampAt(
-	latencyBudget::Stream stream, unsigned int lane, uint32 tick, latencyBudget::Point point, double seconds)
-{
-	checkf(IsInGameThread(),
-		TEXT("UELatencyBudgetDiagnostics::stampAt is the GAME-THREAD door to the latency probe for a stamp at a time ")
-		TEXT("the caller measured; the physics thread posts through post_Internal's mailbox instead."));
-	if (m_probe)
-		m_probe->stamp(stream, lane, tick, point, seconds);
-}
-
-template <typename TraitsT>
-void UELatencyBudgetDiagnostics<TraitsT>::stampCorrectionReceived(unsigned int lane, uint32 correctionTick)
-{
-	checkf(IsInGameThread(),
-		TEXT("UELatencyBudgetDiagnostics::stampCorrectionReceived is game-thread only: the probe has one owner, and the ")
-		TEXT("relay store it reads the delay stamp from is written on the game thread."));
-	if (!m_probe)
-		return;
-	const double nowSeconds = FPlatformTime::Seconds();
-	m_probe->stamp(latencyBudget::Stream::State, lane, correctionTick, latencyBudget::Point::ClientReceived, nowSeconds);
-
-	const auto* store =
-		m_owner.m_inputResolution.template findRemoteInputCache<typename TraitsT::Simulatable>(lane);
-	if (store == nullptr)
-		return;
-	const auto latest = store->findLatest();
-	if (latest.valid)
-		m_probe->stampHealedByCorrection(lane, correctionTick, latest.dA, nowSeconds);
 }
 
 template <typename TraitsT>
@@ -535,20 +484,6 @@ void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread()
 
 	const double nowSeconds = FPlatformTime::Seconds();
 	const bool isClient = m_owner.m_manager->runsPrediction();
-
-	if (!isClient && !m_owner.m_authorityLoop)
-	{
-		m_owner.forEachAuthorityCorrectionTick(
-			[this, nowSeconds](unsigned int id, uint32 correctionTick)
-			{
-				uint32& lastHanded = m_lastHandedCorrectionTick[id];
-				if (lastHanded == correctionTick)
-					return;
-				lastHanded = correctionTick;
-				m_probe->stamp(latencyBudget::Stream::State, id, correctionTick,
-					latencyBudget::Point::Handed, nowSeconds);
-			});
-	}
 
 	m_probe->stampNewestPending(latencyBudget::Stream::State,
 		latencyBudget::Point::StepEnd, latencyBudget::Point::Rendered, nowSeconds);

@@ -64,7 +64,6 @@ concept SimNetServerTransport = ServerSimTransport<T> && requires(T& transport, 
 {
 	transport.inbox().drain([](const InboundSimRecord&) {});
 	{ transport.inbox().stats() } -> std::same_as<SimInboxStats>;
-	{ transport.flushFrame() } -> std::same_as<void>;
 	{ transport.channelTransport(simId) } -> ClientSimTransport;
 };
 
@@ -321,7 +320,6 @@ public:
 	SimNetServer(HostT& host, TransportT& transport, const TimeConfig& config, size_t correctionBudgetBytes, PolicyT policy = PolicyT{})
 		: m_host(host)
 		, m_transport(transport)
-		, m_immediate(transportIsImmediate(transport))
 		, m_config(config)
 		, m_coordinator(config)
 		, m_correctionBudgetBytes(correctionBudgetBytes)
@@ -346,45 +344,16 @@ public:
 		return handled;
 	}
 
-	void dispatchFrame()
-	{
-		OG_CHECK(!m_immediate,
-			"SimNetServer::dispatchFrame: an immediate session (SimNetConfig::immediate) is drained by drain() in the tick "
-			"driver's beforePump, on the authority's owner thread (the runner once the authority loop is on); the frame point's "
-			"drain is frame-locked mode's");
-		drain();
-	}
-
-	void flushFrame()
-	{
-		OG_CHECK(!m_immediate,
-			"SimNetServer::flushFrame: an immediate session sends at once: each accepted bundle's relay in the drain, the "
-			"corrections, the clock and the window in afterInlineBatch. A frame flush would send from the frame's thread, and the "
-			"server's endpoint is serviced by the runner alone (mode B)");
-		flushRelays();
-		flushCorrections();
-		flushClock();
-		m_transport.flushFrame();
-		maybeEmitWindow();
-	}
-
-	bool immediate() const { return m_immediate; }
-
 	void releaseForStep(int32_t firstTick, int32_t numSteps, std::optional<double> stepSeconds = std::nullopt)
 	{
 		(releaseFor<SimTs>(firstTick, numSteps, stepSeconds), ...);
 	}
 
-	void afterBatch(int32_t serverTick) { m_coordinator.reapConnections(serverTick); }
-
 	void afterInlineBatch(int32_t serverTick)
 	{
-		OG_CHECK(m_immediate,
-			"SimNetServer::afterInlineBatch: a frame-locked session sends its corrections and clock at flushFrame and reaps at "
-			"afterBatch; the send after each batch is immediate mode's (SimNetConfig::immediate)");
 		flushCorrections();
 		flushClock();
-		afterBatch(serverTick);
+		m_coordinator.reapConnections(serverTick);
 		maybeEmitWindow();
 	}
 
@@ -743,16 +712,6 @@ private:
 		m_host.log(formatAddRefused(simId, physicsSlot, reason).data());
 	}
 
-	static bool transportIsImmediate(const TransportT& transport)
-	{
-		if constexpr (requires(const TransportT& configured) {
-						  { configured.config().immediate } -> std::convertible_to<bool>;
-					  })
-			return transport.config().immediate;
-		else
-			return false;
-	}
-
 	void onMessage(const InboundSimRecord& record)
 	{
 		const DecodedSimMessage message = simEnvelope::decode<Shape>(record.lane, SimDirection::ClientToServer, record.payload());
@@ -798,8 +757,7 @@ private:
 		m_coordinator.noteRttSample(handle, simId, m_host.receptionTick(), m_host.rttMs(record.conn), *this);
 		const uint8_t localIndex = m_roster.localIndexOf(simId).value_or(kRosterNotLocal);
 		m_coordinator.template receiveInputBundle<SimT>(simId, handle, localIndex, m_bundle, *this, *this, record.recvSeconds);
-		if (m_immediate)
-			flushRelays(simId);
+		flushRelays(simId);
 	}
 
 	void refuseInput(SimConnectionId conn, uint8_t simId, RosterInputVerdict verdict)
@@ -877,22 +835,20 @@ private:
 		++(kind == SimMessageKind::RelayFloor ? m_stats.floorsSent : m_stats.tiersSent);
 	}
 
-	void flushRelays(std::optional<uint8_t> onlySimId = std::nullopt)
+	void flushRelays(uint8_t simId)
 	{
 		const uint8_t resendEntries = static_cast<uint8_t>(latencyKnobs::clampRelayResendEntries(m_config.relayResendEntries));
-		for (auto& [simId, character] : m_characters)
-		{
-			if ((onlySimId && *onlySimId != simId) || character.stager->flush(resendEntries) == 0u)
-				continue;
-			const RelayRingBuffer& ring = character.stager->published();
-			MessageBytes out{};
-			const size_t size = simEnvelope::writeRelayRing(out, simId, ring.payload());
-			// ⛔G-04  docs/SimNetServer-guards.md
-			m_transport.relay(character.owner, std::span<const std::byte>(out.data(), size));
-			++m_stats.relaysSent;
-			++m_window.relaysSent;
-			stampHanded(simId, ring);
-		}
+		const auto found = m_characters.find(simId);
+		if (found == m_characters.end() || found->second.stager->flush(resendEntries) == 0u)
+			return;
+		const RelayRingBuffer& ring = found->second.stager->published();
+		MessageBytes out{};
+		const size_t size = simEnvelope::writeRelayRing(out, simId, ring.payload());
+		// ⛔G-04  docs/SimNetServer-guards.md
+		m_transport.relay(found->second.owner, std::span<const std::byte>(out.data(), size));
+		++m_stats.relaysSent;
+		++m_window.relaysSent;
+		stampHanded(simId, ring);
 	}
 
 	void stampHanded(uint8_t simId, const RelayRingBuffer& ring)
@@ -1027,7 +983,6 @@ private:
 
 	HostT& m_host;
 	TransportT& m_transport;
-	const bool m_immediate;
 	const TimeConfig& m_config;
 	Coordinator m_coordinator;
 	size_t m_correctionBudgetBytes;

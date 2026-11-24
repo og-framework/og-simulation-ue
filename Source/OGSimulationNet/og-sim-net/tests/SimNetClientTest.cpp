@@ -462,7 +462,7 @@ void recordDeliveries(ChannelT& channel, std::vector<Delivery>& out)
 
 struct Script
 {
-	explicit Script(SimNetConfig config = {}) : transport(std::make_unique<ScriptTransport>(config))
+	explicit Script(SimNetConfig config = SimNetConfig{}) : transport(std::make_unique<ScriptTransport>(config))
 	{
 		transport->installHandlers(endpoint);
 		transport->markEndpointStarted();
@@ -482,7 +482,7 @@ struct Script
 	void correction(std::uint8_t simId, std::uint32_t tick) { push(SimLane::SimState, correctionMsg(simId, tick)); }
 	void clock(std::uint32_t tick) { push(SimLane::SimClock, clockMsg(tick)); }
 
-	void drain() { client->dispatchFrame(); }
+	void drain() { client->drain(); }
 
 	void recordAll(std::vector<Delivery>& out)
 	{
@@ -847,8 +847,10 @@ TEST_CASE("SimNetClient.AFloorOrTierThatArrivesBeforeBindListenerIsReplayedOnce"
 	CHECK(s.client->latchedFloor() == std::optional<std::uint8_t>(std::uint8_t{6}));
 
 	s.client->bindListener();
+	s.drain();
 	CHECK(s.host.events == std::vector<std::string>{"floor 6 replayed", "tier 0->2 replayed"});
 	s.client->bindListener();
+	s.drain();
 	CHECK(s.host.events.size() == 2u);
 
 	s.push(SimLane::Control, floorMsg(7u));
@@ -861,6 +863,7 @@ TEST_CASE("SimNetClient.AFloorOrTierThatArrivesBeforeBindListenerIsReplayedOnce"
 	s.drain();
 	CHECK(s.host.events.size() == 4u);
 	s.client->bindListener();
+	s.drain();
 	CHECK(s.host.events.back() == "tier 2->3 replayed");
 	CHECK(s.host.events[4] == "floor 8 replayed");
 	CHECK(s.client->stats().floorsReceived == 3u);
@@ -893,7 +896,9 @@ TEST_CASE("SimNetClient.ARevisionGapDisconnectsWithAReasonAndTheSessionFailsClos
 
 	PendingInputQueue<CliInput> queue;
 	fillQueue(queue, 10u, 12u);
+	s.transport->beginInputSends();
 	s.client->channel(kSimA)->sendLocalInputToAuthority(queue, 12u, 3u);
+	s.transport->endInputSends();
 	s.client->flushFrame();
 	CHECK(s.endpoint.on(ognet::Lane::SimInput).empty());
 	CHECK(s.transport->stats().inputSetsWithoutServer == 1u);
@@ -927,7 +932,7 @@ TEST_CASE("SimNetClient.AMalformedRosterIsRefusedLikeARefusedOne", "[NetTranspor
 	CHECK(t.client->stats().badDecode == 1u);
 }
 
-TEST_CASE("SimNetClient.AFrameSendsOneHeldSetAndDropsEmptyBundles", "[NetTransport][SimNetClient]")
+TEST_CASE("SimNetClient.ASetDropsEmptyBundlesAndCarriesEachNonEmptyOne", "[NetTransport][SimNetClient]")
 {
 	Script s;
 	s.connect();
@@ -936,13 +941,12 @@ TEST_CASE("SimNetClient.AFrameSendsOneHeldSetAndDropsEmptyBundles", "[NetTranspo
 	PendingInputQueue<CliInput> queue;
 	fillQueue(queue, 20u, 22u);
 
+	s.transport->beginInputSends();
 	s.client->channel(kSimA)->sendLocalInputToAuthority(queue, 22u, 3u);
 	s.client->channel(kSimB)->sendLocalInputToAuthority(queue, 22u, 0u);
 	s.client->channel(kSimC)->sendLocalInputToAuthority(queue, 22u, 2u);
-	s.client->endInputSends();
-	CHECK(s.endpoint.calls.empty());
-	s.client->flushFrame();
-	std::vector<RecordingEndpoint::Call> sets = s.endpoint.on(ognet::Lane::SimInput);
+	s.transport->endInputSends();
+	const std::vector<RecordingEndpoint::Call> sets = s.endpoint.on(ognet::Lane::SimInput);
 	REQUIRE(sets.size() == 1u);
 	CHECK(sets[0].id == kServerConn);
 	CHECK(s.client->stats().emptyBundles == 1u);
@@ -957,33 +961,13 @@ TEST_CASE("SimNetClient.AFrameSendsOneHeldSetAndDropsEmptyBundles", "[NetTranspo
 	CHECK(simEnvelope::forEachInputBundle<CliShape>(set.body, [&](std::uint8_t simId, std::span<const std::byte>) { ids.push_back(simId); })
 		== DecodeRefusal::None);
 	CHECK(ids == std::vector<std::uint8_t>{kSimA, kSimC});
-
-	s.client->channel(kSimA)->sendLocalInputToAuthority(queue, 22u, 1u);
-	s.client->flushFrame();
-	sets = s.endpoint.on(ognet::Lane::SimInput);
-	REQUIRE(sets.size() == 2u);
-	wire.clear();
-	for (const std::uint8_t b : sets[1].bytes)
-		wire.push_back(std::byte{b});
-	CHECK(simEnvelope::decode<CliShape>(SimLane::SimInput, SimDirection::ClientToServer, wire).count == 1u);
-	s.client->flushFrame();
-	CHECK(s.endpoint.on(ognet::Lane::SimInput).size() == 2u);
-
-	Script immediate(SimNetConfig{true});
-	immediate.connect();
-	immediate.roster(snapshotMsg(1u, {RosterEntry{kSimA, 0u, 0u}}));
-	immediate.client->drain();
-	immediate.transport->beginInputSends();
-	immediate.client->channel(kSimA)->sendLocalInputToAuthority(queue, 22u, 3u);
-	immediate.transport->endInputSends();
-	CHECK(immediate.endpoint.on(ognet::Lane::SimInput).size() == 1u);
 }
 
 TEST_CASE("SimNetClient.AHostWithNoteDeliveredSeesOneCallPerMessageRecordAndNoneForEvents", "[NetTransport][SimNetClient]")
 {
 	RecordingEndpoint endpoint;
 	DeliveryClientHost host;
-	auto transport = std::make_unique<ScriptTransport>();
+	auto transport = std::make_unique<ScriptTransport>(SimNetConfig{});
 	transport->installHandlers(endpoint);
 	transport->markEndpointStarted();
 	SimNetClient<CliGame, DeliveryClientHost, ScriptTransport> client(host, *transport);
@@ -992,7 +976,7 @@ TEST_CASE("SimNetClient.AHostWithNoteDeliveredSeesOneCallPerMessageRecordAndNone
 	};
 
 	transport->inbox().pushEvent(InboundKind::Connected, kServerConn, kNoReceiveSeconds);
-	client.dispatchFrame();
+	client.drain();
 	CHECK(host.deliveries.empty());
 
 	push(SimLane::Control, snapshotMsg(1u, {remoteEntry(kSimA, 0u)}), 3.0);
@@ -1003,7 +987,7 @@ TEST_CASE("SimNetClient.AHostWithNoteDeliveredSeesOneCallPerMessageRecordAndNone
 	push(SimLane::Control, addMsg(3u, remoteEntry(kSimB, 1u)), 4.25);
 	push(SimLane::SimState, correctionMsg(kSimA, 13u), 4.5);
 	transport->inbox().pushEvent(InboundKind::Disconnected, kServerConn, kNoReceiveSeconds);
-	client.dispatchFrame();
+	client.drain();
 
 	CHECK(host.deliveries
 		== std::vector<std::pair<SimLane, double>>{{SimLane::Control, 3.0}, {SimLane::SimRelay, 3.25}, {SimLane::SimState, 3.5},
@@ -1105,7 +1089,6 @@ public:
 	explicit TeeTransport(InnerT& inner) : m_inner(inner) {}
 
 	Inbox inbox() { return Inbox(m_inner, arrivals); }
-	void flushFrame() { m_inner.flushFrame(); }
 	void endInputSends() { m_inner.endInputSends(); }
 	ChannelTransport channelTransport(std::uint8_t simId) { return m_inner.channelTransport(simId); }
 	void setServerConnection(SimConnectionId id) { m_inner.setServerConnection(id); }
@@ -1152,8 +1135,8 @@ struct Rig
 
 	struct Peer
 	{
-		Peer(VirtualNetwork& network, BackendT& backendIn, std::uint64_t seed)
-			: transport(std::make_unique<Transport>()), host(network.clock(), seed), backend(backendIn), endpoint(host, backend)
+		Peer(VirtualNetwork& network, BackendT& backendIn, std::uint64_t seed, SimNetConfig config = {})
+			: transport(std::make_unique<Transport>(config)), host(network.clock(), seed), backend(backendIn), endpoint(host, backend)
 		{
 		}
 
@@ -1213,13 +1196,13 @@ struct Rig
 		VirtualBackend& raw = network.addHost(static_cast<std::uint8_t>(kFirstClientHostIndex + index));
 		if constexpr (std::is_same_v<BackendT, VirtualBackend>)
 		{
-			client->peer = std::make_unique<Peer>(network, raw, 200 + index);
+			client->peer = std::make_unique<Peer>(network, raw, 200 + index, SimNetConfig{});
 		}
 		else
 		{
 			client->emulator = std::make_unique<EmulatedVirtual>(raw, network.clock());
 			REQUIRE(client->emulator->configure(emulation));
-			client->peer = std::make_unique<Peer>(network, *client->emulator, 200 + index);
+			client->peer = std::make_unique<Peer>(network, *client->emulator, 200 + index, SimNetConfig{});
 		}
 		client->peer->start(ognet::Role::Client);
 		client->tee = std::make_unique<Tee>(*client->peer->transport);
@@ -1252,16 +1235,16 @@ struct Rig
 		network.advance(seconds);
 		serverHost.now = network.nowSeconds();
 		serverPeer->endpoint.serviceUntil(network.nowSeconds());
-		server->dispatchFrame();
+		server->drain();
 		if (beforeServerFlush)
 			beforeServerFlush();
-		server->flushFrame();
+		server->afterInlineBatch(serverHost.tick);
 		serverPeer->endpoint.serviceUntil(network.nowSeconds());
 		for (auto& client : clients)
 		{
 			client->simHost.now = network.nowSeconds();
 			client->peer->endpoint.serviceUntil(network.nowSeconds());
-			client->session->dispatchFrame();
+			client->session->drain();
 			if (beforeClientFlush)
 				beforeClientFlush(*client);
 			client->session->flushFrame();
@@ -1347,7 +1330,9 @@ TEST_CASE("SimNetClient.OverOgNetCorrectionsRingsAndClockTicksReachTheBoundCallb
 		if (&client != &owner)
 			return;
 		queue.enqueue(101u + frame, inputFor(101u + frame));
+		owner.peer->transport->beginInputSends();
 		owner.session->channel(kSimA)->sendLocalInputToAuthority(queue, 101u + frame, 3u);
+		owner.peer->transport->endInputSends();
 		queue.releaseAllButRecent(3u);
 	};
 	watcher.tee->arrivals.clear();
@@ -1479,6 +1464,7 @@ TEST_CASE("SimNetClient.OverOgNetAFloorPublishedBeforeTheListenerBindsIsReplayed
 	CHECK(client.simHost.events.empty());
 	CHECK(client.session->latchedFloor() == std::optional<std::uint8_t>(std::uint8_t{6}));
 	client.session->bindListener();
+	client.session->drain();
 	CHECK(client.simHost.events == std::vector<std::string>{"floor 6 replayed"});
 	rig.server->publishFloor(7u);
 	rig.settle();
@@ -1496,7 +1482,7 @@ TEST_CASE("SimNetClient.OverOgNetARevisionGapDisconnectsWithAReason", "[NetTrans
 	const std::uint16_t revision = client.session->roster().revision();
 	const MessageBytes gap = addMsg(static_cast<std::uint16_t>(revision + 2u), remoteEntry(kSimB, 1u));
 	REQUIRE(client.peer->transport->inbox().pushMessage(client.session->serverConnection(), SimLane::Control, 0.0, gap));
-	client.session->dispatchFrame();
+	client.session->drain();
 	CHECK(client.simHost.linesWith("[Roster.Refused]") == std::vector<std::string>{"[Roster.Refused] reason=RevisionGap"});
 	const std::optional<SimNetDisconnectRequest> request = client.session->takeDisconnectRequest();
 	REQUIRE(request.has_value());
@@ -1556,11 +1542,13 @@ RateResult measureInputRate(double framesPerSecond, std::uint32_t depth, SendCad
 		if (cadence == SendCadence::EveryTick && !newTick)
 			return;
 		++sends;
+		peer.peer->transport->beginInputSends();
 		for (std::uint8_t player = 0u; player < kLocalPlayers; ++player)
 		{
 			peer.session->channel(static_cast<std::uint8_t>(kSimA + player))->sendLocalInputToAuthority(queues[player], tick, depth);
 			queues[player].releaseAllButRecent(depth);
 		}
+		peer.peer->transport->endInputSends();
 	};
 
 	const int warmupFrames = static_cast<int>(framesPerSecond * 2.0);

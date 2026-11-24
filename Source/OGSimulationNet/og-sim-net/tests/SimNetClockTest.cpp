@@ -115,7 +115,6 @@ struct LinkSpec
 	double downMs = 30.0;
 	double thetaSeconds = 0.75;
 	bool clock = true;
-	bool immediateServer = false;
 	bool publishTicks = true;
 };
 
@@ -136,9 +135,7 @@ public:
 	explicit ClockRig(LinkSpec spec) : m_spec(spec), m_serverClock{&m_network, 0.0}, m_clientClock{&m_network, -spec.thetaSeconds}
 	{
 		m_network.setNow(kStartSeconds);
-		SimNetConfig serverConfig;
-		serverConfig.immediate = spec.immediateServer;
-		server = std::make_unique<Peer>(m_network, kServerHostIndex, 100u, m_serverClock, serverConfig);
+		server = std::make_unique<Peer>(m_network, kServerHostIndex, 100u, m_serverClock, SimNetConfig{});
 		client = std::make_unique<Peer>(m_network, kClientHostIndex, 200u, m_clientClock, SimNetConfig{});
 		ognet::EmulatorConfig lag;
 		lag.outbound.lagMinMs = spec.upMs;
@@ -386,7 +383,6 @@ public:
 	ShadowTee(Transport& inner, const ClockClient* clock) : m_inner(inner), m_clock(clock) {}
 
 	Inbox inbox() { return Inbox(*this); }
-	void flushFrame() { m_inner.flushFrame(); }
 	void endInputSends() { m_inner.endInputSends(); }
 	ChannelTransport channelTransport(uint8_t simId) { return m_inner.channelTransport(simId); }
 	void setServerConnection(SimConnectionId id) { m_inner.setServerConnection(id); }
@@ -411,7 +407,6 @@ struct SessionRun
 	uint64_t clientMessages = 0u;
 	uint64_t badDecode = 0u;
 	uint64_t clocksDelivered = 0u;
-	uint64_t heldClockBytes = 0u;
 	std::vector<SimNetClockSample> shadow;
 };
 
@@ -470,14 +465,14 @@ SessionRun runSessions(bool clock)
 		nextFrame += kTickSeconds;
 		serverHost.now = now;
 		clientHost.now = client.host.nowSeconds();
-		serverSession.dispatchFrame();
+		serverSession.drain();
 		serverSession.publishClock(tick);
 		if (server.clockServer)
 			server.clockServer->publishServerTick(tick, server.host.nowSeconds());
 		++tick;
-		serverSession.flushFrame();
+		serverSession.afterInlineBatch(static_cast<int32_t>(tick));
 		server.service();
-		clientSession.dispatchFrame();
+		clientSession.drain();
 		clientSession.flushFrame();
 		client.service();
 	}
@@ -490,7 +485,6 @@ SessionRun runSessions(bool clock)
 	run.clientMessages = clientSession.stats().messages;
 	run.badDecode = clientSession.stats().badDecode;
 	run.clocksDelivered = clientSession.stats().clocksDelivered;
-	run.heldClockBytes = server.transport->heldBytes() + client.transport->heldBytes();
 	run.shadow = std::move(clientTee.shadow);
 	return run;
 }
@@ -527,27 +521,18 @@ TEST_CASE("SimNetClock.WithSymmetricLagsThetaIsTheConfiguredOffset", "[NetTransp
 	}
 }
 
-TEST_CASE("SimNetClock.AFrameLockedServerThatNeverFlushesAnswersEachPingAtReceiptAsAnImmediateOneDoes", "[NetTransport]")
+TEST_CASE("SimNetClock.AServerThatNeverRunsItsSessionAnswersEachPingAtReceiptAndCountsItAsAClockSend", "[NetTransport]")
 {
-	ClockRig locked(LinkSpec{20.0, 30.0, 0.75, true, false});
-	ClockRig immediate(LinkSpec{20.0, 30.0, 0.75, true, true});
-	locked.runFor(kRunSeconds);
-	immediate.runFor(kRunSeconds);
-	quote("frame-locked server, never flushed", locked.samples);
-	quote("immediate server", immediate.samples);
-	requireEverySample(locked.samples, 50.0 * kMs, 0.75 + (20.0 - 30.0) / 2.0 * kMs);
-	requireEverySample(immediate.samples, 50.0 * kMs, 0.75 + (20.0 - 30.0) / 2.0 * kMs);
-	REQUIRE(locked.samples.size() == immediate.samples.size());
-	for (size_t i = 0u; i < locked.samples.size(); ++i)
-	{
-		CHECK(locked.samples[i].rttSeconds == immediate.samples[i].rttSeconds);
-		CHECK(locked.samples[i].t2 - locked.samples[i].t1 < 1.0 * kMs);
-	}
-	const ogsimnet::SimNetTransportStats stats = locked.server->transport->stats();
-	CHECK(locked.server->transport->heldBytes() == 0u);
-	CHECK(stats.heldSends == 0u);
-	CHECK(stats.clockSends == locked.clockServer().stats().pingsAnswered);
-	CHECK(locked.client->transport->stats().clockSends == locked.clockClient().stats().pingsSent);
+	ClockRig rig(LinkSpec{20.0, 30.0, 0.75});
+	rig.runFor(kRunSeconds);
+	quote("server with no session pump", rig.samples);
+	requireEverySample(rig.samples, 50.0 * kMs, 0.75 + (20.0 - 30.0) / 2.0 * kMs);
+	for (size_t i = 0u; i < rig.samples.size(); ++i)
+		CHECK(rig.samples[i].t2 - rig.samples[i].t1 < 1.0 * kMs);
+	const ogsimnet::SimNetTransportStats stats = rig.server->transport->stats();
+	CHECK(stats.directSends == 0u);
+	CHECK(stats.clockSends == rig.clockServer().stats().pingsAnswered);
+	CHECK(rig.client->transport->stats().clockSends == rig.clockClient().stats().pingsSent);
 }
 
 TEST_CASE("SimNetClock.TheClientPingsAt20HzAndAfterAStallSendsOnePingNotABurst", "[NetTransport]")
@@ -627,7 +612,6 @@ TEST_CASE("SimNetClock.TheClockLanesOtherMessagesReachTheInboxUnchangedAndAForge
 	serverTransport.broadcastClock(std::span<const std::byte>(publish.data(), publishSize));
 	serverTransport.broadcastClock(forged);
 	serverTransport.broadcastClock(std::span<const std::byte>(pong).first(pong.size() - 1u));
-	serverTransport.flushFrame();
 	rig.runFor(0.1);
 
 	REQUIRE(rig.clockMessages.size() == 1u);
@@ -658,7 +642,6 @@ TEST_CASE("SimNetClock.TheClockNeverTouchesTheEnginePingPathWhileTheSourceIsEngi
 	CHECK(on.clocksDelivered == off.clocksDelivered);
 	CHECK(on.badDecode == 0u);
 	CHECK(off.badDecode == 0u);
-	CHECK(on.heldClockBytes == off.heldClockBytes);
 	CHECK(off.shadow.empty());
 	REQUIRE(on.shadow.size() >= static_cast<size_t>(kRunSeconds / ogsimnet::kClockPingIntervalSeconds));
 	for (const SimNetClockSample& sample : on.shadow)

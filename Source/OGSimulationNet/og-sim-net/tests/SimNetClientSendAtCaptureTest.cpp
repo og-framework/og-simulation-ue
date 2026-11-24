@@ -184,7 +184,6 @@ struct CapGame
 enum class Phase : std::uint8_t
 {
 	Step,
-	GameThread,
 	Flush,
 };
 
@@ -194,8 +193,6 @@ inline const char* phaseName(Phase phase)
 	{
 	case Phase::Step:
 		return "step";
-	case Phase::GameThread:
-		return "gameThread";
 	case Phase::Flush:
 		return "flush";
 	}
@@ -457,9 +454,8 @@ private:
 
 struct CaptureClient
 {
-	explicit CaptureClient(bool immediateIn)
-		: immediate(immediateIn)
-		, transport(std::make_unique<Transport>(SimNetConfig{immediateIn}))
+	CaptureClient()
+		: transport(std::make_unique<Transport>(SimNetConfig{}))
 	{
 		auto logger = [this](const char* line) {
 			if (std::strstr(line, "[SendLocalInputToServer]") == nullptr)
@@ -534,20 +530,7 @@ struct CaptureClient
 		endpoint.frame = index;
 		endpoint.phase = Phase::Step;
 		for (std::uint32_t k = 0u; k < ticks; ++k)
-		{
-			if (immediate)
-			{
-				stepAndSend(config);
-				continue;
-			}
-			session->drain();
-			step(tick);
-			lastTick = tick;
-			++tick;
-		}
-		endpoint.phase = Phase::GameThread;
-		if (!immediate && lastTick)
-			netSync.sendLocalInputToAuthorityAll(*lastTick, static_cast<std::uint32_t>(config.redundancyDepthTicks), config.redundancyFrames);
+			stepAndSend(config);
 		endpoint.phase = Phase::Flush;
 		session->flushFrame();
 	}
@@ -560,7 +543,6 @@ struct CaptureClient
 
 	bool ready() const { return pushed && !addFailed && characters == 3u; }
 
-	bool immediate = false;
 	SimulationObjectStorage<CapSim> storage;
 	SimulationReconciliation<CapSim> reconciliation{storage};
 	SimulationInputResolution<CapSim> resolution{storage, reconciliation};
@@ -585,9 +567,9 @@ struct RateResult
 	std::vector<std::string> lines;
 };
 
-inline RateResult runAt(bool immediate, std::uint32_t frameRateHz, const TimeConfig& config)
+inline RateResult runAt(std::uint32_t frameRateHz, const TimeConfig& config)
 {
-	CaptureClient client(immediate);
+	CaptureClient client;
 	REQUIRE(client.ready());
 	const int frames = kSeconds * static_cast<int>(frameRateHz);
 	for (int f = 0; f < frames; ++f)
@@ -643,77 +625,20 @@ inline std::map<Access, ThreadCounts> classify(
 
 using namespace simNetSendAtCapture;
 
-TEST_CASE("SimNetClientSendAtCapture.AtOneTickPerFrameImmediateSendsTheFrameLockedBundlesOneFramePhaseEarlier", "[NetTransport]")
-{
-	constexpr int kFrames = 300;
-	const TimeConfig config = sendConfig();
-	CaptureClient locked(false);
-	CaptureClient immediate(true);
-	REQUIRE(locked.ready());
-	REQUIRE(immediate.ready());
-	REQUIRE(immediate.session->immediate());
-	REQUIRE_FALSE(locked.session->immediate());
-
-	for (int f = 0; f < kFrames; ++f)
-	{
-		locked.frame(f, 1u, config);
-		immediate.frame(f, 1u, config);
-	}
-
-	const std::vector<SentSet> lockedSets = locked.endpoint.takeSets();
-	const std::vector<SentSet> immediateSets = immediate.endpoint.takeSets();
-	std::size_t sameBytes = 0u;
-	std::size_t sameFrame = 0u;
-	std::size_t lockedAtFlush = 0u;
-	std::size_t immediateAtStep = 0u;
-	const std::size_t count = std::min(lockedSets.size(), immediateSets.size());
-	for (std::size_t i = 0u; i < count; ++i)
-	{
-		sameBytes += lockedSets[i].bytes == immediateSets[i].bytes ? 1u : 0u;
-		sameFrame += lockedSets[i].frame == immediateSets[i].frame ? 1u : 0u;
-		lockedAtFlush += lockedSets[i].phase == Phase::Flush ? 1u : 0u;
-		immediateAtStep += immediateSets[i].phase == Phase::Step ? 1u : 0u;
-	}
-	std::printf("[SimNetClientSendAtCapture.OneTickPerFrame] frames=%d frameLockedSets=%zu immediateSets=%zu sameBytes=%zu sameFrame=%zu "
-				"frameLockedAtFlush=%zu immediateAtStep=%zu\n",
-		kFrames, lockedSets.size(), immediateSets.size(), sameBytes, sameFrame, lockedAtFlush, immediateAtStep);
-
-	CHECK(lockedSets.size() == static_cast<std::size_t>(kFrames));
-	CHECK(immediateSets.size() == lockedSets.size());
-	CHECK(sameBytes == count);
-	CHECK(sameFrame == count);
-	CHECK(lockedAtFlush == count);
-	CHECK(immediateAtStep == count);
-	CHECK(locked.takeSendLines() == immediate.takeSendLines());
-
-	const ogsimnet::SimNetTransportStats lockedStats = locked.transport->stats();
-	const ogsimnet::SimNetTransportStats immediateStats = immediate.transport->stats();
-	CHECK(lockedStats.heldSends == lockedStats.inputSets);
-	CHECK(lockedStats.directSends == 0u);
-	CHECK(immediateStats.heldSends == 0u);
-	CHECK(immediateStats.directSends == immediateStats.inputSets);
-	CHECK(immediateStats.inputSets == lockedStats.inputSets);
-	CHECK(immediateStats.unwindowedRefused == 0u);
-}
-
 TEST_CASE("SimNetClientSendAtCapture.At144FpsTheBundleCountPerSecondIsTheTickRateAndRedundancyKeepsItsDepth", "[NetTransport]")
 {
 	const TimeConfig config = sendConfig();
-	const RateResult immediate = runAt(true, kHighFrameRateHz, config);
-	const RateResult locked = runAt(false, kHighFrameRateHz, config);
+	const RateResult immediate = runAt(kHighFrameRateHz, config);
 
 	for (const std::uint8_t simId : {kSimA, kSimB})
 	{
 		for (int second = 0; second < kSeconds; ++second)
 		{
 			const std::size_t index = static_cast<std::size_t>(second);
-			std::printf("[SimNetClientSendAtCapture.Rate144] simId=%u second=%d immediateBundles=%zu frameLockedBundles=%zu tickRate=%u "
-						"frameRate=%u\n",
-				static_cast<unsigned>(simId), second, immediate.perSecond.at(simId)[index], locked.perSecond.at(simId)[index], kTickRateHz,
-				kHighFrameRateHz);
+			std::printf("[SimNetClientSendAtCapture.Rate144] simId=%u second=%d immediateBundles=%zu tickRate=%u frameRate=%u\n",
+				static_cast<unsigned>(simId), second, immediate.perSecond.at(simId)[index], kTickRateHz, kHighFrameRateHz);
 			CHECK(immediate.perSecond.at(simId)[index] == kTickRateHz);
 		}
-		CHECK(locked.perSecond.at(simId)[1] == kHighFrameRateHz);
 	}
 
 	std::size_t warm = 0u;
@@ -743,7 +668,7 @@ TEST_CASE("SimNetClientSendAtCapture.At144FpsTheBundleCountPerSecondIsTheTickRat
 	CHECK(linesAtDepth == immediate.lines.size());
 
 	const TimeConfig frames4 = sendConfig(3, 4);
-	const RateResult framesArm = runAt(true, kHighFrameRateHz, frames4);
+	const RateResult framesArm = runAt(kHighFrameRateHz, frames4);
 	std::size_t framesWarm = 0u;
 	std::size_t framesAtFour = 0u;
 	for (const Bundle& bundle : framesArm.bundles)
@@ -765,7 +690,7 @@ TEST_CASE("SimNetClientSendAtCapture.At144FpsTheBundleCountPerSecondIsTheTickRat
 
 TEST_CASE("SimNetClientSendAtCapture.TheStepHookReadsTheRedundancyKnobsLiveFromTimeConfig", "[NetTransport]")
 {
-	CaptureClient client(true);
+	CaptureClient client;
 	REQUIRE(client.ready());
 	TimeConfig config = sendConfig(3, 0);
 	for (int f = 0; f < 20; ++f)
@@ -802,7 +727,7 @@ TEST_CASE("SimNetClientSendAtCapture.NoSenderMapOrPendingQueueAccessRunsOnTheGam
 	const TimeConfig config = sendConfig();
 	const std::thread::id gameThread = std::this_thread::get_id();
 
-	CaptureClient client(true);
+	CaptureClient client;
 	REQUIRE(client.ready());
 	TaskChain chain(kWorkersPerChain);
 	const std::set<std::thread::id> stepThreads = chain.threadIds();
@@ -818,31 +743,6 @@ TEST_CASE("SimNetClientSendAtCapture.NoSenderMapOrPendingQueueAccessRunsOnTheGam
 		chain.waitIdle();
 	}
 	const std::map<Access, ThreadCounts> immediateCounts = classify(accessLog().take(), gameThread, stepThreads);
-
-	CaptureClient locked(false);
-	REQUIRE(locked.ready());
-	accessLog().enable(true);
-	for (int f = 0; f < kFrames; ++f)
-	{
-		const std::uint32_t ticks = ticksInFrame(f, kHighFrameRateHz);
-		for (std::uint32_t k = 0u; k < ticks; ++k)
-		{
-			chain.post([&locked] {
-				locked.session->drain();
-				locked.step(locked.tick);
-				locked.lastTick = locked.tick;
-				++locked.tick;
-			});
-		}
-		chain.waitIdle();
-		if (locked.lastTick)
-		{
-			locked.netSync.sendLocalInputToAuthorityAll(
-				*locked.lastTick, static_cast<std::uint32_t>(config.redundancyDepthTicks), config.redundancyFrames);
-		}
-		locked.session->flushFrame();
-	}
-	const std::map<Access, ThreadCounts> lockedCounts = classify(accessLog().take(), gameThread, stepThreads);
 	accessLog().enable(false);
 
 	std::size_t workersUsed = 0u;
@@ -851,10 +751,8 @@ TEST_CASE("SimNetClientSendAtCapture.NoSenderMapOrPendingQueueAccessRunsOnTheGam
 	for (const Access access : kAccesses)
 	{
 		const ThreadCounts& im = immediateCounts.at(access);
-		const ThreadCounts& fl = lockedCounts.at(access);
-		std::printf("[SimNetClientSendAtCapture.Threads] access=%s immediate: gameThread=%zu stepTask=%zu other=%zu | frameLocked: "
-					"gameThread=%zu stepTask=%zu other=%zu\n",
-			accessName(access), im.gameThread, im.stepTask, im.other, fl.gameThread, fl.stepTask, fl.other);
+		std::printf("[SimNetClientSendAtCapture.Threads] access=%s immediate: gameThread=%zu stepTask=%zu other=%zu\n",
+			accessName(access), im.gameThread, im.stepTask, im.other);
 		CHECK(im.gameThread == 0u);
 		CHECK(im.other == 0u);
 		CHECK(im.stepTask > 0u);
@@ -863,34 +761,13 @@ TEST_CASE("SimNetClientSendAtCapture.NoSenderMapOrPendingQueueAccessRunsOnTheGam
 		static_cast<unsigned long long>(client.transport->stats().unwindowedRefused));
 	CHECK(workersUsed == kWorkersPerChain);
 	CHECK(client.transport->stats().unwindowedRefused == 0u);
-	CHECK(lockedCounts.at(Access::SenderWalk).gameThread > 0u);
-	CHECK(lockedCounts.at(Access::QueueRead).gameThread > 0u);
-	CHECK(lockedCounts.at(Access::Transmit).gameThread > 0u);
-	CHECK(lockedCounts.at(Access::QueuePush).stepTask > 0u);
 }
 
 TEST_CASE("SimNetClientSendAtCapture.Death.TheGameThreadsSendOnAnImmediateSessionFiresTheTransportsCheck", "[.][OGSimDeath]")
 {
-	CaptureClient client(true);
+	CaptureClient client;
 	REQUIRE(client.ready());
 	client.frame(0, 1u, sendConfig());
 	client.netSync.sendLocalInputToAuthorityAll(*client.lastTick, 3u, 0);
 	FAIL("a send outside afterCaptureTick_Step on an immediate session did NOT fire SimNetTransport's OG_CHECK");
-}
-
-TEST_CASE("SimNetClientSendAtCapture.Death.EndInputSendsOnAnImmediateSessionFiresTheCheck", "[.][OGSimDeath]")
-{
-	CaptureClient client(true);
-	REQUIRE(client.ready());
-	client.session->endInputSends();
-	FAIL("endInputSends on an immediate session did NOT fire SimNetClient's OG_CHECK");
-}
-
-TEST_CASE("SimNetClientSendAtCapture.Death.AfterCaptureTickStepOnAFrameLockedSessionFiresTheCheck", "[.][OGSimDeath]")
-{
-	CaptureClient client(false);
-	REQUIRE(client.ready());
-	client.step(client.tick);
-	client.session->afterCaptureTick_Step(client.netSync, client.tick, sendConfig());
-	FAIL("afterCaptureTick_Step on a frame-locked session did NOT fire SimNetClient's OG_CHECK");
 }

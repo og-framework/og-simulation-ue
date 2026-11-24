@@ -325,7 +325,7 @@ struct SimParts
 struct ClientRig : SimParts
 {
 	explicit ClientRig(bool bind = true)
-		: transport(std::make_unique<LqTransport>(ogsimnet::SimNetConfig{true}))
+		: transport(std::make_unique<LqTransport>(ogsimnet::SimNetConfig{}))
 	{
 		transport->installHandlers(endpoint);
 		transport->markEndpointStarted();

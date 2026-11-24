@@ -3,7 +3,8 @@
 
 `ognetunreal::SimLaneEndpoint` is a type-erased view of an og-net endpoint's sim lanes: one context pointer and nine function
 pointers (`SimLaneEndpointOps`; P5-3's seven, and task P5-18's `serviceUntil` and `hasHighResolutionWait`). The engine-lane driver's core builds one over its own endpoint and hands it to the sim side
-before the endpoint starts (`EngineLaneDriverCore-rationale.md` §12); a world without the og-net driver uses a detached one. This
+before the endpoint starts (`EngineLaneDriverCore-rationale.md` §12). A world without the og-net driver starts no sim session
+(og-session-runtime task 14), so it needs no endpoint; the detached one it used to get is retired (§3). This
 file is the docs pointer of `SimLaneEndpoint.h`; its one prohibition is in `SimLaneEndpoint-guards.md`. Its tests are in
 `SimLaneSeamTest.cpp` (`[OGNet][EngineLaneDriver]`, run by `OGNetTests`).
 
@@ -18,7 +19,7 @@ file is the docs pointer of `SimLaneEndpoint.h`; its one prohibition is in `SimL
   `SimNetEndpoint` concept: `send`, `broadcastExcept`, `setLaneHandler`, `setConnectionHandler` and `disconnect`, each returning
   `void`. The driver's endpoint is `ognet::NetEndpoint<FOGNetUnrealHost, SwitchableBackend<BsdDatagramBackend>>`, a type private to
   `OGNetDriver.cpp`. Naming it in the game's transport would pull the driver's host and backend into the game; erasing it gives the
-  game one concrete type, `SimNetTransport<SimLaneEndpoint, N>`, for every driver and for the detached case.
+  game one concrete type, `SimNetTransport<SimLaneEndpoint, N>`, for every driver.
 - **The concept is checked where both are visible:** the test asserts `ogsimnet::SimNetEndpoint<SimLaneEndpoint>` and installs a
   `SimNetTransport<SimLaneEndpoint, 128>` through the core's attach (`EngineLaneDriver.AnAttachedSimNetTransportReceivesEachSimLaneIntoItsInboxWithConnectedFirst`).
   This module cannot assert it, because it does not include og-sim-net.
@@ -37,27 +38,20 @@ file is the docs pointer of `SimLaneEndpoint.h`; its one prohibition is in `SimL
 | `config()` | the endpoint configuration the core started with. It is set before the attach runs, so the attach can size its transport from it (`ogsimnet::simNetConfigFor`). |
 | `serviceUntil(deadlineSeconds)` | the core's `serviceUntil`, so og-net's mode B: the caller services the endpoint until the deadline and gets og-net's `ognet::ServiceResult`. Only a core started in `IoMode::HostServiced` takes it (the core's `OGNET_CHECK`), and og-net fixes the servicing thread at the first call: a call from any other thread afterwards aborts (`EndpointCore.cpp`, `EndpointCore::fixServicingThread`). It is the Ph4 server's runner that calls it (design P5 K14, task P5-19). |
 | `hasHighResolutionWait()` | whether the core's backend waits with a high-resolution timer (`ognet::BsdDatagramBackend::hasHighResolutionWait`), so that a host can tell a precise idle from a millisecond one (P11-8 F1). It is false for a backend that does not report it, and before the core has started. |
-| `detachedDrops()` | the detached endpoint's count (§3); 0 for the core's. |
 
 The core's operations do nothing once the endpoint is gone (a failed start). After a stop, og-net's command queue no longer accepts
 a send (`EndpointCore.cpp`, `EndpointCore::enqueue`), so a late send is dropped there.
 
-## §3 The detached endpoint
+## §3 The detached endpoint (retired by og-session-runtime task 15)
 
-`SimLaneEndpoint::detached(config)` is for a world with no og-net driver (a standalone world, or a networked world on another
-driver, design P5 §3.2): the sim session can then run unchanged with no traffic.
-
-- `send`, `broadcastExcept` and `disconnect` do nothing and each adds one to `detachedDrops()` (relaxed atomic: a Ph4 client sends
-  from its step thread).
-- `setLaneHandler`, `setConnectionHandler` and `noteDelivered` do nothing; no handler is ever called.
-- `config()` returns the config it was given.
-- `serviceUntil` returns at once with `stopped` set (no datagrams, deadline not reached): there is no endpoint to service, and a
-  host's idle over it reads "unavailable" rather than waiting. `hasHighResolutionWait()` is false.
-  `EngineLaneDriver.TheDetachedEndpointServicesNothingAndHasNoHighResolutionWait`.
-- Its context is the endpoint itself, which is why the type is neither copied nor moved (guard G-01). `detached` returns a prvalue,
-  so a holder initialises it in place (C++17 guaranteed copy elision): a member initialiser or a local.
-- `EngineLaneDriver.TheDetachedEndpointCountsAndDropsItsSendsAndDisconnects`: two direct sends and a disconnect count 3; a
-  `SimNetTransport` over it holds two sends until `flushFrame`, which counts them (5); its inbox stays empty.
+Until task 15 a static factory built a detached endpoint over a given config for a world with no og-net driver (a standalone
+world, or a networked world on another driver, design P5 §3.2), so the sim session could run there with no traffic: its sends
+and disconnects did nothing but count drops, its handler setters did nothing, `config()` returned the given config, and
+`serviceUntil` returned at once with `stopped` set. Its context was the endpoint itself. Task 14 made those worlds start no
+session at all and deleted the session's detached lanes, which left one test as the factory's only user, so the factory, its
+operations, its config copy and its drop counter went in task 15 with its two `SimLaneSeamTest.cpp` cases (one counted the
+drops, one checked that it serviced nothing). A test that wants an endpoint with nothing behind it builds one through the public constructor with its own nine
+operations, as `UESimNetHostsConceptTest.cpp`'s `FDroppingEndpoint` does.
 
 ## §4 Tests
 

@@ -2,7 +2,7 @@
 # `UEAuthorityRunner.h` — rationale
 
 `UEAuthorityRunner.h` and `UEAuthorityRunner.cpp` are the Unreal host's half of og-simulation's authority loop (the tick driver's
-`FreeRunning` mode, og-input-latency P11): the two console variables that select and tune it, the dedicated runner thread
+`FreeRunning` mode, og-input-latency P11): the two console variables (the retired selector and the idle slack), the dedicated runner thread
 `OGSimAuthority` with its start latch, and the runner host whose `sleepUntil` the driver falls back to. Added by og-input-latency
 task P5-19. The files state no prohibition, so they have no guards doc; the start and stop order is enforced at run time
 (below) and by the callers' guards (`UESimNetLanes-guards.md` G-03).
@@ -15,18 +15,19 @@ task P5-19. The files state no prohibition, so they have no guards doc; the star
 
 | variable | default | read | meaning |
 |---|---|---|---|
-| `og.Sim.AuthorityLoop` | 1 | once, by the server's og-net sim lanes in `ioMode` (`UOGNetDriver::InitBase`) | 1: a Jolt dedicated server steps its authority on `OGSimAuthority` and services og-net there; 0: it steps inline on the game thread |
+| `og.Sim.AuthorityLoop` | 1 | once, by the world session's start rule at `beginPlay` (`retiredAuthorityLoopValue`) | retired (og-session-runtime task 14): every dedicated server steps its authority on `OGSimAuthority` and services og-net there; 0 is refused, `[SimHost.Refused] knob=og.Sim.AuthorityLoop value=0 reason=retired`, and the server starts no session and exits with code 3; any other value is accepted silently |
 | `og.Sim.AuthorityIdleSlackMs` | 0.5 on Win64, 0 elsewhere | once, by the world session when it starts the runner | the driver's `idleSlackSeconds`: it idles to `deadline − slack`, then polls og-net to the deadline |
 
 - **The defaults** are Ph4's, set by og-input-latency task P5-22 after Ph4's measured gate passed (task P5-34,
-  its rework 2) and before the final gate, whose PIE may veto them. Until then both were 0. The loop is refused, with one Warning, where
-  it cannot run (`UESimNetLanes-rationale.md` §12): a listen server and a world with no og-net driver (and, until
-  og-session-runtime task 5 removed that refusal with the former Chaos configuration, an engine without a world host). An in-editor PIE
-  server is refused as a listen server is (`RefusedNotDedicated`: `IsRunningDedicatedServer()` is false in an editor process
-  started without `-server`), so only a dedicated server process runs the loop. 0 keeps Ph3's inline server, the attribution arm.
-- **Read once.** The loop's choice is latched by the lanes before the endpoint starts (og-net fixes its servicing thread at the
-  first service; `UESimNetLanes-rationale.md` §12), so setting the variable later has no effect on a running driver. Set it in
-  `[ConsoleVariables]` or on the command line (`-ini:Engine:[ConsoleVariables]:og.Sim.AuthorityLoop=0`).
+  its rework 2) and before the final gate, whose PIE may veto them. Until then both were 0.
+- **The selector is a tombstone** (og-session-runtime task 14, design Q3): every dedicated server runs the loop, a listen
+  server and a world with no og-net driver start no session (`UESessionRefusal-rationale.md`), and a 0 is refused rather than
+  run the default unannounced, because the Ph4 and Ph5 runbooks still pass it for their attribution arms (design §2.2). Until
+  task 14 its 0 kept Ph3's in-frame server, the attribution arm. The variable stays registered until the initiative after
+  this one.
+- **Read once,** at the world session's `beginPlay`, before anything is built; the lanes' I/O mode no longer reads it
+  (`UESimNetLanes-rationale.md` §12). Set it in `[ConsoleVariables]` or on the command line
+  (`-ini:Engine:[ConsoleVariables]:og.Sim.AuthorityLoop=0`), on a Development or Editor binary (Shipping strips both).
 - **The slack** is clamped at 0 from below here; the driver's constructor checks that it is finite and below one step
   (`SimulationTickDriver`'s `OG_CHECK`). The Win64 default, 0.5 ms, is Ph4's gate's (P11 Q1; lead ruling R7, from the gate's R4):
   on shaped (a) runs the mean `lateUs` p99 fell from 722 µs (slack 0, two runs) to 186 µs (slack 0.5, three runs), with `approachUs` p99
@@ -35,7 +36,7 @@ task P5-19. The files state no prohibition, so they have no guards doc; the star
   non-blocking og-net passes (og-simulation `SimulationTickDriver-rationale.md` §11), about 3 % of a core at 60 Hz, which is not spent unmeasured.
   The default is the console variable's constructor value (`PLATFORM_WINDOWS`), so `[ConsoleVariables]` or the command line still
   override it on any platform.
-- Both readers use `GetValueOnGameThread`: the lanes' `ioMode` and the session's `beginPlay` run on the game thread.
+- Both readers use `GetValueOnGameThread`: the session's `beginPlay`, which reads both, runs on the game thread.
 
 ## §2 The runner thread (`FUEAuthorityRunner`)
 

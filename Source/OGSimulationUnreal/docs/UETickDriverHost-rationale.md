@@ -28,8 +28,8 @@ must supply"). Three pieces:
 * **`UETickDriverHost`**, the frame host: it owns one engine and the two tick functions, registers them on the
   persistent level (`begin`) and unregisters them (`unregisterTickFunctions`). Its `.cpp` holds the frame's four
   console variables (§4): the end tick function reads the block mode every frame, the engine reads the step task's
-  priority at every dispatch, and two static members, `requestedMaxCatchUpSteps` and `runInline`, hand the game the
-  two values it reads once. Outside Shipping the `.cpp` also holds one test knob, `og.Sim.TestClientClockRatePpm`,
+  priority at every dispatch, and two static members, `requestedMaxCatchUpSteps` and `retiredRunInlineValue`, hand the game the
+  two values it reads once (the second only to refuse a retired knob, §4). Outside Shipping the `.cpp` also holds one test knob, `og.Sim.TestClientClockRatePpm`,
   which the start tick function reads every frame (§8).
 
 It knows no driver type and no game type. `begin` is a template over the driver: it registers the two tick functions
@@ -53,11 +53,11 @@ rule, the same per-frame cadence for the probes and the reap, and the same roles
 | Chaos (async, block mode 0) | the frame host and the tick driver |
 |---|---|
 | the engine's start-physics tick function at `TG_StartPhysics` advances the scene, computes the frame's step count from accumulated world time, and dispatches the steps | `FSimulationStartStepsTickFunctionUImpl` at `TG_StartPhysics` calls the driver's `startFrame` with `static_cast<double>(DeltaTime)` (outside Shipping, scaled by the test knob when it is not 0, §8): the driver pumps its scheduler with the accumulated world delta and runs or dispatches the frame's batch |
-| client: the steps run as chained task-graph tasks after the previous frame's; dedicated server: inline on the game thread | client: one task per frame, chained after the previous frame's, at the step task's priority (§3); authority (and a client under `og.Sim.RunInline=1`, which the game reads through `runInline`, §4): inline |
+| client: the steps run as chained task-graph tasks after the previous frame's; dedicated server: inline on the game thread | client: one task per frame, chained after the previous frame's, at the step task's priority (§3); authority: none here, it steps on its runner (`FreeRunning`, `TickDriverBackendUImpl-rationale.md` §15) |
 | the end-physics tick function at `TG_EndPhysics` waits for the steps dispatched in **earlier** frames, then fires the scene's post-tick delegate | `FSimulationEndStepsTickFunctionUImpl` at `TG_EndPhysics` calls the driver's `endFrame` with its completion event and the block mode, read every frame from `og.Sim.BlockMode` (§4): the driver waits for earlier frames' task, then calls the game's `onPostPhysics` |
 
-Block mode 1 (debug; `og.Sim.BlockMode`, §4) makes the end of physics also wait for this frame's task. An
-immediate client's driver does too, under block mode 0, when the frame dispatched exactly one step: its frame wait
+Block mode 1 (debug; `og.Sim.BlockMode`, §4) makes the end of physics also wait for this frame's task. A
+client's driver does too, under block mode 0, when the frame dispatched exactly one step: its frame wait
 (`TickDriverBackendUImpl-rationale.md` §16). The frame host passes the block mode as before; the driver chooses.
 
 ## 3. The executor
@@ -86,7 +86,7 @@ and flags they had in the brawler's game module:
 | variable | default | read by | when |
 |---|---|---|---|
 | `og.Sim.MaxCatchUpSteps` | 60 | `UETickDriverHost::requestedMaxCatchUpSteps` | once, when the game builds the driver, into the driver configuration's `requestedMaxCatchUpSteps` |
-| `og.Sim.RunInline` | 0 | `UETickDriverHost::runInline` (true when the value is not 0) | once, when the game builds its world, into the world host configuration's `runInline` |
+| `og.Sim.RunInline` (retired: a tombstone since og-session-runtime task 11) | 0 | `UETickDriverHost::retiredRunInlineValue` (the value as set) | once, at the session's `beginPlay`, before anything is built: any value but 0 is refused and the world starts no session (`UESessionRefusal-rationale.md`) |
 | `og.Sim.BlockMode` | 0 | the end tick function's `ExecuteTick` | every frame, on the game thread, as the argument of `endFrame` |
 | `TaskGraph.TaskPriorities.OGSimStepTask` | high thread priority, normal task priority (high when forced to the normal thread priority) | the engine's private static `stepTaskPriority` | at every dispatch, as the last argument of `CreateAndDispatchWhenReady` in `dispatchAfter` |
 
@@ -96,9 +96,12 @@ and flags they had in the brawler's game module:
   member it calls is defined in the `.cpp`, beside the variable.
 * **The block mode** is read where the end tick function calls `endFrame`, so `endFrame` receives the value the
   variable holds at that moment.
-* **The cap and the stepping mode** are read by the game through the two static members, once each at `BeginPlay`
-  (the brawler's `TickDriverBackendUImpl::buildWorld` and `startDriverStepping`). The adapter passes neither on: the
-  cap reaches the driver's configuration directly, and the driver clamps it and prints it in `[SimHost.Frame]`.
+* **The cap and the retired knob** are read by the game through the two static members, once each at `BeginPlay`
+  (the cap in `TickDriverBackendUImpl`'s `startDriverStepping` and `runAuthorityLoop_GameThread`, the retired knob in
+  `UESimulationSession::beginPlay`, which refuses any value but 0). The cap reaches the driver's configuration directly,
+  and the driver clamps it and prints it in `[SimHost.Frame]`. Until og-session-runtime task 11 the second member read
+  the stepping mode, which `buildWorld` copied into the world host configuration's `runInline`; `buildWorld` now sets
+  that field to false.
 
 From og-tickdriver task 11 until task 15c the four variables were the game's (the brawler's TickDriverBackendUImpl.cpp (a historical name: the host's `.cpp`, deleted by og-tickdriver task 15e)),
 and the engine's and the host's constructors took the priority and the block mode as two getters (StepTaskPriorityFn
@@ -111,10 +114,11 @@ argument, and the end tick function's `check` covers `endFrame` alone, as the fr
 static objects are constructed. So in the former Chaos configuration (removed by og-session-runtime tasks 3–6) the four
 existed and nothing read them: nothing constructed the engine or the host there. Jolt is the only configuration since,
 and it reads them. Until task 15c they were in a whole-file Jolt arm of the game module, and the
-Chaos configuration did not have them (design of og-tickdriver, Q5, which task 15's re-scope replaced). Three of
+Chaos configuration did not have them (design of og-tickdriver, Q5, which task 15's re-scope replaced). Two of
 the help texts start "Jolt configuration only" (the priority's names "the client's Jolt step task"), and two name the
 brawler's simulation manager; the texts are frozen with the names and defaults, and "Jolt configuration only" stays
-true of what the variables do.
+true of what the variables do. The exception is `og.Sim.RunInline`'s, the third that started "Jolt configuration
+only": og-session-runtime task 11 rewrote it to say the knob is retired and how it is refused.
 
 ## 5. Threads
 
@@ -177,9 +181,8 @@ others on one PC, where every process reads the same `FPlatformTime` clock and n
 * **Which roles it reaches.** It scales only what `startFrame` receives, and only a HostDelta driver adds that to its
   host time (`SimulationTickDriver.h`, `startFrame`; a Monotonic driver reads the clock instead; `[SimHost.Frame]` prints
   `timeBase=worldDelta` for HostDelta, the brawler's client). A FreeRunning driver, the dedicated server's authority
-  loop (`og.Sim.AuthorityLoop=1`, the default since og-input-latency task P5-22), returns from `startFrame` before it
-  reads the delta, so on that server the knob does nothing. A client, and an authority with the loop off, step from
-  the scaled delta. The gate sets it on one client through its command line,
+  loop, returns from `startFrame` before it reads the delta, so on that server the knob does nothing. A client steps
+  from the scaled delta. The gate sets it on one client through its command line,
   `-ini:Engine:[ConsoleVariables]:og.Sim.TestClientClockRatePpm=<n>`.
 * **Shipping.** The variable, the function and the call are compiled out; the start tick function passes
   `static_cast<double>(DeltaTime)` as before.
@@ -208,3 +211,9 @@ TickDriverBackendUImpl.cpp (a historical name: the host's `.cpp`, deleted by og-
 
 og-time-dilation task 9 (2026-11-20) added the non-shipping test knob `og.Sim.TestClientClockRatePpm`, its file-local
 function and its call in the start tick function (§8). The header did not change.
+
+og-session-runtime task 11 (2026-11-24) retired `og.Sim.RunInline`: a client always steps on a worker task. The static
+member that read it as the stepping mode became `retiredRunInlineValue`, which returns the value for the session to
+refuse (`UESessionRefusal-rationale.md`), and the variable's help text says so. The variable stays registered, a
+tombstone, so a run that still passes it is refused loudly instead of running the default (og-session-runtime design
+§2.2).

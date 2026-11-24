@@ -192,7 +192,9 @@ code owns that pairing (the brawler: its component's and manager's rationale).
 
 > **History.** og-input-latency task P5-8 deleted all five blocks with the binding's net half (§10). Since task P5-7 the
 > Unreal sim-net hosts stamp these points (`UESimNetHost.h`: `stampHanded`, `stampServerReceived`, `stampClientReceived`).
-> The text below describes the blocks as they stood until P5-8.
+> The text below describes the blocks as they stood until P5-8. The diagnostics' game-thread doors it names (stamp and the
+> correction's) were deleted by og-session-runtime task 14.
+<!-- lint-external-ref: UELatencyBudgetDiagnostics::stampCorrectionReceived -- deleted by og-session-runtime task 14 (no caller since task 12); section 4 records the binding's blocks as they stood until og-input-latency task P5-8 -->
 
 Five blocks in this header stamp the latency-budget probe. Each is a timestamp and nothing else: it reads values the
 code beside it already has, writes only the probe, and changes no input, no wire byte and no ordering of the netcode it

@@ -23,9 +23,9 @@ namespace
 	TAutoConsoleVariable<int32> CVarSimAuthorityLoop(
 		TEXT("og.Sim.AuthorityLoop"),
 		1,
-		TEXT("1 (the default) = a Jolt dedicated server steps its authority on its own thread (OGSimAuthority) and services ")
-		TEXT("og-net there; 0 = the authority steps on the game thread (Ph3's, and the attribution arm). Read once, by the ")
-		TEXT("server's og-net sim lanes when the driver starts; set it in [ConsoleVariables] or on the command line."),
+		TEXT("Retired: a dedicated server always steps its authority on its own thread (OGSimAuthority) and services og-net ")
+		TEXT("there. 0 is refused at the simulation manager's BeginPlay ([SimHost.Refused] knob=og.Sim.AuthorityLoop): the ")
+		TEXT("dedicated server starts no simulation session and exits with code 3. Any other value is accepted silently."),
 		ECVF_Default);
 
 	TAutoConsoleVariable<float> CVarSimAuthorityIdleSlackMs(
@@ -39,7 +39,7 @@ namespace
 
 OGSIM_OPTIMIZE_OFF
 
-int32 readAuthorityLoopKnob()
+int32 retiredAuthorityLoopValue()
 {
 	return CVarSimAuthorityLoop.GetValueOnGameThread();
 }

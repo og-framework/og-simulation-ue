@@ -4,8 +4,9 @@
 `SimNetClient<Game, HostT, TransportT>` is the predicting client's sim session over og-net. It drains the client's inbox,
 keeps a mirror of the server's roster with one channel per character, hands relay rings and corrections to those channels in
 arrival order, drops corrections and clock ticks older than ones already delivered, latches the relay floor and the
-connection tier for a listener that binds late, and at the frame point closes this frame's input set and flushes the
-transport. It hands SimClock samples to an optional host hook ahead of its decode (§4). In immediate mode it drains at step start (§16) and sends each tick's input set at capture, from the step (§17). A host can
+connection tier for a listener that binds late, and emits its window line from `flushFrame` (§13). It hands SimClock samples to an
+optional host hook ahead of its decode (§4). It drains at step start (§16) and sends each tick's input set at capture, from the
+step (§17). A host can
 enqueue a character's registration and unregistration for the drain to apply (§18). The prohibitions that govern its lines are in `SimNetClient-guards.md`; the host services it calls are described in
 `SimNetHost-rationale.md`.
 
@@ -30,11 +31,14 @@ enqueue a character's registration and unregistration for the drain to apply (§
 The session borrows the host and the transport; both must outlive it. It hands `this` to the mirror's callbacks, so it is
 neither copyable nor movable.
 
-The Unreal host calls it since og-input-latency task P5-7: `UESimNetLanes` binds `dispatchFrame` to the og-net driver's
-`PostTickDispatch` and `flushFrame` to its `TickFlush`, takes the disconnect request after each `dispatchFrame`, and binds the
-host's listener when a world session binds (`bindClientSession`). Its host (`UESimNetClientHost`) hands each roster event to
-the bindings that register the character's channel with `SimulationNetSync`. That host runs the session frame-locked
-(`SimNetConfig::immediate` false); immediate mode (§16) is not bound yet.
+**Its threads.** The session has one owner at a time, the thread that drains it: `drain()`, `flushFrame()`,
+`takeDisconnectRequest()`, `roster()`, `channel()`, the accessors and the send at capture (`afterCaptureTick_Step`, §17) belong
+to it, one consumer at a time (§16). Drained at the start of each step, the owner is the step's thread. `bindListener()`,
+`unbindListener()`, `registerCharacter()` and `unregisterCharacter()` may be called from another thread: each only posts a
+request that the next drain applies (§16, §18). Which host thread makes which call is the host's (og-sim's
+`ThreadingCrossings.md` points to the table). The host hands each roster event to the bindings that register the character's
+channel with `SimulationNetSync`. Until og-session-runtime task 13 the session also had a frame-locked mode, drained and
+flushed once per frame and sending once per frame.
 
 ## §2 The template
 
@@ -55,10 +59,14 @@ the bindings that register the character's channel with `SimulationNetSync`. Tha
 
 ## §3 The transport
 
-`SimNetClientTransport` asks for `inbox()` (with `drain` and `stats`), `flushFrame()`, `endInputSends()`,
-`channelTransport(simId)` (a `ClientSimTransport`), and `setServerConnection` / `serverConnection`. `SimNetTransport` satisfies
-it; a `static_assert` on the transport's reference shape checks it. The send at capture (§17) also needs `beginInputSends()`
-(`SimNetInputWindowTransport`), which only that member requires; `SimNetTransport` has it, and a `static_assert` checks that too.
+`SimNetClientTransport` asks for `inbox()` (with `drain` and `stats`), `channelTransport(simId)` (a
+`ClientSimTransport`), and `setServerConnection` / `serverConnection`. `SimNetTransport` satisfies it; a `static_assert` on the
+transport's reference shape checks it. The send at capture (§17) also needs `beginInputSends()` and `endInputSends()`
+(`SimNetInputWindowTransport`), which only that member requires; `SimNetTransport` has them, and a `static_assert` checks that
+too. og-session-runtime task 13 removed `endInputSends()` from `SimNetClientTransport` (its users were the session's own
+`endInputSends()` and the frame-locked branch of `flushFrame()`) and the configured-transport concept (the session no longer reads
+its transport's `config()`). og-session-runtime task 15 removed `flushFrame()` from it: the transport has no frame hold to
+release (`SimNetTransport-rationale.md` §7), and the session's own `flushFrame()` only emits the window line (§13).
 
 The client has one connection, to the server. The session learns it from the `Connected` event and gives it to the transport
 with `setServerConnection`, which is where the transport sends every input set. A `Disconnected` for that connection, or one
@@ -67,9 +75,8 @@ checked against the connection id: the inbox has one producer, the client endpoi
 
 ## §4 The drain
 
-`drain()` hands every record in the inbox to the session in FIFO order and returns how many it handled; `dispatchFrame()` is
-the same drain under the name of its frame point, and an immediate session refuses it (§16). The inbox's single-consumer guard
-holds; the session adds no thread check.
+`drain()` hands every record in the inbox to the session in FIFO order and returns how many it handled. The inbox's
+single-consumer guard holds; the session adds no thread check.
 As on the server (`SimNetServer-rationale.md` §3), Control and the connection events have their own rings in the inbox and the
 drain keeps the push order across all three, so the server's Roster, floor and tier messages reach the session where og-net
 delivered them, after the
@@ -187,14 +194,12 @@ so a clock admitted before a `Disconnected` record or a roster refusal in the sa
 host takes one sample from a connection that has closed (a clock message after a refusal is ignored, G-04, and never
 latched).
 
-**Why the coalesce, and why here** (og-input-latency task 27, scope (i)). The drain runs once per client frame, so this is
-one sample per frame. The server publishes one clock per server frame, and while a client's frames do not drain (at a join)
-the messages queue: og-input-latency's Ph3 gate run (task P5-25) counted 10 to 17 in a client's first drain, as many as
+**Why the coalesce, and why here** (og-input-latency task 27, scope (i)). The server publishes its clock regularly, and while
+a client does not drain (at a join) the messages queue: og-input-latency's Ph3 gate run (task P5-25) counted 10 to 17 in a client's first drain, as many as
 the client's first step batch. Delivered one by one, each
 was an `updateRTT` with the same `serverRttSeconds()` reading plus a `recordAuthorityTick`. The replicated timing relay this
 replaced coalesced to its latest value, so its first frame carried one sample. The coalesce lives in the session, not in a
-host, so every host (the Unreal one, `UESimNetClientHost::onTimingInfo`, and a later Godot one) gets it, and the scripted
-tests can count it.
+host, so every host gets it, and the scripted tests can count it.
 
 ⚠ **It is hygiene, not the Ph3 landing fix.** Read from that run's logs in its review: every first-frame sample carried a
 smoothed RTT of 0 and the floor offset, so the newest sample gives the same target as the last of the sixteen. The landing above
@@ -205,10 +210,10 @@ readings would have counted as sixteen samples.
 
 ## §9 The floor and the tier
 
-Both are latched on arrival, then the host is called with `replayed = false` if its listener is bound. `bindListener()` marks
-the listener bound and replays each latched value once with `replayed = true`; a second `bindListener()` does nothing until
-`unbindListener()`. This is today's latch-and-replay: each relay latches its value first and the listener pulls it at bind. In
-an immediate session the bind and the unbind take effect at the next drain instead (§16, G-10).
+Both are latched on arrival, then the host is called with `replayed = false` if its listener is bound. After
+`bindListener()`, the next drain marks the listener bound and replays each latched value once with `replayed = true`; a second
+`bindListener()` does nothing until `unbindListener()`, which the next drain applies too (§16, G-10). This is today's
+latch-and-replay: each relay latches its value first and the listener pulls it at bind.
 
 - The tier's old value is the previously latched tier, 0 before the first. A replay passes the latched pair (old, new), the
   same pair the last arrival reported. Today's replay call passes only the new tier.
@@ -222,7 +227,7 @@ stream cannot be trusted, and the client disconnects with the reason.
 - `[Roster.Refused] reason=<refusal>` is logged through the host (`formatRosterRefused`, `SimNetRoster.h`).
 - The session records a `SimNetDisconnectRequest {conn, reason}`, which the host takes with `takeDisconnectRequest()` and
   carries out with og-net's `disconnect(conn)`. Neither `SimNetTransport` nor the client host has a disconnect service, and the
-  host owns the endpoint, so the session asks rather than acts. P5's host takes the request after each `dispatchFrame`.
+  host owns the endpoint, so the session asks rather than acts. The host takes the request after each drain.
 - The transport's server connection is cleared at once, so no input set leaves before the host disconnects (G-03); a set ended
   meanwhile is counted `inputSetsWithoutServer` by the transport.
 - Every later message is ignored (counted `ignoredWhileRefused`; G-04) until a new `Connected`, after which the server's
@@ -236,13 +241,11 @@ stream cannot be trusted, and the client disconnects with the reason.
   no slot to send, as the Unreal owner handed over an empty one. Until og-input-latency task P5-7 that empty bundle went on
   the wire as an RPC and the server dropped it on receipt; here it never goes on the wire, and an input set never holds a
   0-byte entry.
-- **One set per frame.** NetSync's send loop calls each local channel's `sendLocalInputToAuthority`; the transport appends
-  each bundle to one input set. `endInputSends()` ends the set. In a frame-locked session `flushFrame()` ends it too, before it
-  flushes the transport (G-06), so a host that does not call `endInputSends()` still sends one set per frame, and the next
-  frame's bundles never join this frame's set.
-- **Frame-locked or immediate.** With the transport's `immediate = false` (Ph3) the set is held with the frame's other sends and
-  leaves at `flushFrame()`; with `immediate = true` it leaves when the set ends. An immediate session sends one set per tick, at
-  capture, through `afterCaptureTick_Step` (§17): `flushFrame()` then leaves the set alone, and `endInputSends()` is refused.
+- **One set per tick.** NetSync's send loop calls each local channel's `sendLocalInputToAuthority`; the transport appends
+  each bundle to one input set, which `afterCaptureTick_Step` opens before the loop and ends after it (§17). The set leaves when
+  it ends; `flushFrame()` ends no set. Until og-session-runtime task 13 a frame-locked session (over a transport built with the
+  mode flag off) held the set with the frame's other sends until `flushFrame()`, which also ended a set the host left open
+  (retired G-06).
 - **The message rate.** A set is split when it would pass 512 B. With four local players, a set is two messages at the default
   redundancy of 3 slots and four messages at 8 slots, so the SimInput rate is the send rate times 2 or 4. og-net caps it per
   connection on the server side (`recvMaxMessagesPerSecond`); the rate case below measures where that cap binds.
@@ -256,7 +259,8 @@ compiled out.
 
 ## §13 `[SimNet.Window]`
 
-Every 10 s of the host's `nowSeconds`, checked at the end of `flushFrame`:
+Every 10 s of the host's `nowSeconds`, checked in `flushFrame`, which since og-session-runtime task 15 does nothing else (the
+transport it used to flush first has no frame hold):
 
 `[Warning][SimNet.Window] role=client drains= msgs= maxDepth= drops= tooLarge= badDecode= refusedNotOwner= unknownSim= statesSent= relaysSent= overBudget= staleDropped= duplicateDropped= quotaRefused= controlHighWater= quotaDisconnects= eventsRefused= eventHighWater=`
 
@@ -301,8 +305,9 @@ recording endpoint; the others run P2-10's server session and the client session
   both what a real `SimulationNetSync` registration ingests.
 - Relays, the clock and a correction before and after the Snapshot; the version latch; the floor and tier replay; a revision
   gap (scripted, and over og-net, where the host carries out the disconnect and the server detaches the connection); a
-  malformed roster; the roster's channels and a second Snapshot; one held set per frame with empty bundles dropped, and the
-  immediate mode; the window line.
+  malformed roster; the roster's channels and a second Snapshot; the window line. Every client in these files is built over the
+  one kind of transport there is (its mode flag went in og-session-runtime task 15); a scripted send opens and ends its set on
+  the transport, as `afterCaptureTick_Step` does.
 - **The delivery hook:** a host with `noteDelivered` sees one call per message record, with its lane and receive time (a
   malformed message and one ignored while refused included), and none for connection events.
 - **SimClock samples** (`SimNetClockSampleRouteTest.cpp`, `[NetTransport][SimNetClockSample]`): a real `SimNetClockClient` on
@@ -316,40 +321,36 @@ recording endpoint; the others run P2-10's server session and the client session
   cap in og-net's default lane table. A hidden `[.][SimNetRate]` case prints the table for 60, 120, 144 and 240 frames per
   second.
 
-`SimNetClientImmediateTest.cpp` (`[NetTransport]`) covers immediate mode (§16):
+`SimNetClientImmediateTest.cpp` (`[NetTransport]`) covers the step-start drain (§16):
 - **Where the writes run:** two clients over og-net, each draining at the start of every step on a chain of tasks over two
-  worker threads, while the test's main thread (the game thread) only services the endpoints, publishes the RTT and binds the
-  listener. The test simulatable's field setters record the thread of every relay-store write (the ring entries decoded into
-  the store) and every correction-cache write (the correction decoded for the insert); the host records the estimator feed,
-  the tier and the floor. None runs on the game thread.
-- **The P2-12 lossless script in immediate mode:** the clients drain at step start after the server's frame, and the server and
-  every delivered value (each client's corrections, rings, clock ticks and `[ReceiveCorrectionState]` lines, in order) equal
-  the frame-locked run's, each delivered up to one frame earlier.
-- The mode comes from the transport's `config()`, and a transport without one (the P2-12 rig's tee) runs frame-locked; the
-  listener bind and unbind are applied by the next drain, the newest request winning; frame-locked binds as before. A hidden
-  `[.][OGSimDeath]` case calls `dispatchFrame()` on an immediate session. Its clients send through `afterCaptureTick_Step`
-  (§17), once per frame after the frame's steps, as P2-12's script sends, so the server sees the same input as the frame-locked run.
+  worker threads, while the test's main thread, a thread that never steps, only services the endpoints, publishes the RTT and
+  binds the listener. The test simulatable's field setters record the thread of every relay-store write (the ring entries
+  decoded into the store) and every correction-cache write (the correction decoded for the insert); the host records the
+  estimator feed, the tier and the floor. None runs on the main thread. Its clients send through `afterCaptureTick_Step` (§17),
+  once per frame after the frame's steps.
+- The listener bind and unbind are applied by the next drain, the newest request winning.
+- og-session-runtime task 13 deleted the cases whose subject was the frame-locked client: the P2-12 lossless script compared
+  against a frame-locked run, the mode taken from the transport's `config()`, the frame-locked bind, and a hidden
+  `[.][OGSimDeath]` case that called the session's deleted frame-point drain.
 
 `SimNetClientSendAtCaptureTest.cpp` (`[NetTransport]`) covers the send at capture (§17). One client session over a transport
-whose endpoint records each SimInput set with the frame and the phase (step, game thread, flush) it left in; the roster gives it
-two local characters and a remote one, registered with a real `SimulationNetSync`. The frame-locked arm sends as the Unreal host
-does today (NetSync's send on the game thread after the frame's steps, then `flushFrame`); the immediate arm calls
-`afterCaptureTick_Step` after each tick's step.
-- **One tick per frame:** over 300 frames both arms send 300 sets, byte for byte the same, in the same frame, the frame-locked
-  ones at the flush and the immediate ones at the step; the `[SendLocalInputToServer]` lines are the same.
-- **144 frames per second at a 60 Hz tick:** immediate sends 60 bundles per character in each of 3 seconds (frame-locked 144);
+whose endpoint records each SimInput set with the frame and the phase (the step or the flush) it left in; the roster gives it
+two local characters and a remote one, registered with a real `SimulationNetSync`. The client calls `afterCaptureTick_Step`
+after each tick's step.
+- **144 frames per second at a 60 Hz tick:** the client sends 60 bundles per character in each of 3 seconds;
   each newest capture tick is one more than the last; every bundle past the first two ticks carries `redundancyDepthTicks`
   (3) slots, and every send line says `slots=3`. With `redundancyFrames` 4, every bundle past the first three ticks carries 4
   (the ticks-per-send EMA at 1).
 - **The knobs are read live:** `redundancyDepthTicks` changed from 3 to 5 between two frames moves the next send line to
   `depth=5 slots=5` and the bundles to 4, then 5 slots.
-- **Where the send runs:** steps and sends on a chain of tasks over two worker threads, the test's main thread (the game thread)
-  only posting them; the provider call (the queue's push end), the input reads of the bundle encode (its pop end), the
-  `[SendLocalInputToServer]` line (the sender map walk) and the endpoint's SimInput send are recorded with their thread. In
-  immediate mode none runs on the game thread. The same rig frame-locked, with NetSync's send on the main thread, records the
-  last three there, so the recording sees a game-thread send when there is one.
-- Hidden `[.][OGSimDeath]` cases: NetSync's send on the game thread of an immediate session (the transport's check),
-  `endInputSends()` on an immediate session, and `afterCaptureTick_Step` on a frame-locked one.
+- **Where the send runs:** steps and sends on a chain of tasks over two worker threads, the test's main thread only posting
+  them; the provider call (the queue's push end), the input reads of the bundle encode (its pop end), the
+  `[SendLocalInputToServer]` line (the sender map walk) and the endpoint's SimInput send are recorded with their thread. None
+  runs on the main thread.
+- A hidden `[.][OGSimDeath]` case: NetSync's send from the main thread, outside the hook (the transport's check).
+- og-session-runtime task 13 deleted the frame-locked arm: the one-tick-per-frame comparison of the two arms, the frame-locked
+  rate and game-thread rows of the two cases above, and the hidden cases on the deleted `endInputSends()` and on
+  `afterCaptureTick_Step`'s frame-locked check.
 
 `SimNetIsolationTest.cpp` (`[NetTransport][SimNetIsolation]`) checks the window line's inbox fields on a real transport: the
 quota refusals and the Control high-water mark, a quota disconnect, and, with a client's config over two windows, a fifth
@@ -359,7 +360,7 @@ high-water mark kept).
 `SimNetLifecycleQueueTest.cpp` (`[Lifecycle]`) covers the lifecycle queue (§18) of both sessions, with a real
 `SimulationNetSync` and its peers behind them:
 - **Mid-batch:** a register enqueued between a drain and that step's collect is not collected, and is collected from the next
-  drain on; with the steps on a thread of their own and the test's main thread (the game thread) enqueuing while they run, the
+  drain on; with the steps on a thread of their own and the test's main thread enqueuing while they run, the
   character is collected from some step after the enqueue and on every step after it, `applied` runs on the step's thread, and
   no `NOCACHE` line is logged.
 - **A register and the first arrival in the same drain:** the correction reaches NetSync (one landing) and the ring the remote
@@ -375,88 +376,74 @@ high-water mark kept).
   queue-registered character unregisters it first; a refused add reaches `applied` as `nullptr`. Hidden `[.][OGSimDeath]`
   cases: a register before the bind, and a second bind.
 
-## §16 Immediate mode (Ph4)
+## §16 The step-start drain (Ph4)
 
-`SimNetConfig::immediate` is fixed when the transport is built, and the session reads it from the transport's `config()` once,
-at construction (`immediate()`). A transport type with no `config()` runs a frame-locked session
-(`SimNetConfiguredTransport`, `simNetTransportIsImmediate`): a wrapper around a real transport must forward `config()` or its
-session drains frame-locked over an immediate transport. `SimNetTransport` has one, and a `static_assert` pins it.
+Until og-session-runtime task 13 a session had two modes, read from its transport's mode flag at construction: frame-locked
+(drained at the frame point, sending once per frame) and immediate (this section). Task 13 retired the frame-locked half, and
+og-session-runtime task 15 removed the transport's flag.
 
-- **The drain point.** An immediate session is drained by `drain()`, which the host calls at the start of each step, before
-  `collectInputAll`, on the step's thread (og-input-latency P5 binds it). `dispatchFrame()` is refused with an `OG_CHECK`, so a
-  host that still binds the frame point fails at once instead of running the drain's consumers on the game thread. The drain is
+- **The drain point.** The session is drained by `drain()`, at the start of each step, before `collectInputAll`, on the step's
+  thread. The drain is
   owner-agnostic: the inbox's single-consumer guard is an in-drain flag, never a thread id, so a FrameBounded client whose steps
   run on a chain of worker tasks, each on any worker, drains from whichever worker runs the step.
 - **What then runs on the step.** Every consumer the drain reaches: the correction inject (`storeCorrection`, then NetSync's
   `onCorrectionReceived`, `injectCorrectionState` and `tryInsertingCorrectState`), the relay ingest (`storeRing`, then
-  `ingestRelayRing`), NetSync's arrival telemetry on both paths, the estimator feed (`onTimingInfo`, which the Unreal host
-  passes to `UESimulationSession::onTimingInfoReceived`, then `updateRTT` and `recordAuthorityTick`; that function also notes a
-  wire sample in the session's latency-budget diagnostics, a host-side write P5 accounts for), the floor and the tier
-  (`onRelayFloor`, `onConnectionTier`), and the roster with its host events. So og-sim's crossings rows 1, 2, 4, 5, 7, 9 and 10
-  (`ThreadingCrossings.md`) are same-thread in immediate mode: the writer is the step thread that also reads them, between
+  `ingestRelayRing`), NetSync's arrival telemetry on both paths, the estimator feed (`onTimingInfo`, through which a host
+  reaches `updateRTT` and `recordAuthorityTick`), the floor and the tier (`onRelayFloor`, `onConnectionTier`), and the roster
+  with its host events. So og-sim's crossings rows 1, 2, 4, 5, 7, 9 and 10
+  (`ThreadingCrossings.md`) are same-thread: the writer is the step thread that also reads them, between
   steps. The clock that reads the estimator and the stall debt (`ClientPredictionClock::advancePrediction`) runs inside the
   step too (`onGameSimulationPrediction`), after the drain.
-- **The tier receipt in the Unreal host** (`UESimulationSession::onConnectionTierReceived`, then `applyReplicatedConnectionTier`
-  and `recomputeAndPublishEffectiveInputDelay`; the floor's `applyReplicatedRelayDelayFloor`) is a writer of tier state: the tier
-  consumer, the last published delay, the runtime relay floor (`SimulationManager::setRelayDelayFloorTicks`), the published
-  delay atomic and the clock's input-delay transition debt (`requestInputDelayTransition`, signed since og-input-latency
-  P6-2: Stalls for a raised delay, Skips for a lowered one; `requestInputDelayIncreaseStall` before). In immediate mode it runs inside the drain at step
-  start, on the step's thread, both for an arrival and for the replay at bind (G-10). Its step-side readers (`collectInputAll`'s
-  delay read, the clock's debt payment) run later in the same step on the same thread, so they need no synchronization. Its
-  game-thread readers are display reads (the HUD's `getReplicatedTierConsumer`, the input-history delay decomposition); they
-  must read the display snapshot's tier fields (og-sim `SimulationDisplaySnapshot.h`, `DisplayTierReading`) before immediate
-  mode is switched on, which is og-input-latency P5's re-pointing. Frame-locked, all of it stays on the game thread as today.
-- **The RTT.** The drain's clock delivery reads `serverRttSeconds()` on the step's thread. In immediate mode the host serves it
-  from a value its game thread publishes atomically each frame (og-input-latency R-P5-9); the Unreal host's current body reads
-  the driver's server connection directly, which is game-thread state.
-- **The listener.** `bindListener()` and `unbindListener()` may be called from another thread than the drain's (the Unreal host
-  binds from the game thread). In an immediate session they only store a request in one atomic; the next `drain()` applies it
-  before it reads any record, so the replay of the latched floor and tier runs on the step's thread with the other host calls
-  (G-10). The newest request wins: a bind and an unbind before one drain leave the listener unbound and replay nothing. A replay
-  then reaches the host one drain after the bind instead of during it. Frame-locked, both apply at once, as before.
+- **The floor and the tier.** The host's `onRelayFloor` and `onConnectionTier` run inside the drain, on the step's thread, both
+  for an arrival and for the replay at bind (G-10). The tier state a host writes there (a delay, a relay floor through
+  `SimulationManager::setRelayDelayFloorTicks`, the clock's input-delay transition debt through `requestInputDelayTransition`)
+  has its step-side readers (`collectInputAll`'s delay read, the clock's debt payment) later in the same step, on the same
+  thread, so they need no synchronization. A reader on another thread reads a copy: og-sim's display snapshot carries the tier
+  fields (`SimulationDisplaySnapshot.h`, `DisplayTierReading`).
+- **The RTT.** The drain's clock delivery reads the host's `serverRttSeconds()` on the step's thread, so a host whose RTT is
+  read elsewhere serves a value it publishes atomically.
+- **The listener.** `bindListener()` and `unbindListener()` may be called from another thread than the drain's. They only
+  store a request in one atomic; the next `drain()` applies it before it reads any
+  record, so the replay of the latched floor and tier runs on the step's thread with the other host calls (G-10). The newest
+  request wins: a bind and an unbind before one drain leave the listener unbound and replay nothing. A replay reaches the host
+  one drain after the bind, not during it.
 - **What the host still owns.** The rest of the session's surface (`takeDisconnectRequest`, `roster()`, `channel()`, the
   accessors, `flushFrame` and the sends) belongs to the drain's owner, called between steps from the same chain. A host that
-  reads the roster or a channel from the game thread (the Unreal host's `bindClientSession` seeds its bindings from `roster()`),
-  or that registers characters from its roster events on the game thread, needs the lifecycle queue (§18) and P5's re-pointing
-  first. The sends run at capture, from the step (§17).
+  registers characters from its roster events on another thread uses the lifecycle queue (§18). The sends run at capture, from
+  the step (§17).
 
 ## §17 Sends at capture (Ph4)
 
 - **The hook.** `afterCaptureTick_Step(sender, tick, timeConfig)` is the host's call after a tick's capture, on the step's
   thread. It opens the transport's input set for the calling thread (`beginInputSends`), calls
-  `sender.sendLocalInputToAuthorityAll(tick, redundancyDepthTicks, redundancyFrames)` and ends the set, which in immediate mode
-  goes straight to the endpoint. `sender` is the client's `SimulationNetSync` (`SimNetInputSender`). Both knobs are read from
+  `sender.sendLocalInputToAuthorityAll(tick, redundancyDepthTicks, redundancyFrames)` and ends the set, which goes straight to
+  the endpoint. `sender` is the client's `SimulationNetSync` (`SimNetInputSender`). Both knobs are read from
   `timeConfig` on every call, as `SimulationManager::onPostSimulationGameThread` reads them, so an ini change reaches the next
   send; the session keeps no copy.
 - **One set per tick.** The host calls the hook once per tick, so a client sends at the tick rate, not the frame rate: at 144
-  frames per second and a 60 Hz tick, 60 sets a second, where the frame-locked send makes 144. Each send is one tick after the
+  frames per second and a 60 Hz tick, 60 sets a second, where the retired frame-locked send made 144. Each send is one tick after the
   last, so NetSync's ticks-per-send EMA sits at 1, and its slot count (`SimulationNetSync::redundancySlots`) is
   `redundancyDepthTicks`, or `redundancyFrames` when that is larger: redundancy keeps its meaning (design D14).
-- **Only in immediate mode.** A frame-locked session refuses the hook with an `OG_CHECK`: it sends once per frame, from the
-  host's game-thread send and `flushFrame()`, as before.
-- **The game thread's send is refused.** In immediate mode `endInputSends()` is refused with an `OG_CHECK`, `flushFrame()` does
-  not end the set (G-06 is the frame-locked branch), and the transport refuses a bundle or a set end from any thread but the one
-  that opened the set (`SimNetTransport-guards.md` G-07). The Unreal host's client sends from the game thread today:
-  `UESimulationSession::onPostSimulationGameThread` calls `SimulationManager::onPostSimulationGameThread`, which calls NetSync's
-  `sendCorrectionAll` (an empty walk on a client, which has no authority writers) and `sendLocalInputToAuthorityAll`. With
-  immediate on, that send reaches the transport outside an open set and fails the check, so og-input-latency P5 stops it on an
-  immediate client and calls the hook from the step instead.
+- **A send from outside the hook is refused.** `flushFrame()` ends no set, and the transport refuses a bundle or a set end from
+  any thread but the one that opened the set (`SimNetTransport-guards.md` G-07), so a send from outside the hook fails the check.
+  Until og-input-latency P5 a client also sent once per frame from its host's post-simulation pass
+  (`SimulationManager::onPostSimulationGameThread`, NetSync's `sendLocalInputToAuthorityAll`); og-session-runtime task 12
+  removed that path, and task 13 the session's own `endInputSends()` and the hook's frame-locked `OG_CHECK`.
 - **What becomes step-only.** NetSync's send walks `m_localInputSenders`, reads `m_redundancyCadences` with `operator[]` (a
   sender's first send inserts its entry) and takes each sender's `PendingInputQueue` from its pop end (`forEachRecent` in the
   channel's bundle build, then `releaseAllButRecent`). The queue's push end is `collectInputAll`, in the step. With the send at
   capture all of it runs on the step's thread, so the queue's two ends are on one thread and the two maps are walked only there
   (og-sim `ThreadingCrossings.md` row 11). Inserting and erasing their entries at registration and unregistration runs where
-  the host registers a character: at the drain, on the step, for a host that enqueues them (§18); on the game thread in the
-  Unreal host until og-input-latency P5-17 wires the queue.
-- **A transport wrapper** must forward `beginInputSends()` as well as `config()`: the hook requires it
-  (`SimNetInputWindowTransport`), so a wrapper that does not forward it fails to compile where the host calls the hook.
+  the host registers a character: at the drain, on the step, for a host that enqueues them (§18).
+- **A transport wrapper** must forward `beginInputSends()` and `endInputSends()`: the hook requires them
+  (`SimNetInputWindowTransport`), so a wrapper that does not forward them fails to compile where the host calls the hook.
 
 ## §18 Registration through the lifecycle queue (Ph4)
 
 - **The calls.** `bindLifecycle(storage, reconciliation, inputResolution, netSync)` names the simulation the queued jobs apply
   to, once, before the first registration; an `OG_CHECK` refuses a second bind and a registration before the bind.
   `registerCharacter(simId, simulatable, provider, applied)` and `unregisterCharacter(simId, applied)` only enqueue a job on
-  the session's `DeferredLifecycleQueue` (og-simulation `DeferredLifecycleQueue.h`), so the host may call them from its game
+  the session's `DeferredLifecycleQueue` (og-simulation `DeferredLifecycleQueue.h`), so the host may call them from another
   thread while a step drains. `provider` is a local character's input provider and empty for a remote one, as
   `registerSimulatable` takes it. `applied` is optional: the drain calls it right after it applied the job, on the drain's
   thread, with the channel, or with `nullptr` when the job did nothing.
@@ -467,7 +454,7 @@ session drains frame-locked over an immediate transport. `SimNetTransport` has o
 - **Through the facades, in their published order.** A register job calls `registerSimulatable` with the session's channel as
   the character's prediction owner, so the id reaches storage after its correction cache, its provider and its delay line
   (publish last). An unregister job calls `unregisterSimulatable` with the channel, so the id leaves storage before the rest
-  (unpublish first). The channel is the owner and the session owns it, so the apply touches no game-thread object. A
+  (unpublish first). The channel is the owner and the session owns it, so the apply touches no object the host owns. A
   `static_assert` checks that the game's `SimulatableOwnerTraits` names `Channel` as the prediction owner.
 - **What the drain refuses.** A register for a sim id with no channel (the roster has not listed it, or removed it before the
   apply), or for one the queue already registered, is refused: counted (`lifecycleStats().registersRefused`) and logged as
@@ -483,13 +470,12 @@ session drains frame-locked over an immediate transport. `SimNetTransport` has o
   holds (§5). The host's own queued unregister for it then does nothing.
 - **The host hears of it before the facade.** Whenever the queue unregisters a character (a roster Remove or a queued
   unregister), `unregisterLifecycle` calls the host's optional `onLifecycleUnregistering(simId)` first, while the character is
-  still in storage (G-13; `SimNetHost-rationale.md` §4a), so a host can tell its game's systems to forget the character. The
-  Unreal host answers with the systems executor's unregister notify (og-input-latency task P5-19).
-- **Both modes.** The apply runs where the drain runs. Immediate, that is the step-start drain on the step's thread (§16),
-  which with the send at capture (§17) leaves og-sim's row 11 one thread (`ThreadingCrossings.md`). Frame-locked, it is the
-  game thread's frame point, the thread a direct registration runs on today. A host that does not enqueue registers as before.
-- **What stays the host's.** The work a host does around the facade (the Unreal host's handed callback on the channel, its
-  bindings, the systems-roster notify, its per-id maps) runs where the host puts it; `applied` is the place to do it on the
-  drain's thread (og-input-latency P5-17 wires the Unreal host). The session destroys its channels with itself, so a host
+  still in storage (G-13; `SimNetHost-rationale.md` §4a), so a host can tell its game's systems to forget the character.
+- **Where it runs.** The apply runs where the drain runs: the step-start drain on the step's thread (§16), which with the send
+  at capture (§17) leaves og-sim's row 11 one thread (`ThreadingCrossings.md`). A host that does not enqueue registers as
+  before.
+- **What stays the host's.** The work a host does around the facade (a callback on the channel, its bindings, a
+  systems-roster notify, its per-id maps) runs where the host puts it; `applied` is the place to do it on the drain's
+  thread. The session destroys its channels with itself, so a host
   unregisters its characters, or stops using the simulation, before it destroys the session, as with a direct registration.
   `lifecycleRegistered(simId)` and `lifecycleStats()` (`SimNetLifecycleStats`, `SimNetServer.h`) belong to the drain's owner.

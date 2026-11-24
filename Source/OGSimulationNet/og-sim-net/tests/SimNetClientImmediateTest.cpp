@@ -192,8 +192,6 @@ struct SimulatableOwnerTraits<simNetImmediate::HookSim>
 
 namespace simNetImmediate
 {
-constexpr SimNetConfig kHeldSends{false};
-constexpr SimNetConfig kImmediate{true};
 constexpr int kThreadRigFrames = 240;
 constexpr int kTierBeforeBindFrame = 5;
 constexpr int kBindFrame = 10;
@@ -426,7 +424,7 @@ struct ThreadRig
 	ThreadRig()
 	{
 		network.setNow(kStartSeconds);
-		serverPeer = std::make_unique<NetPeer>(network, kServerHostIndex, 100u, kHeldSends);
+		serverPeer = std::make_unique<NetPeer>(network, kServerHostIndex, 100u, SimNetConfig{});
 		serverPeer->start(ognet::Role::Server);
 		server = std::make_unique<HookServerSession>(serverHost, *serverPeer->transport, timeConfig, std::size_t{1u << 20});
 		server->publishFloor(kPublishedFloor);
@@ -462,7 +460,7 @@ struct ThreadRig
 	void join(std::size_t index)
 	{
 		auto client = std::make_unique<HookClient>();
-		client->peer = std::make_unique<NetPeer>(network, static_cast<std::uint8_t>(kFirstClientHostIndex + index), 200u + index, kImmediate);
+		client->peer = std::make_unique<NetPeer>(network, static_cast<std::uint8_t>(kFirstClientHostIndex + index), 200u + index, SimNetConfig{});
 		client->peer->start(ognet::Role::Client);
 		client->session = std::make_unique<HookClientSession>(client->host, *client->peer->transport);
 		HookClient& joined = *client;
@@ -502,8 +500,8 @@ struct ThreadRig
 			serverHost.now = now;
 			serverPeer->service(now);
 			serverChain.post([this] {
-				server->dispatchFrame();
-				server->flushFrame();
+				server->drain();
+				server->afterInlineBatch(static_cast<std::int32_t>(serverTick));
 			});
 			serverChain.waitIdle();
 			serverPeer->service(now);
@@ -539,7 +537,7 @@ struct ThreadRig
 		serverHost.tick = static_cast<std::int32_t>(serverTick);
 		serverPeer->service(now);
 		serverChain.post([this, ticks, index] {
-			server->dispatchFrame();
+			server->drain();
 			for (std::uint32_t step = 0u; step < ticks; ++step)
 			{
 				serverStack.netSync.setAuthorityGuardContext(serverTick, kRollbackWindowTicks);
@@ -547,14 +545,13 @@ struct ThreadRig
 				serverStack.stepServer(serverTick);
 				++serverTick;
 			}
-			server->afterBatch(static_cast<std::int32_t>(serverTick));
 			serverStack.netSync.sendCorrectionAll(SimulationTimeStep(serverTick - 1u, false), kCorrectionRotationK);
 			server->publishClock(serverTick - 1u);
 			if (index == kTierBeforeBindFrame)
 				server->publishTier(serverIds[0], 2u);
 			if (index == kTierAfterBindFrame)
 				server->publishTier(serverIds[1], 1u);
-			server->flushFrame();
+			server->afterInlineBatch(static_cast<std::int32_t>(serverTick));
 		});
 		serverChain.waitIdle();
 		serverPeer->service(now);
@@ -601,274 +598,6 @@ struct ThreadRig
 	bool addFailed = false;
 	bool setupDone = true;
 };
-
-class ConfigTee : public ClientTee<Transport>
-{
-public:
-	explicit ConfigTee(Transport& inner) : ClientTee<Transport>(inner), m_configured(inner) {}
-
-	const SimNetConfig& config() const { return m_configured.config(); }
-	void beginInputSends() { m_configured.beginInputSends(); }
-
-private:
-	Transport& m_configured;
-};
-
-static_assert(!ogsimnet::SimNetConfiguredTransport<ClientTee<Transport>>);
-static_assert(ogsimnet::SimNetConfiguredTransport<ConfigTee>);
-static_assert(ogsimnet::SimNetConfiguredTransport<Transport>);
-
-using ImmediateSession = ogsimnet::SimNetClient<EqGame, ClientHost, ConfigTee>;
-
-struct ImmediateClient
-{
-	std::unique_ptr<NetPeer> peer;
-	std::unique_ptr<ConfigTee> tee;
-	ClientHost host;
-	std::unique_ptr<ImmediateSession> session;
-	SimStack stack;
-	std::map<std::uint8_t, EqChannel*> channels;
-	std::uint32_t tick = 0u;
-};
-
-struct ImmediateRig
-{
-	ImmediateRig()
-	{
-		network.setNow(kStartSeconds);
-		serverPeer = std::make_unique<NetPeer>(network, kServerHostIndex, 100u, kHeldSends);
-		serverPeer->start(ognet::Role::Server);
-		serverTee = std::make_unique<ServerTee<Transport>>(*serverPeer->transport);
-		server = std::make_unique<ServerSession>(serverHost, *serverTee, timeConfig, std::size_t{1u << 20});
-		for (std::size_t index = 0u; index < kClientCount; ++index)
-			join(index);
-		for (const CharacterSpec& spec : kCharacters)
-		{
-			EqChannel* const channel = server->addCharacter<EqSim>(spec.simId, spec.slot, serverIds[spec.client], spec.localIndex, spec.name);
-			REQUIRE(channel != nullptr);
-			serverStack.addAuthority(spec.simId, *channel);
-		}
-		REQUIRE(setupUntil([&] {
-			for (const auto& client : clients)
-			{
-				if (client->channels.size() != kCharacters.size())
-					return false;
-			}
-			return true;
-		}));
-		serverStack.takeTrace();
-		serverHost.lines.clear();
-		for (auto& client : clients)
-		{
-			client->stack.takeTrace();
-			client->host.lines.clear();
-			client->host.clock.clear();
-		}
-		serverTick = kFirstServerTick;
-		for (auto& client : clients)
-			client->tick = kFirstServerTick + kClientLeadTicks;
-	}
-
-	void join(std::size_t index)
-	{
-		auto client = std::make_unique<ImmediateClient>();
-		client->peer = std::make_unique<NetPeer>(network, static_cast<std::uint8_t>(kFirstClientHostIndex + index), 200u + index, kImmediate);
-		client->peer->start(ognet::Role::Client);
-		client->tee = std::make_unique<ConfigTee>(*client->peer->transport);
-		client->session = std::make_unique<ImmediateSession>(client->host, *client->tee);
-		REQUIRE(client->session->immediate());
-		ImmediateClient& joined = *client;
-		client->host.added = [&joined](std::uint8_t simId) {
-			EqChannel* const channel = joined.session->channel(simId);
-			REQUIRE(channel != nullptr);
-			const auto* entry = joined.session->roster().entryFor(simId);
-			REQUIRE(entry != nullptr);
-			joined.stack.addPrediction(simId, *channel, entry->isLocal());
-			joined.channels[simId] = channel;
-		};
-		client->peer->endpoint.connect(ognet::test::virtualHostAddress(kServerHostIndex, kServerPort));
-		clients.push_back(std::move(client));
-		REQUIRE(setupUntil([&] {
-			return joined.session->serverConnection() != kInvalidSimConnection && server->attachedConnections().size() == index + 1u
-				&& joined.session->roster().attached();
-		}));
-		serverIds[index] = server->attachedConnections().back();
-		serverHost.rtt[serverIds[index]] = kClientRttMs[index];
-	}
-
-	template <class DoneT>
-	bool setupUntil(DoneT done)
-	{
-		for (int i = 0; i < kMaxSetupSteps; ++i)
-		{
-			if (done())
-				return true;
-			network.advance(kSetupStepSeconds);
-			const double now = network.nowSeconds();
-			serverHost.now = now;
-			serverPeer->service(now);
-			server->dispatchFrame();
-			server->flushFrame();
-			serverPeer->service(now);
-			for (auto& client : clients)
-			{
-				client->host.now = now;
-				client->peer->service(now);
-				client->session->drain();
-				client->session->flushFrame();
-				client->peer->service(now);
-			}
-		}
-		return done();
-	}
-
-	FrameRecord frame(int index)
-	{
-		FrameRecord record;
-		record.ticks = ticksInFrame(index);
-		network.advance(static_cast<double>(record.ticks) * kTickSeconds);
-		const double now = network.nowSeconds();
-
-		for (auto& client : clients)
-		{
-			client->host.now = now;
-			client->peer->service(now);
-		}
-
-		serverHost.now = now;
-		serverHost.tick = static_cast<std::int32_t>(serverTick);
-		serverTee->frame = &record.server;
-		serverPeer->service(now);
-		server->dispatchFrame();
-		serverTee->frame = nullptr;
-		for (std::uint32_t step = 0u; step < record.ticks; ++step)
-		{
-			serverStack.netSync.setAuthorityGuardContext(serverTick, kRollbackWindowTicks);
-			server->releaseForStep(static_cast<std::int32_t>(serverTick), 1);
-			serverStack.stepServer(serverTick, record.server.consumed);
-			++serverTick;
-		}
-		server->afterBatch(static_cast<std::int32_t>(serverTick));
-		serverStack.netSync.sendCorrectionAll(SimulationTimeStep(serverTick - 1u, false), kCorrectionRotationK);
-		server->publishClock(serverTick - 1u);
-		serverPeer->service(now);
-		server->flushFrame();
-		serverPeer->service(now);
-
-		for (std::size_t c = 0u; c < kClientCount; ++c)
-		{
-			ImmediateClient& client = *clients[c];
-			client.peer->service(now);
-			client.tee->frame = &record.clients[c];
-			for (std::uint32_t step = 0u; step < record.ticks; ++step)
-			{
-				client.session->drain();
-				client.stack.stepClient(client.tick++, record.clients[c].inputs);
-			}
-			client.tee->frame = nullptr;
-			client.session->afterCaptureTick_Step(client.stack.netSync, client.tick - 1u, sendConfig());
-			client.session->flushFrame();
-			client.peer->service(now);
-		}
-
-		record.server.decisions = takeLines(serverHost.lines);
-		record.server.trace = serverStack.takeTrace();
-		for (std::size_t c = 0u; c < kClientCount; ++c)
-		{
-			ImmediateClient& client = *clients[c];
-			ClientFrame& out = record.clients[c];
-			out.clock = std::exchange(client.host.clock, {});
-			out.lines = takeLines(client.host.lines);
-			out.trace = sorted(client.stack.takeTrace());
-			snapshotChannels(client.channels, out);
-		}
-		return record;
-	}
-
-	TimeConfig timeConfig;
-	VirtualNetwork network;
-	ServerHost serverHost;
-	std::unique_ptr<NetPeer> serverPeer;
-	std::unique_ptr<ServerTee<Transport>> serverTee;
-	std::unique_ptr<ServerSession> server;
-	SimStack serverStack;
-	std::vector<std::unique_ptr<ImmediateClient>> clients;
-	std::array<SimConnectionId, kClientCount> serverIds{};
-	std::uint32_t serverTick = 0u;
-};
-
-struct Delivered
-{
-	int frame = 0;
-	std::string value;
-};
-
-using DeliveryStreams = std::map<std::string, std::vector<Delivered>>;
-
-inline std::string itemValue(const StreamItem& item)
-{
-	std::string text = std::to_string(item.simId) + ":";
-	for (const std::uint8_t b : item.bytes)
-		text += std::to_string(b) + ",";
-	return text;
-}
-
-inline void collectDeliveries(int frame, const FrameRecord& record, DeliveryStreams& out)
-{
-	for (std::size_t c = 0u; c < kClientCount; ++c)
-	{
-		const std::string prefix = "client" + std::to_string(c) + ".";
-		const ClientFrame& client = record.clients[c];
-		for (const StreamItem& item : client.corrections)
-			out[prefix + "corrections"].push_back(Delivered{frame, itemValue(item)});
-		for (const StreamItem& item : client.rings)
-			out[prefix + "rings"].push_back(Delivered{frame, itemValue(item)});
-		for (const std::uint32_t tick : client.clock)
-			out[prefix + "clock"].push_back(Delivered{frame, std::to_string(tick)});
-		for (const std::string& line : client.lines)
-			out[prefix + "lines"].push_back(Delivered{frame, line});
-	}
-}
-
-struct OneFrameEarlier
-{
-	std::size_t items = 0u;
-	std::size_t earlier = 0u;
-	std::size_t sameFrame = 0u;
-	std::size_t outside = 0u;
-	std::size_t valueMismatches = 0u;
-	std::string firstProblem;
-};
-
-inline OneFrameEarlier compareDeliveries(const std::vector<Delivered>& immediate, const std::vector<Delivered>& locked)
-{
-	OneFrameEarlier result;
-	const std::size_t count = std::min(immediate.size(), locked.size());
-	for (std::size_t i = 0u; i < count; ++i)
-	{
-		++result.items;
-		if (immediate[i].value != locked[i].value)
-		{
-			++result.valueMismatches;
-			if (result.firstProblem.empty())
-				result.firstProblem = "item " + std::to_string(i) + " value differs";
-			continue;
-		}
-		const int lead = locked[i].frame - immediate[i].frame;
-		if (lead == 1)
-			++result.earlier;
-		else if (lead == 0)
-			++result.sameFrame;
-		else
-		{
-			++result.outside;
-			if (result.firstProblem.empty())
-				result.firstProblem = "item " + std::to_string(i) + " immediate frame " + std::to_string(immediate[i].frame)
-					+ " frame-locked frame " + std::to_string(locked[i].frame);
-		}
-	}
-	return result;
-}
 
 struct ListenerHost
 {
@@ -1000,87 +729,11 @@ TEST_CASE("SimNetClientImmediate.EveryRelayStoreCorrectionCacheAndEstimatorWrite
 		clientThreads.size());
 }
 
-TEST_CASE("SimNetClientImmediate.TheLosslessScriptDeliversTheSameValuesEachUpToOneFrameEarlier", "[NetTransport]")
-{
-	TransportRig locked(kHeldSends);
-	ImmediateRig immediate;
-	REQUIRE(locked.serverIds == immediate.serverIds);
-
-	DeliveryStreams lockedStreams;
-	DeliveryStreams immediateStreams;
-	FrameDiff serverDiff;
-	for (int frame = 0; frame <= kFrames; ++frame)
-	{
-		const FrameRecord a = locked.frame(frame);
-		collectDeliveries(frame, a, lockedStreams);
-		if (frame == kFrames)
-			break;
-		const FrameRecord b = immediate.frame(frame);
-		collectDeliveries(frame, b, immediateStreams);
-		FrameRecord aServer;
-		FrameRecord bServer;
-		aServer.server = a.server;
-		bServer.server = b.server;
-		compareFrames(frame, bServer, aServer, serverDiff);
-	}
-
-	{
-		INFO(serverDiff.describe());
-		CHECK(serverDiff.empty());
-	}
-
-	REQUIRE(lockedStreams.size() == immediateStreams.size());
-	std::size_t earlier = 0u;
-	for (const auto& [stream, lockedItems] : lockedStreams)
-	{
-		const auto found = immediateStreams.find(stream);
-		REQUIRE(found != immediateStreams.end());
-		const std::vector<Delivered>& immediateItems = found->second;
-		const OneFrameEarlier result = compareDeliveries(immediateItems, lockedItems);
-		std::printf("[SimNetClientImmediate.Lossless] stream=%s immediate=%zu frameLocked=%zu compared=%zu oneFrameEarlier=%zu sameFrame=%zu "
-					"outside=%zu valueMismatches=%zu\n",
-			stream.c_str(), immediateItems.size(), lockedItems.size(), result.items, result.earlier, result.sameFrame, result.outside,
-			result.valueMismatches);
-		INFO(stream << ": " << result.firstProblem);
-		CHECK(immediateItems.size() == lockedItems.size());
-		CHECK(result.valueMismatches == 0u);
-		CHECK(result.outside == 0u);
-		CHECK(result.items > static_cast<std::size_t>(kFrames) / 5u);
-		earlier += result.earlier;
-	}
-	CHECK(earlier > 0u);
-}
-
-TEST_CASE("SimNetClientImmediate.TheSessionTakesItsModeFromItsTransportsConfig", "[NetTransport]")
-{
-	Transport held(kHeldSends);
-	Transport immediate(kImmediate);
-	ListenerHost host;
-
-	ListenerSession frameLocked(host, held);
-	CHECK_FALSE(frameLocked.immediate());
-	frameLocked.dispatchFrame();
-	CHECK(frameLocked.stats().drains == 1u);
-
-	ListenerSession stepStart(host, immediate);
-	CHECK(stepStart.immediate());
-	CHECK(stepStart.drain() == 0u);
-	CHECK(stepStart.stats().drains == 1u);
-
-	ClientTee<Transport> tee(immediate);
-	ogsimnet::SimNetClient<EqGame, ListenerHost, ClientTee<Transport>> unconfigured(host, tee);
-	CHECK_FALSE(unconfigured.immediate());
-
-	ConfigTee configured(immediate);
-	ogsimnet::SimNetClient<EqGame, ListenerHost, ConfigTee> forwarded(host, configured);
-	CHECK(forwarded.immediate());
-}
-
 TEST_CASE("SimNetClientImmediate.InImmediateModeTheNextDrainAppliesTheListenerBind", "[NetTransport]")
 {
 	SECTION("immediate: bind and unbind are requests the next drain applies")
 	{
-		Transport transport(kImmediate);
+		Transport transport(SimNetConfig{});
 		ListenerHost host;
 		ListenerSession session(host, transport);
 		pushFloor(transport, 4u);
@@ -1114,26 +767,5 @@ TEST_CASE("SimNetClientImmediate.InImmediateModeTheNextDrainAppliesTheListenerBi
 		CHECK(host.calls.empty());
 		CHECK_FALSE(session.listenerBound());
 	}
-
-	SECTION("frame-locked: bind replays at once, as before")
-	{
-		Transport transport(kHeldSends);
-		ListenerHost host;
-		ListenerSession session(host, transport);
-		pushFloor(transport, 4u);
-		session.dispatchFrame();
-		session.bindListener();
-		CHECK(host.calls == std::vector<std::string>{"floor 4 replayed"});
-		session.unbindListener();
-		CHECK_FALSE(session.listenerBound());
-	}
-}
-
-TEST_CASE("SimNetClientImmediate.Death.DispatchFrameOnAnImmediateSessionFiresTheCheck", "[.][OGSimDeath]")
-{
-	Transport transport(kImmediate);
-	ListenerHost host;
-	ListenerSession session(host, transport);
-	session.dispatchFrame();
 }
 } // namespace simNetImmediate

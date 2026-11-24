@@ -12,7 +12,7 @@
 class FEvent;
 class FRunnableThread;
 
-OGSIMULATIONUNREAL_API int32 readAuthorityLoopKnob();
+OGSIMULATIONUNREAL_API int32 retiredAuthorityLoopValue();
 OGSIMULATIONUNREAL_API double readAuthorityIdleSlackSeconds();
 
 struct OGSIMULATIONUNREAL_API FUEAuthorityRunnerHost

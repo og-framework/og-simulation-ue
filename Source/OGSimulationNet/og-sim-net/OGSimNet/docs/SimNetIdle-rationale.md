@@ -73,7 +73,7 @@ game which forwards `idleUntil` to a `SimNetIdle` satisfies `TickDriverIdleGame`
 
 - each `ServiceResult` maps to its wake, and the deadline reaches `serviceUntil` unchanged;
 - over `VirtualNetwork` in virtual time, a `FreeRunning` driver whose game forwards `idleUntil` here relays a SimInput that
-  arrives mid-idle in the same wake (relay latency 0), against one frame frame-locked; that case is the mapping's seen-failing
+  arrives mid-idle in the same wake (relay latency 0); that case is the mapping's seen-failing
   arm (`Activity` mapped to `Deadline` makes the relay wait for the next deadline);
 - a hidden `[.][OGSimDeath]` case: a result with no wake reason fires the `OG_CHECK`;
 - a hidden `[.][OGSimTiming]` case over the real BSD backend on loopback, with a 2 ms slack: the runner's `lateUs` p99 is at

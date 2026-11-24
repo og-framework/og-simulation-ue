@@ -83,7 +83,7 @@ header.
   removal left the systems pointing at freed storage (og-input-latency task P5-17's finding F1; added by task P5-19).
 - **When it is called.** In `SimNetClient::unregisterLifecycle` (a roster `Remove` or a queued unregister of a queue-registered
   character) and in `SimNetServer::unregisterLifecycle` (`removeCharacter` or a queued unregister of one). A character the queue
-  never registered (a frame-locked host registers on its own) does not reach it: `unregisterLifecycle` returns before the call.
+  never registered (a host that adds its characters itself, as the tests do) does not reach it: `unregisterLifecycle` returns before the call.
 - **Shape and checks.** The same pattern as `noteDelivered` (§4): `SimNetLifecycleUnregisteringHook<H>` is the call shape
   `onLifecycleUnregistering(uint8_t) -> void`, called under `if constexpr`; `SimNetHostHasNoUnregisteringMember<H>` is the name
   probe (a second `Names` struct, so the two probes stay independent); `SimNetLifecycleUnregisteringHookWellFormed<H>` is "has the

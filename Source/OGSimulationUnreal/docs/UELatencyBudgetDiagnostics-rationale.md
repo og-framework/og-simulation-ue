@@ -34,9 +34,10 @@ two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` →
 * **§10** is og-ue-simulationcomponentandmanagersplit task 24a: the owner is the session, and the weak-lambda owner stays the actor.
 * **§11** is og-input-latency task 6: the late-heal hop `H6L`, where its three stamps come from, and why a resimulation's
   use is read from the observation ring.
-* **§12** is og-input-latency task P5-5: the server's correction-tick walk moved into the session, and the `stampAt` door.
+* **§12** is og-input-latency task P5-5: the server's correction-tick walk moved into the session, and the stampAt door (both
+  deleted by og-session-runtime task 14).
 * **§13** is og-input-latency task P5-17: an immediate client's step-thread doors.
-* **§14** is og-input-latency task P5-20: the authority runner's doors on a loop-on server.
+* **§14** is og-input-latency task P5-20: the authority runner's doors, on every dedicated server since og-session-runtime task 14.
 
 ---
 
@@ -65,18 +66,21 @@ That test puts it under the codebase's three structural markers:
    (§3).
 3. **A fence test** (§5).
 
-**The verbs.** `stamp`, `stampAt`, `stampCorrectionReceived`, `post_Internal`, `stampAfterStep_Internal`,
-`postRelayedReads_Internal` and `stampStepEnd_Internal` write probe stamps;
+**The verbs.** `post_Internal`, `stampAfterStep_Internal`, `postRelayedReads_Internal`, `stampStepEnd_Internal` and the
+step's and the runner's doors (§13, §14) write probe stamps;
 `noteWireSample` writes a probe sample (`note*`, `DiagnosticsConventions.md` §3); `wrapInputProvider` adds the capture stamp;
-`onPostTickFlush` is the `H3` and `H3c` end; `tick_GameThread` drains, stamps `H3c` and `H7`, and closes the window. `begin`
+`onPostTickFlush` is the `H3` and `H3c` end; `tick_GameThread` drains, stamps `H7`, and closes the window. The game-thread stamp
+doors (stamp, stampAt and the correction's) and `tick_GameThread`'s `H3c` stamp went with the in-frame server
+(og-session-runtime task 14): no stamp site runs on the game thread since. `begin`
 creates the probe and its two mailboxes and binds `onPostTickFlush`; `end` unbinds it; `forgetCharacter` drops a departed
-character's lane. `withInstance` runs a function on the role's instance, if there is one. `clockCountsInWindow` and
+character's lane. `withInstance(world, isAuthority, f)` runs a function on that world's instance of the role, if there is
+one; nothing calls it today. `clockCountsInWindow` and
 `restartClockWindow` are a backend host's reads and writes of the clock counts.
 
-**Threads.** `stamp`, `stampAt`, `stampCorrectionReceived`, `noteWireSample`, `onPostTickFlush`, `tick_GameThread`, `begin`, `end`,
-`forgetCharacter`, `withInstance`, `clockCountsInWindow` and `restartClockWindow` are game-thread; `post_Internal`,
-`stampAfterStep_Internal`, `postRelayedReads_Internal`, `stampStepEnd_Internal` and the wrapped provider run on the
-step's thread.
+**Threads.** `noteWireSample`, `onPostTickFlush`, `tick_GameThread`, `begin`, `end`, `forgetCharacter`, `withInstance`,
+`clockCountsInWindow` and `restartClockWindow` are game-thread; `post_Internal`, `stampAfterStep_Internal`,
+`postRelayedReads_Internal`, `stampStepEnd_Internal`, the `_Internal` doors and the wrapped provider run on the step's thread
+(a client's worker, or the authority runner).
 
 ---
 
@@ -89,7 +93,7 @@ The template names no game type. Everything typed comes from `TraitsT`:
 | `PlayerInput` | the provider's result type: `InputProvider` is `std::function<PlayerInput(const SimulationTimeStep&, const LocalInputCache<PlayerInput>&)>`, which the owner asserts is its own provider type, so the wrapper never converts (a second heap-allocated callable per registration) |
 | `Simulatable` | the type argument of the storage walks and of the three input-resolution reads, `getLastUsedCaptureTick`, `relayedReadObservations` and `findRemoteInputCache` |
 | `Component` | the registering component `wrapInputProvider` and `wrap` take (until og-input-latency task P5-7 also the element type of the session's delayed-input map, whose correction-buffer tick `tick_GameThread` read; the walk reads og-sim-net channels since, §4) |
-| `SessionOwner` | the session's owner: its static `instanceFor(bool)` and `editLatencyBudgetDiagnostics()`, which `instanceFor` calls (the owner's forwards to its session's). The template's const reference `m_owner` (§4) is to the session, `UESimulationSession<TraitsT>`, since og-ue-simulationcomponentandmanagersplit task 24a (to the owner before), and it reads the session's `m_manager`, `m_storage`, `m_inputResolution` and, through the session's `forEachAuthorityCorrectionTick` (og-input-latency task P5-5, §12), the session's registered channels since task P5-7 (its delayed-input map from task 26a until P5-7) |
+| `SessionOwner` | the session's owner: its static `instanceFor(const UWorld*, bool)` (by world and role since og-session-runtime task 16b) and `editLatencyBudgetDiagnostics()`, which `instanceFor` calls (the owner's forwards to its session's). The template's const reference `m_owner` (§4) is to the session, `UESimulationSession<TraitsT>`, since og-ue-simulationcomponentandmanagersplit task 24a (to the owner before), and it reads the session's `m_manager`, `m_storage` and `m_inputResolution` (until og-session-runtime task 14 also, through the session's correction-tick walk, the in-frame server's registered channels, §12) |
 | `Game` | two static hooks, below |
 | `InputSampleSource` | the value `inputSampleSource` returns and the wrapper's lambda captures |
 
@@ -145,9 +149,9 @@ compiles there; only Shipping, where it is not declared, makes such a line a com
 
 ## §4 Reading production state
 
-The template reads its session's `m_manager`, `m_storage` and `m_inputResolution`, the server's correction ticks through
-the session's `const` `forEachAuthorityCorrectionTick` (since og-input-latency task P5-5, §12; the walk reads the registered
-og-sim-net channels since P5-7, the delayed-input map before), and the client clock through `m_manager`. It reaches them
+The template reads its session's `m_manager`, `m_storage` and `m_inputResolution`, and the client clock through `m_manager`
+(until og-session-runtime task 14 also the in-frame server's correction ticks, through the session's const correction-tick walk,
+§12). It reaches them
 through **one const reference**, `m_owner`, to the session (§10): the session and its owner each declare the template a
 friend, and every read goes through that const reference, so it can call only const members
 (`currentIntegratedTick`, `runsPrediction`, `getClientClock`, `forEachSimulatable`'s const overload,
@@ -163,11 +167,12 @@ conversion of `*this` to the const reference the constructor takes), MSVC (the t
 with C2665, "Conversion loses qualifiers". The explicit `std::as_const` compiles, and a revert to `{ *this }` is
 therefore a compile error, not a silent change.
 
-**The correction reads are const too.** The walk (`tick_GameThread`'s own loop until og-input-latency task P5-5, the
-session's `const` `forEachAuthorityCorrectionTick` since, §12) reads each channel through `std::as_const`, so only the
-channel's `const` `getSyncedCorrectionStateBuffer` is called; the non-`const` one marks the channel dirty for the next flush,
-which a diagnostic must never do. Every path from the template into production state is therefore const. Until P5-7 the walk
-read the game component's `const` getter, which reached the net-sync sibling through the binding's sibling pointer.
+**The correction reads were const too.** Until og-session-runtime task 14 the in-frame server's walk (`tick_GameThread`'s own
+loop until og-input-latency task P5-5, the session's const correction-tick walk since, §12) read each channel through
+`std::as_const`, so only the channel's `const` `getSyncedCorrectionStateBuffer` was called; the non-`const` one marks the channel
+dirty for the next flush, which a diagnostic must never do. Until P5-7 the walk read the game component's `const` getter, which
+reached the net-sync sibling through the binding's sibling pointer. The authority runner reads each correction tick itself
+(§14). Every path from the template into production state is const.
 
 **Until og-input-latency task P5-7 the loop skipped a component that was not bound** (`UESimulationSession-guards.md` G-29,
 retired with it; this file's G-03 until P5-5), with the binding's `isNetSyncBound()`, a `const` query. A channel has no
@@ -206,46 +211,45 @@ same-binary noise.
 ## §6 The template's stamp points, threads and errors
 
 Times are `FPlatformTime::Seconds` (one monotonic clock per process). "GT" is the game thread and "PT" the step's
-thread (a worker on a client, the game thread on a dedicated server). The game's own stamp sites (its input sample, its
+thread (a worker on a client, the authority runner on a dedicated server). The game's own stamp sites (its input sample, its
 send and receive sites, its step hooks) are the game's documentation; these are the template's:
 
 | point | where (thread) | known error |
 |---|---|---|
 | `InputSampled`, `Captured` (the `H1` end, the `H2` start) | the wrapper `wrapInputProvider` returns, after the inner provider returns (PT) | The `H1` start is the game's sample time; a sample time read as a relaxed atomic is unordered with the caches the capture reads, so a capture racing a refresh can pair a new time with the previous frame's values: at most one frame, rare. |
 | `Handed` → `LeftProcess` (the `H3` and `H3c` ends) | `onPostTickFlush`, bound to `UWorld::OnPostTickFlush` (GT) | See *the `H3` hook* below. |
-| `Handed` (the server's `H3c` start) | `tick_GameThread`, when a character's correction-buffer tick changed since the last frame; the ticks come from the session's `forEachAuthorityCorrectionTick` since og-input-latency task P5-5, over og-sim-net channels since P5-7 (GT) | A **lower** bound: the correction leaves at the og-net driver's `TickFlush`, when og-sim-net's server flushes (when the replication system polled and sent a property, until P5-7). The start is late by whatever the owner does on the frame before it calls `tick_GameThread`. |
+| `Handed` (the server's `H3c` start) | `stampCorrectionHanded_Internal`, after each authority batch, when a character's correction tick changed (the runner; §14) | The correction leaves at the runner's hand-over to og-net, at this time (§14). Until og-session-runtime task 14 the in-frame server stamped it in `tick_GameThread` from the session's correction-tick walk, a lower bound late by the owner's frame. |
 | `Consumed` (the server's `H4` end) | `stampAfterStep_Internal`, for the capture tick `getLastUsedCaptureTick` reports after the step, stamped with that step's start time (PT) | An underrun step reports the sentinel and stamps nothing. |
 | `Consumed` (the client's `H6` end; `H6c` through a pending stamp) | `stampAfterStep_Internal`, through `postRelayedReads_Internal`: the relayed-read observation for the step's tick names the applied capture tick (PT); the pending `ClientReceived` → `Consumed` stamp at the start of the first step after receipt | Only reads that applied a relayed capture stamp an end; a miss stamps nothing and the capture finalizes as `noEnd`. `H6c` measures when a correction is available to the next step, not when a resimulation applies it. |
 | `Healed` (the client's `H6L` end), by a use | `postRelayedReads_Internal` (PT): a prediction `Hit` for the step's tick, beside its `Consumed`; and a resimulation's `Hit` for an earlier tick, found as a changed observation (§11) | A resimulation's use is stamped with the start time of the prediction step after the replay: late by at most the replay's length. |
-| `Healed` (the client's `H6L` end), by a correction | `stampCorrectionReceived`, which the og-net client host calls at the correction's drain since og-input-latency task P5-7 (the binding's `onCorrectionStateAccepted` before), with the same time as its `ClientReceived` (GT) | `dA` is the newest relayed capture's delay stamp for that character, one value for the lane (§11). |
+| `Healed` (the client's `H6L` end), by a correction | `stampClientReceived_Internal`'s State branch, which the og-net client host calls at the correction's drain, with the same time as its `ClientReceived` (the step's thread, §13; the game-thread correction door until og-session-runtime task 12, deleted by task 14) | `dA` is the newest relayed capture's delay stamp for that character, one value for the lane (§11). |
 | `StepEnd` (the `H5` end, the `H7` start) | `stampStepEnd_Internal`, at each step's end, per simulatable, for `currentIntegratedTick` (PT) | `noEnd` counts the ticks a simulatable's state was not written; a correction rotation skips some on purpose. |
 | `Rendered` (the `H7` end) | `tick_GameThread`: the newest pending tick per simulatable only (GT) | Not the photon: the render poses interpolate behind the simulation, and the render thread and GPU add one or two frames more. |
-| `WIRE` | `noteWireSample`, half the round trip it is given (GT) | Half of a round trip assumes symmetric paths. |
+| `WIRE` | `noteWireSample`, half the round trip it is given (GT): the server host's base `rttMs`, from the runner's RTT publish; a client's `noteWireSample_Internal` (§13) | Half of a round trip assumes symmetric paths. |
 
 **Threads — the probe adds no unsynchronized crossing.** The probe is **game-thread-owned** and has no internal lock.
 Everything reaches it one of three ways:
 
 | path | used by | synchronization |
 |---|---|---|
-| `stamp` / `stampAt` / `noteWireSample` | every game-thread site (`stampAt` since og-input-latency task P5-7: the og-net hosts' `NetReceived`, §12) | same thread as the owner; each `checkf`s that it runs on the game thread |
+| `noteWireSample` | the server host's base `rttMs`, from the RTT publish (until og-session-runtime task 14 also the game-thread stamp doors, every game-thread stamp site's) | same thread as the owner; it `checkf`s that it runs on the game thread |
 | `post_Internal` → `m_mailbox` → drained in `tick_GameThread` | every step-thread site | the mailbox's release/acquire pair (`LatencyBudgetProbe-guards.md` G-01) |
 | `m_clockMailbox` | the client clock's skip/stall/hard-resync counts | the same mailbox type |
 
 Every step-thread read the template makes is same-thread with its writer: the storage walk, `getLastUsedCaptureTick`
 (written while the core collects input on that thread), the relayed-read observation ring (noted there too, by
-prediction and resimulation reads alike), `currentIntegratedTick` and the client clock's diagnostics. Its game-thread
-reads (the correction-buffer tick, through the session's walk since og-input-latency task P5-5, over og-sim-net channels
-since P5-7, and the relay store's newest delay stamp that
-`stampCorrectionReceived` reads) are written on the game thread: the relay store is written by the relayed-ring arrival
-callback (`RemoteInputCache.h`'s threading block). `m_seenReads_Physics` is the template's own, and only the step's
-thread touches it (G-05). On a dedicated server the step thread is the game thread, so the
-mailbox is pushed and drained by one thread: a legal degenerate case of single-producer, single-consumer.
+prediction and resimulation reads alike), `currentIntegratedTick` and the client clock's diagnostics, and the relay store's
+newest delay stamp, which the same drain writes (§13). The template makes no game-thread read of production state since
+og-session-runtime task 14: its two were the in-frame server's correction-tick walk and the game-thread correction door's read of
+the relay store. `m_seenReads_Physics` is the template's own, and only the step's thread touches it (G-05). On a dedicated
+server the step thread is the authority runner, the mailbox's one producer (§14).
 
 **The hop masks.** `begin` creates the probe with the role's hops and, since og-input-latency task P5-7, the role's og-net
 hops ORed in: `kServerHops | kServerNetHops` (adds `N4`) on the authority, `kClientHops | kClientNetHops` (adds `N6`, `N6c`,
 and since og-input-latency task P5-37 `N6u`) on a client. `N6u` ends at the `Consumed` stamp `postRelayedReads_Internal`
 already makes for a relayed capture at the start of the step that read it (`stampAfterStep_Internal`'s `stepStartSeconds`,
-taken after that step's drain), so it needed no new stamp here. The og-net hosts stamp `NetReceived` at the datagram's receive time (`stampAt`), which those hops start from
+taken after that step's drain), so it needed no new stamp here. The og-net hosts stamp `NetReceived` at the datagram's receive time (through the mailbox doors'
+`recv` argument, §13, §14), which those hops start from
 (`LatencyBudgetProbe-rationale.md`).
 
 **Lifetime.** `begin` creates the probe and the two mailboxes; nothing resets them before the template is destroyed, so
@@ -332,14 +336,15 @@ header forward-declares the session. Its member initializer is still `{ std::as_
 
 * **The reads.** `m_manager`, `m_storage` and `m_inputResolution` are the session's, read with the same spellings; the
   session befriends the template. The delayed-input map stayed the owner's, read under the owner's friend line for the
-  template, until task 26a moved it into the session; it was read through the session's `forEachAuthorityCorrectionTick`
-  from og-input-latency task P5-5 (§12), and the walk reads og-sim-net channels since P5-7. The `const` assertion beside `m_owner` holds for
+  template, until task 26a moved it into the session; it was read through the session's correction-tick walk from
+  og-input-latency task P5-5 (§12), the walk read og-sim-net channels from P5-7, and og-session-runtime task 14 deleted it. The `const` assertion beside `m_owner` holds for
   the session reference; its message names the session as the one class that befriends this template (*R0, P5-5:* it said
   "the session's and the owner's friend", but the owner's friend line went with task 27b).
 * **The weak-lambda owner stays the actor.** `begin` binds the world's post-tick flush with `AddWeakLambda(&m_owner.owner(), …)`:
   a delegate's weak object must be a `UObject`, the session is not one, and the owner is the object the binding tested
   before.
-* **`instanceFor`** still finds the instance through `TraitsT::SessionOwner::instanceFor(isAuthority)` and the owner's
+* **`instanceFor`** still finds the instance through `TraitsT::SessionOwner::instanceFor(world, isAuthority)` (the world
+  since og-session-runtime task 16b) and the owner's
   `editLatencyBudgetDiagnostics()`, which forwards to the session's. (Since og-ue-simulationcomponentandmanagersplit task
   25 the owner's `instanceFor` itself forwards to the session's registry, `UESimulationSession-rationale.md` §9.)
 * **F1.** Nothing about how the members compile changed: they were already template members compiled optimized (§8).
@@ -391,8 +396,9 @@ G-03), so a resimulation's `Healed` is late by at most the replay's length. It i
 `ProbeConfig{}.maxLanes` characters (the most lanes the probe tracks), it is cleared and every character re-primes,
 which only skips the resimulation heals of that one step. It is never erased from the game thread (G-05).
 
-**A correction's heal.** The binding's `onCorrectionStateAccepted` calls `stampCorrectionReceived(id, tick)` instead
-of `stamp`. It takes one time and stamps the state stream's `ClientReceived` (the `H6c` start, as before) and then
+**A correction's heal.** The binding's `onCorrectionStateAccepted` called the diagnostics' game-thread correction door instead
+of the plain stamp (the og-net client host's drain since og-input-latency task P5-7, through §13's mailbox door since P5-17;
+the game-thread door was deleted by og-session-runtime task 14). It takes one time and stamps the state stream's `ClientReceived` (the `H6c` start, as before) and then
 `stampHealedByCorrection(id, tick, dA, now)`, where `dA` is `findLatest().dA` of the character's relay store, read on
 the game thread that writes it. A character with no relay store (this client's own) or no arrival yet heals nothing.
 One `dA` serves the whole lane: exact while the delay is steady, which it is in every shipped configuration (the
@@ -412,26 +418,26 @@ og-net measured. Task P5-5 prepared both, refactor-only.
 
 **The server's walk moved into the session.** `tick_GameThread`'s server branch walked the session's delayed-input map: the
 null check on the weak pointer, the skip of an unbound component (its G-03, retired), the correction-buffer tick read and the
-skip of tick 0, then the per-id `Handed` stamp when the tick changed. The walk, up to and including the skip of tick 0, is
-now the session's `const` `forEachAuthorityCorrectionTick` (`UESimulationSession-rationale.md` §15); this class keeps the
-rest, in the lambda it passes: the last-handed map (`m_lastHandedCorrectionTick`), the comparison and the stamp. The
-statements, their order and the time (`nowSeconds`, taken once before the walk) are unchanged, so the `[LatencyBudget]` lines
-are too. The switch makes the walk iterate the server's channels, and this class does not change.
+skip of tick 0, then the per-id `Handed` stamp when the tick changed. The walk, up to and including the skip of tick 0, became
+the session's const correction-tick walk; this class kept the rest, in the lambda it passed: the last-handed map, the
+comparison and the stamp. The statements, their order and the time (`nowSeconds`, taken once before the walk) were unchanged,
+so the `[LatencyBudget]` lines were too. The switch made the walk iterate the server's channels. og-session-runtime task 14
+deleted the walk, the map and the stamp with the in-frame server: the authority runner stamps its corrections itself (§14).
 
-**`stampAt`** is `stamp` with the time passed in: the same game-thread `checkf`, then `m_probe->stamp(…, seconds)`, and a
-no-op with the gate at 0. The switch's host stamps use it for og-net's `NetReceived` point at the receive time og-net
-reports (P5 design §3.3). Since og-input-latency task P5-7 the hosts call it (`UESimNetHost-rationale.md` §4), and the hop
-masks include the og-net hops (§6).
+**stampAt** was the game-thread stamp with the time passed in, for og-net's `NetReceived` point at the receive time og-net
+reports (P5 design §3.3); the hosts called it from og-input-latency task P5-7 (`UESimNetHost-rationale.md` §4), and the hop
+masks include the og-net hops (§6). og-session-runtime task 14 deleted it with the plain stamp: their last callers were the
+base server host's game-thread stamps, the in-frame server's. The mailbox doors take the time as an argument instead (§13, §14).
 
 ## §13 An immediate client's step-thread doors (og-input-latency task P5-17)
 
-With `[OGNetcode] SimTrafficImmediate=1` a client drains og-sim-net and sends its inputs on the step's thread
-(`UESimulationSession-rationale.md` §18), so three stamp sites that were game-thread sites move onto it. Each one posts what the
-game-thread door stamped, in the same order and with the same times, through the mailbox (§6's second path):
+A client drains og-sim-net and sends its inputs on the step's thread (`UESimulationSession-rationale.md` §18, §24), so three
+stamp sites are step-thread doors. Each one posts, through the mailbox (§6's second path), what a game-thread door stamped
+for the frame-locked client until og-session-runtime task 12, in the same order and with the same times:
 
-| door | posts | was (frame-locked, still used there) |
+| door | posts | was (the frame-locked client's, until og-session-runtime task 12) |
 |---|---|---|
-| `stampClientReceived_Internal(stream, lane, tick, recv)` | `ClientReceived` at now; for the State stream, the heal-by-correction (below); then `NetReceived` at `recv` | the host's `stamp` + `stampAt` (Input), `stampCorrectionReceived` + `stampAt` (State) |
+| `stampClientReceived_Internal(stream, lane, tick, recv)` | `ClientReceived` at now; for the State stream, the heal-by-correction (below); then `NetReceived` at `recv` | the host's game-thread stamp and stampAt (Input), the correction door and stampAt (State); all three deleted by og-session-runtime task 14 |
 | `noteWireSample_Internal(rtt)` | a `Sample` of `Hop::Wire`, half the round trip | `noteWireSample` |
 | `stampHandedAndLeft_Internal(lane, captureTick)` | `Handed` and `LeftProcess`, both at now | the channel's handed callback's `stamp(Handed)`, then `onPostTickFlush`'s `LeftProcess` |
 
@@ -439,45 +445,40 @@ game-thread door stamped, in the same order and with the same times, through the
   which only the game thread may touch, and `latencyBudget::Event` (og-sim) has no kind for it. So the mailbox carries a
   `PostedEvent`, an `Event` plus the heal's delay ticks and a flag, and `tick_GameThread` calls `stampHealedByCorrection` for a
   flagged item and `apply` for the rest. The delay (`dA`, the newest relayed capture's) is read on the step, from the relay
-  store, which in immediate mode the same drain writes. One queue keeps the order: the heal is applied after the
-  `ClientReceived` stamps that came before it and before the ones after it, as it was on the game thread. A frame-locked
-  client's items are never flagged, so its probe sees the events it saw before.
-- **`LeftProcess` is the send.** An immediate transport hands each input set to the og-net endpoint at once
+  store, which the same drain writes. One queue keeps the order: the heal is applied after the
+  `ClientReceived` stamps that came before it and before the ones after it, as it was on the game thread.
+- **`LeftProcess` is the send.** The transport hands each input set to the og-net endpoint at once
   (`SimNetTransport-rationale.md` §12), so the input leaves the process where it is handed, on the step, not at the frame's
-  `TickFlush`. `H3` then reads about 0 on an immediate client; `onPostTickFlush` still runs and finds those slots already
+  `TickFlush`. `H3` then reads about 0 on a client; `onPostTickFlush` still runs and finds those slots already
   stamped.
-- **The single producer.** On an immediate client every producer of the mailbox is the step's thread: these three, the
+- **The single producer.** On a client every producer of the mailbox is the step's thread: these three, the
   capture wrapper and the step hooks. The world session's teardown drain runs on the game thread, but only after the steps
   have stopped (`UESimulationSession-rationale.md` §18.6), so producers never overlap.
 - **The gate.** With `OG_LATENCY_BUDGET_DIAGNOSTICS` at 0 the three doors are empty, like the rest.
 
 ## §14 The authority runner's doors (og-input-latency task P5-20)
 
-With `og.Sim.AuthorityLoop=1` a dedicated server steps, drains og-sim-net and sends on the runner, through an immediate
-transport (`UESimulationSession-rationale.md` §19), so the server's game-thread stamp sites move onto it. Each door posts through
-the mailbox (§6's second path):
+A dedicated server steps, drains og-sim-net and sends on the runner (`UESimulationSession-rationale.md` §19, §24), so the
+server's stamp sites are runner doors. Each door posts through the mailbox (§6's second path):
 
-| door | posts | was (the loop off, still used there) |
+| door | posts | was (the loop off, until og-session-runtime task 14) |
 |---|---|---|
-| `stampServerReceived_Internal(lane, captureTick, recv)` | `ServerReceived` at now, then `NetReceived` at `recv` (Input) | the server host's `stamp` + `stampAt` (`UESimNetHost.h`) |
-| `stampHandedAndLeft_Internal(lane, captureTick)` (§13's door) | `Handed` and `LeftProcess`, both at now (Input) | the server host's `stamp(Handed)`, then `onPostTickFlush`'s `LeftProcess` |
+| `stampServerReceived_Internal(lane, captureTick, recv)` | `ServerReceived` at now, then `NetReceived` at `recv` (Input) | the base server host's game-thread stamp and stampAt (`UESimNetHost.h`) |
+| `stampHandedAndLeft_Internal(lane, captureTick)` (§13's door) | `Handed` and `LeftProcess`, both at now (Input) | the base server host's game-thread `Handed` stamp, then `onPostTickFlush`'s `LeftProcess` |
 | `stampCorrectionHanded_Internal(lane, correctionTick, handed)` | `Handed` and `LeftProcess`, both at `handed` (State), once per new correction tick of the lane | `tick_GameThread`'s walk of the session's correction ticks at its own now, then `onPostTickFlush`'s `LeftProcess` |
 
 - **Who calls them.** The first two are the lanes' server host (`UESimNetLanes-rationale.md` §12), which og-sim-net calls on
-  the runner once the session has called `serveFromRunner()`. The third is the session's `stampCorrectionsHanded_Runner`, after
-  og-sim-net's `afterInlineBatch` has flushed the batch's corrections; it reads each character's correction tick from
-  og-sim-net's own channel, the runner's object, with the session's `correctionTickOf`, the read `forEachAuthorityCorrectionTick`
-  also uses.
-- **`LeftProcess` is the hand-over.** An immediate transport hands each relay and each correction to the og-net endpoint at once
-  (`SimNetTransport-rationale.md` §7), as an immediate client hands its inputs (§13), so the server's `H3` (Input) and `H3c` (State) read about
-  0 on the loop, and `H5` (State, `StepEnd` → `Handed`) ends at the runner's hand-over instead of the game thread's next latency
+  the runner. The third is the session's `stampCorrectionsHanded_Runner`, after og-sim-net's `afterInlineBatch` has flushed the
+  batch's corrections; it reads each character's correction tick from og-sim-net's own channel, the runner's object, with the
+  session's `correctionTickOf`.
+- **`LeftProcess` is the hand-over.** The transport hands each relay and each correction to the og-net endpoint at once
+  (`SimNetTransport-rationale.md` §7), as a client hands its inputs (§13), so the server's `H3` (Input) and `H3c` (State) read about
+  0, and `H5` (State, `StepEnd` → `Handed`) ends at the runner's hand-over instead of the game thread's next latency
   tick. `onPostTickFlush` still runs and finds those slots stamped.
-- **`tick_GameThread` skips its walk on the loop** (`!isClient && !m_owner.m_authorityLoop`): the walk reads every channel's
-  correction buffer, which the runner writes, and the session's channel map, which the game thread writes, so neither thread
-  could do it alone. The runner's walk reads storage ids and og-sim-net's channels, both the runner's.
-- **The dedup map is the runner's.** `m_lastHandedCorrectionTick_Runner` is the twin of `m_lastHandedCorrectionTick`, written
-  only on the runner; `forgetCharacter` (the game thread) never touches it (G-05). Without the forget a new character that
+- **`tick_GameThread` has no correction walk.** The runner's walk reads storage ids and og-sim-net's channels, both the
+  runner's. Until og-session-runtime task 14 the in-frame server walked the channels on the game thread.
+- **The dedup map is the runner's.** `m_lastHandedCorrectionTick_Runner` is written only on the runner; `forgetCharacter` (the game thread) never touches it (G-05). Without the forget a new character that
   reuses a sim id starts from the old one's last tick, which costs at most one `Handed` stamp, the one whose tick equals it.
-- **The single producer.** On a loop-on server every producer of the mailbox is the runner: these three doors, the capture
+- **The single producer.** On a dedicated server every producer of the mailbox is the runner: these three doors, the capture
   wrapper (a dedicated server captures no input) and the step hooks. The game thread only drains.
 - **The gate.** With `OG_LATENCY_BUDGET_DIAGNOSTICS` at 0 the doors are empty, like the rest.

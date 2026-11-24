@@ -111,7 +111,7 @@ public:
 	UETickDriverHost& operator=(const UETickDriverHost&) = delete;
 
 	static int32 requestedMaxCatchUpSteps();
-	static bool  runInline();
+	static int32 retiredRunInlineValue();
 
 	SimulationEngineUImpl& engine() { return m_engine; }
 

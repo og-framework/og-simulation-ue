@@ -494,8 +494,7 @@ TEST_CASE("SimNetTransport.TheInboxIsSizedFromTheEndpointConfigForEachRole", "[N
 	ognet::EndpointConfig serverEndpoint;
 	serverEndpoint.role = ognet::Role::Server;
 	serverEndpoint.maxConnections = 8u;
-	const ogsimnet::SimNetConfig eight = ogsimnet::simNetConfigFor(serverEndpoint, true);
-	CHECK(eight.immediate);
+	const ogsimnet::SimNetConfig eight = ogsimnet::simNetConfigFor(serverEndpoint);
 	auto small = std::make_unique<Transport>(eight);
 	CHECK(small->inbox().controlCapacity() == 8u * 456u);
 	CHECK(small->inbox().tagQuota() == 248u);
@@ -705,16 +704,16 @@ TEST_CASE("SimNetServer.TheWindowLineCountsQuotaRefusalsAndTheControlHighWaterMa
 		size_t{4096});
 
 	host.now = 0.0;
-	server.flushFrame();
+	server.afterInlineBatch(0);
 	transport->onConnectionEvent(ognet::ConnectionEvent{ognet::ConnectionEventKind::Connected, 31u});
 	const std::array<std::byte, 8> bytes{};
 	for (int i = 0; i < 100; ++i)
 		endpoint.deliver(31u, ognet::Lane::SimInput, bytes, 1.0);
 	for (int i = 0; i < 3; ++i)
 		endpoint.deliver(31u, ognet::Lane::Control, bytes, 1.0);
-	server.dispatchFrame();
+	server.drain();
 	host.now = 10.0;
-	server.flushFrame();
+	server.afterInlineBatch(0);
 
 	std::vector<std::string> windows;
 	for (const std::string& line : host.lines)
@@ -747,7 +746,7 @@ TEST_CASE("SimNetClient.TheWindowLineCountsQuotaRefusalsAndTheControlHighWaterMa
 		endpoint.deliver(41u, ognet::Lane::SimRelay, bytes, 1.0);
 	for (int i = 0; i < 5; ++i)
 		endpoint.deliver(41u, ognet::Lane::Control, bytes, 1.0);
-	client.dispatchFrame();
+	client.drain();
 	host.now = 10.0;
 	client.flushFrame();
 
@@ -790,7 +789,7 @@ TEST_CASE("SimNetServer.TheWindowLineCountsRefusedConnectionEventsAndTheEventHig
 		size_t{4096});
 
 	host.now = 0.0;
-	server.flushFrame();
+	server.afterInlineBatch(0);
 	transport->onConnectionEvent(ognet::ConnectionEvent{ognet::ConnectionEventKind::Connected, 31u});
 	transport->onConnectionEvent(ognet::ConnectionEvent{ognet::ConnectionEventKind::Connected, 32u});
 	transport->onConnectionEvent(ognet::ConnectionEvent{ognet::ConnectionEventKind::Disconnected, 31u});
@@ -798,12 +797,12 @@ TEST_CASE("SimNetServer.TheWindowLineCountsRefusedConnectionEventsAndTheEventHig
 	CHECK(endpoint.disconnects == std::vector<ognet::ConnectionId>{33u});
 	CHECK(transport->inbox().stats().eventsRefused == 1u);
 	CHECK(transport->inbox().stats().eventHighWater == 3u);
-	server.dispatchFrame();
+	server.drain();
 	host.now = 10.0;
-	server.flushFrame();
-	server.dispatchFrame();
+	server.afterInlineBatch(0);
+	server.drain();
 	host.now = 20.0;
-	server.flushFrame();
+	server.afterInlineBatch(0);
 
 	const std::vector<std::string> windows = windowLines(host.lines);
 	REQUIRE(windows.size() == 2u);
@@ -825,7 +824,7 @@ TEST_CASE("SimNetClient.TheWindowLineCountsRefusedConnectionEventsAndTheEventHig
 	host.now = 0.0;
 	client.flushFrame();
 	transport->onConnectionEvent(ognet::ConnectionEvent{ognet::ConnectionEventKind::Connected, 41u});
-	client.dispatchFrame();
+	client.drain();
 	for (ognet::ConnectionId id = 41u; id <= 45u; ++id)
 	{
 		transport->onConnectionEvent(ognet::ConnectionEvent{ognet::ConnectionEventKind::Disconnected, id});
@@ -834,10 +833,10 @@ TEST_CASE("SimNetClient.TheWindowLineCountsRefusedConnectionEventsAndTheEventHig
 	CHECK(endpoint.disconnects == std::vector<ognet::ConnectionId>{46u});
 	CHECK(transport->inbox().stats().eventsRefused == 1u);
 	CHECK(transport->inbox().stats().eventHighWater == 9u);
-	client.dispatchFrame();
+	client.drain();
 	host.now = 10.0;
 	client.flushFrame();
-	client.dispatchFrame();
+	client.drain();
 	host.now = 20.0;
 	client.flushFrame();
 
@@ -1101,16 +1100,16 @@ TEST_CASE("SimNetServer.AConnectionClosedOverItsControlQuotaIsLoggedWithItsCause
 		size_t{4096});
 
 	host.now = 0.0;
-	server.flushFrame();
+	server.afterInlineBatch(0);
 	transport->onConnectionEvent(ognet::ConnectionEvent{ognet::ConnectionEventKind::Connected, 31u});
 	const std::array<std::byte, 8> bytes{};
 	for (int i = 0; i < 457; ++i)
 		endpoint.deliver(31u, ognet::Lane::Control, bytes, 1.0);
 	REQUIRE(endpoint.disconnects == std::vector<ognet::ConnectionId>{31u});
 	transport->onConnectionEvent(ognet::ConnectionEvent{ognet::ConnectionEventKind::Disconnected, 31u});
-	server.dispatchFrame();
+	server.drain();
 	host.now = 10.0;
-	server.flushFrame();
+	server.afterInlineBatch(0);
 
 	std::vector<std::string> disconnects;
 	std::vector<std::string> windows;
@@ -1149,7 +1148,7 @@ TEST_CASE("SimNetClient.AServerConnectionClosedOverItsControlQuotaIsLoggedWithIt
 	REQUIRE(endpoint.disconnects == std::vector<ognet::ConnectionId>{41u});
 	CHECK(transport->stats().closingRefused == 3u);
 	transport->onConnectionEvent(ognet::ConnectionEvent{ognet::ConnectionEventKind::Disconnected, 41u});
-	client.dispatchFrame();
+	client.drain();
 	host.now = 10.0;
 	client.flushFrame();
 

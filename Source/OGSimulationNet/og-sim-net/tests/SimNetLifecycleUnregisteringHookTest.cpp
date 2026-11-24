@@ -203,7 +203,7 @@ struct SimParts
 struct ClientRig : SimParts
 {
 	ClientRig()
-		: transport(std::make_unique<UhTransport>(ogsimnet::SimNetConfig{true}))
+		: transport(std::make_unique<UhTransport>(ogsimnet::SimNetConfig{}))
 	{
 		host.inStorage = [this](std::uint8_t simId) { return storage.template has<UhSim>(simId); };
 		transport->installHandlers(endpoint);

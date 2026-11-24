@@ -4,9 +4,9 @@
 
 `SimNetServer<Game, HostT, TransportT, PolicyT>` is the authority's sim session over og-net. It drains the server's inbox,
 checks each input bundle against the roster, hands it to the reception coordinator with the same arguments the engine's input
-path uses, and at the frame point sends the relays, the corrections, the clock and the roster to the clients. In immediate mode
-(§16, Ph4) it sends instead as soon as it can: each relay when its bundle is drained, the corrections and the clock after each
-batch of steps. The prohibitions that govern its lines are in `SimNetServer-guards.md`; the host services it calls are described
+path uses, and sends as soon as it can (§16): each relay when its bundle is drained, the corrections and the clock after each
+batch of steps, the roster, the floor and the tier when they happen. The prohibitions that govern its lines are in
+`SimNetServer-guards.md`; the host services it calls are described
 in `SimNetHost-rationale.md`.
 
 **If this file and `SimNetServer.h` disagree, the header is authoritative and this file is stale.**
@@ -34,10 +34,11 @@ in `SimNetHost-rationale.md`.
 The session borrows the host, the transport and the `TimeConfig`; all three must outlive it. It hands `this` to the
 coordinator's logger and to each stager, so it is neither copyable nor movable.
 
-The Unreal session (`UESimulationSession.h`) runs it frame-locked: it binds `dispatchFrame` and `flushFrame` through its sim
-lanes (`UESimNetLanes.h`) to the engine's receive and flush points, `releaseForStep` and `afterBatch` to the tick driver's
-authority hooks, and `addCharacter` and `removeCharacter` to registration, and it publishes the clock and the floor. No host
-binds the immediate hooks (§16) yet; on the Unreal server that is og-input-latency P5-19's.
+**Its threads.** The session has one owner thread: `drain()`, `releaseForStep`, `afterInlineBatch`, the publishes and every
+send run on it, one consumer at a time, and in mode B the endpoint is serviced on it too (§16). `registerCharacter` and
+`unregisterCharacter` may be called from another thread: they only enqueue a job that the next drain applies (§15). Which
+host thread is the owner is the host's (og-sim's `ThreadingCrossings.md` points to the table). Until og-session-runtime
+task 15 the session also had a frame-locked mode, drained and flushed once per frame.
 
 ## §2 The template
 
@@ -46,7 +47,7 @@ binds the immediate hooks (§16) yet; on the Unreal server that is og-input-late
   host spells; the fifth parameter is the list itself and is not meant to be passed (a `static_assert` says so).
 - **`HostT`** satisfies `SimNetServerHost` (`SimNetHost.h`).
 - **`TransportT`** satisfies `SimNetServerTransport`: og-simulation's `ServerSimTransport` plus `inbox()` (with `drain` and
-  `stats`), `flushFrame()` and `channelTransport(simId)`. `SimNetTransport` satisfies it; the tests use it over a recording
+  `stats`) and `channelTransport(simId)`. `SimNetTransport` satisfies it; the tests use it over a recording
   endpoint and over og-net's `VirtualNetwork`.
 - **`PolicyT`** is the correction policy (§10), `SendAllDirty` by default.
 - **`Channel<SimT>` is `SessionChannel<SimT, ChannelTransport>`** (`SimNetChannel.h`), where `ChannelTransport` is the type
@@ -72,17 +73,14 @@ binds the immediate hooks (§16) yet; on the Unreal server that is og-input-late
 ## §3 The drain
 
 `drain()` first applies the jobs of the lifecycle queue (§15), then hands every record in the inbox to the session in FIFO
-order and returns how many records it handled. `dispatchFrame()` is the same drain, under the name of the frame point it is
-bound to in the frame-locked mode; an immediate session refuses it with an `OG_CHECK` and is drained by `drain()` in the tick
-driver's `beforePump` (§16). The inbox's own single-consumer
-guard holds; the session adds no thread check.
+order and returns how many records it handled, on the owner thread (§1, §16). The inbox's own single-consumer guard holds;
+the session adds no thread check.
 
 **The delivery hook.** When the host has `noteDelivered(SimLane, double recvSeconds)` (`SimNetDeliveryHook`), the session
 calls it once for every `Message` record it drains, with the record's lane and og-net's receive time, before it decodes the
 message. It is called for every message the inbox handed over, whatever the session then does with it: a malformed set, a
 refused bundle and a message on the wrong lane are all delivered messages. It is never called for a `Connected` or
-`Disconnected` record. A host without the member compiles unchanged and is never called; P5's Unreal host is to use it for
-the sim lanes' rows of its `[OGNet.Window]` line.
+`Disconnected` record. A host without the member compiles unchanged and is never called.
 
 - **One order, three rings.** The transport gives Control and the connection events rings of their own in the inbox
   (`SimNetTransport-rationale.md` §10, §11). The inbox hands records out in the order they were pushed across all three
@@ -155,9 +153,8 @@ does. The decision-equivalence test drives that sink through the coordinator dir
 - **`deliverRemoteInput(id, captureTick, input)`** and the **release callback** both deliver to the channel of that sim id
   (`deliverDelayedRemoteInput`). The release callback returns false when there is no such channel, and the coordinator then
   drops the claim, as it does for a gone engine component today.
-- **`relayRemoteInput(id, captureTick, dA, input)`** stages into the character's `RelayRingStager`. Nothing is sent here. A
-  frame-locked session's stagers flush at `flushFrame` (§9); an immediate session flushes the bundle's character's stager as
-  soon as the coordinator returns (§16).
+- **`relayRemoteInput(id, captureTick, dA, input)`** stages into the character's `RelayRingStager`. Nothing is sent here. The
+  session flushes the bundle's character's stager as soon as the coordinator returns (§9 step 1, §16).
 - **`sendConnectionTierToOwningClient(id, tier)`** makes the session the coordinator's `ConnectionTierSink`. It looks up the
   character's owner in the roster and calls `publishTier(owner, tier)` (§8). An authority-local character has no owner, and
   nothing is sent.
@@ -173,10 +170,12 @@ it the lines are as before (og-input-latency P5-37).
 
 ## §7 The reap
 
-`afterBatch(serverTick)` is `reapConnections(serverTick)`, once per physics frame, with the frame's next tick. The coordinator
-documents why it is per frame and not per step: the reap is the only feed of the receipt gate's server tick, and its dwell
-gate is `serverTick % tierMinDwellTicks == 0`. At a boundary it drops every claim whose wire's handle is dead. An immediate
-session reaps in `afterInlineBatch` (§16), after that batch's corrections and clock.
+`afterInlineBatch(serverTick)` reaps: `reapConnections(serverTick)`, once per batch of steps, with the batch's next tick, after
+that batch's corrections and clock (§16). The coordinator documents why it is per frame and not per step: the reap is the only
+feed of the receipt gate's server tick, and its dwell gate is `serverTick % tierMinDwellTicks == 0`. At a boundary it drops
+every claim whose wire's handle is dead. Because the reap arms the receipt gate, a host's first `afterInlineBatch` must carry
+a real tick: a capture judged against tick 0 is outside the gate's domain and dropped. Until og-session-runtime task 15 the reap was a member of its own, which
+the frame-locked host called after its steps; its body moved into `afterInlineBatch`, the tick driver's hook name.
 
 ## §8 The tier
 
@@ -191,29 +190,29 @@ session reaps in `afterInlineBatch` (§16), after that batch's corrections and c
   "is at tier 0 on the client"; the coordinator's dedup carried the same premise and changed with it.
 - A disconnect forgets the connection's last tier, so a reconnect under the same id starts again from "never sent".
 
-## §9 `flushFrame()`
+## §9 The sends
 
-The frame-locked session's frame point; an immediate session refuses it with an `OG_CHECK` and sends from the drain and from
-`afterInlineBatch` instead (§16). In this order, each step's sends held by the transport in call order (`immediate=false`):
+Each send leaves the transport at once (`SimNetTransport-rationale.md` §7), so the order below is the order on the wire.
 
-1. **Relays.** Each character's stager flushes with `relayResendEntries`, clamped by `latencyKnobs::clampRelayResendEntries` and
-   read from the borrowed `TimeConfig` on every call, so a live change takes effect at the next frame. A flush that publishes
+1. **Relays, at receipt** (§16). Inside the drain, the accepted bundle's character's stager flushes with `relayResendEntries`,
+   clamped by `latencyKnobs::clampRelayResendEntries` and read from the borrowed `TimeConfig` on every call, so a live change
+   takes effect at the next bundle. A flush that publishes
    nothing sends nothing: the published ring is then byte-identical to the last one, as an unchanged replicated property is
    not sent again. A published ring goes as a `RelayRing` to every connection but the character's owner (`relay(owner, …)`;
    G-04); an authority-local character's owner is `kInvalidSimConnection`, which skips no one. Then one Handed stamp per entry
    of the published ring whose capture tick is not `kNoInputCaptureTick`, as the UE path's ring-flushed callback does.
-2. **Corrections.** Every channel whose correction was written since the last flush (`takeDirty`) is a candidate, in sim-id
+2. **Corrections**, in `afterInlineBatch`. Every channel whose correction was written since the last batch (`takeDirty`) is a
+   candidate, in sim-id
    order. The buffer is read through the const accessor (G-05). For each attached connection the policy selects from the
    candidates (§10), and each selected one goes as a `CorrectionState` (`corrVersion` = `correctionStateBuffer::kWireFormatVersion`,
    the buffer's used prefix) by `sendState`. So a correction goes to every attached connection once per write.
-3. **The clock**, as a `ClockPublish` to every connection (`broadcastClock`), when the tick last published differs from the
-   tick last sent. Publishing the same tick twice sends it once; two publishes between flushes send the last.
-4. **The transport's `flushFrame()`**, which releases this frame's held sends in call order. It is last, or the steps above
-   would leave a frame late.
-5. **The window line** (§12).
+3. **The clock**, in `afterInlineBatch`, as a `ClockPublish` to every connection (`broadcastClock`), when the tick last
+   published differs from the tick last sent. Publishing the same tick twice sends it once; two publishes between batches send
+   the last.
+4. **The reap** (§7) and **the window line** (§12), at the end of `afterInlineBatch`.
 
-**Roster messages, the floor and the tier are not part of the flush.** They are sent when they happen (attach, `addCharacter`,
-`removeCharacter`, `publishFloor`, `publishTier`); the transport holds them with the frame's other sends, in call order.
+**Roster messages, the floor and the tier are not part of a batch's sends.** They are sent when they happen (attach,
+`addCharacter`, `removeCharacter`, `publishFloor`, `publishTier`), in call order with the session's other sends.
 
 **Broadcasts can precede a Snapshot.** Relays and the clock go by `broadcastExcept`, to every connection og-net has. A
 connection whose `Connected` is still in the inbox gets them before the session attaches it and sends its Snapshot. A client
@@ -265,14 +264,14 @@ connections only.
   stager and the per-receiver correction ticks are erased.
 - The ordering duties the roster leaves to the session (`SimNetRoster-rationale.md` §6) hold: a connection gets its Snapshot
   when it attaches, before any Add or Remove to it; every attached connection gets every Add and Remove when it happens, so in
-  revision order; `removeFor` is in the same statement as `remove`. The transport's hold keeps that order on the wire.
+  revision order; `removeFor` is in the same statement as `remove`. The transport sends each at once, in call order, so the
+  wire keeps that order (`SimNetTransport-rationale.md` §7).
 - **The floor.** `publishFloor(f)` sends `RelayFloor` to every attached connection when the value changes, the first value
   included (0 too). A connection that attaches later gets the current value right after its Snapshot.
 
 ## §12 `[SimNet.Window]`
 
-Every 10 s of the host's `nowSeconds`, checked at the end of `flushFrame` (frame-locked) or of `afterInlineBatch` (immediate,
-§16):
+Every 10 s of the host's `nowSeconds`, checked at the end of `afterInlineBatch` (§16):
 
 `[Warning][SimNet.Window] role=server drains= msgs= maxDepth= drops= tooLarge= badDecode= refusedNotOwner= unknownSim= statesSent= relaysSent= overBudget= quotaRefused= controlHighWater= quotaDisconnects= eventsRefused= eventHighWater=`
 
@@ -303,7 +302,9 @@ standalone build with `NDEBUG`), and keep those builds from writing or reading o
 
 ## §14 Tests
 
-`SimNetServerTest.cpp` (`[NetTransport][SimNetServer]`), with a two-simulatable mock game and a fake host:
+`SimNetServerTest.cpp` (`[NetTransport][SimNetServer]`), with a two-simulatable mock game and a fake host, drives each
+server through `drain()` then `afterInlineBatch(tick)`; a case whose server reaps against a receipt gate sets its tick before
+its first pump (§7):
 
 - **Decision equivalence:** twelve frames of scripted arrivals over two connections and three characters (redundant slots,
   so duplicates; one out-of-domain capture; one late capture; one truncated set; then a slot-8 bundle through the coordinator)
@@ -333,23 +334,25 @@ ring's high-water mark (the refusal counted in its own window only, the high-wat
 `SimNetLifecycleQueueTest.cpp` (`[Lifecycle]`) covers the lifecycle queue (§15) with the client's (`SimNetClient-rationale.md`
 §15).
 
-`SimNetAuthorityLoopTest.cpp` covers immediate mode (§16), with og-simulation's tick-driver fakes (`TickDriverFakes.h`), a
-`FreeRunning` driver whose game binds the three hooks and forwards `idleUntil` to `SimNetIdle`, and two clients over
-`VirtualNetwork` in virtual time (a wrapper backend advances the one clock when og-net waits, and runs the clients' frames
-when it gets to them). Against the same scene frame-locked on an Inline driver, with og-net serviced between frames as its own
-thread would (`[NetTransport]`):
+`SimNetAuthorityLoopTest.cpp` covers the server on the authority loop (§16), with og-simulation's tick-driver fakes
+(`TickDriverFakes.h`), a `FreeRunning` driver whose game binds the three hooks and forwards `idleUntil` to `SimNetIdle`, and two
+clients over `VirtualNetwork` in virtual time (a wrapper backend advances the one clock when og-net waits, and runs the clients'
+frames when it gets to them) (`[NetTransport]`):
 
-- a SimInput that arrives mid-idle is relayed in the same wake: the Handed stamp equals the ServerReceived time for all 444
-  relayed captures, against 16.267 ms (one frame less the arrival's 0.4 ms phase) frame-locked; this is the seen-failing arm
-  of `SimNetIdle`'s mapping;
-- the authority consumes the same inputs per tick, and the coordinator logs the same decisions, as the frame-locked arm;
+- a SimInput that arrives mid-idle is relayed in the same wake: the Handed stamp equals the ServerReceived time for every
+  relayed capture (at least 444: 148 steps of 3 characters), and none is left unrelayed; this is the seen-failing arm of
+  `SimNetIdle`'s mapping;
+- the authority consumes one move per character per step, more than half of them non-zero, logs its coordinator decisions and
+  refuses no arrival;
 - a 200 ms stall of the frame thread (its `endFrame` passes stop) changes nothing on the runner: the same inputs, decisions and
-  stamps, one step per wake, every capture relayed at once; the frame-locked arm with a 200 ms game-thread stall steps 13 ticks
-  in one frame and never relays 15 captures (the stage's eight-entry cap);
-- an immediate session holds nothing, and sends corrections, the clock and relays.
+  stamps, one step per wake, every capture relayed at once;
+- the server sends corrections, the clock and relays at once.
 
-A `[Lifecycle]` case checks the refused-registration line (§15). Three hidden `[.][OGSimDeath]` cases fire the mode
-`OG_CHECK`s (§16).
+Until og-session-runtime task 15 each of the first three also ran the same scene frame-locked on an Inline driver and compared
+(the frame-locked relay waited a frame, about 16.3 ms; with a 200 ms game-thread stall it stepped 13 ticks in one frame and never
+relayed 15 captures); those arms went with the frame-locked server, and the first two cases were renamed for what they still
+check. A `[Lifecycle]` case checks the refused-registration line (§15). One hidden `[.][OGSimDeath]` case fires `SimNetIdle`'s
+check on a service result with no wake reason; the three that fired the mode `OG_CHECK`s went with those checks in task 15.
 
 ## §15 Registration through the lifecycle queue (Ph4)
 
@@ -366,7 +369,7 @@ The server session has the client's lifecycle queue (`SimNetClient-rationale.md`
   here also `lifecycleStats().registersRefused`, a second line,
   `[Warning][SimNet.Lifecycle] role=server simId=<id> refused=SimIdLive|SlotLive|Full|DuplicateOwnerSlot` with the reason the
   add gave, like the client's refused register, and `applied(nullptr)`), then `registerSimulatable`'s authority overload with
-  the new channel as both owners, as the Unreal host registers a server character today. A `static_assert` checks that the
+  the new channel as both owners. A `static_assert` checks that the
   game's `SimulatableOwnerTraits` names `Channel<SimT>` as both owners.
 - **Unregister:** `unregisterSimulatable` with the channel as both owners (unpublish first), then `applied(channel)`, then
   `removeCharacter(simId, reason)`, which destroys the channel. An unregister of a sim id the queue has not registered is
@@ -375,45 +378,38 @@ The server session has the client's lifecycle queue (`SimNetClient-rationale.md`
   session never destroys a channel NetSync holds.
 - **The host hears of it before the facade.** Both unregister paths go through `unregisterLifecycle`, which calls the host's
   optional `onLifecycleUnregistering(simId)` before `unregisterSimulatable`, while the character is still in storage (G-14;
-  `SimNetHost-rationale.md` §4a). On the authority loop every server character is queue-registered, so this is where the
-  Unreal host notifies its systems (og-input-latency task P5-19).
-- **Where it runs.** The apply runs where the server drains: on the game thread frame-locked (`dispatchFrame`), the thread a
-  direct registration runs on, and in immediate mode in the tick driver's `beforePump` (§16), on the authority loop's runner
-  when the loop is on, the thread that then also sends. A host that does not enqueue registers as before.
+  `SimNetHost-rationale.md` §4a), so a host that registers every character through the queue hears of every unregister
+  there.
+- **Where it runs.** The apply runs where the server drains, on the owner thread, which then also sends (§16). A host that
+  does not enqueue (the tests) calls `addCharacter` and `removeCharacter` itself, on the drain's thread.
 - `lifecycleRegistered(simId)` and `lifecycleStats()` (`SimNetLifecycleStats`) belong to the drain's owner. The tests are in
   `SimNetLifecycleQueueTest.cpp` (`SimNetClient-rationale.md` §15).
 
-## §16 Immediate mode: the server on the authority loop (Ph4)
+## §16 The server on the authority loop (Ph4)
 
-- **The switch.** The session takes its mode from its transport: `SimNetConfig::immediate` when the transport has `config()`, as
-  `SimNetTransport` has, and frame-locked otherwise (a test's recording transport without it). `immediate()` reports it. It is
-  fixed at construction, as the transport's is, and the client reads its own mode the same way (`SimNetClient-rationale.md`
-  §16). The switch is independent of the authority loop (`og.Sim.AuthorityLoop`): with the loop off, the same hooks run on the
-  game thread from the Inline driver's frame, Ph4's attribution arm.
-- **Three hooks**, which a host binds to the tick driver's game hooks (on the Unreal server, og-input-latency P5-19):
-  - **`beforePump` -> `drain()`**: the lifecycle queue, then the inbox (§3, §15). The driver calls `beforePump` on every wake of
-    the authority loop, activity wakes included, so a datagram that wakes the runner is drained in that wake.
+- **One mode since og-session-runtime task 15.** From Ph4 until then the session took a mode from its transport's config flag:
+  sending at once (this section) or frame-locked, drained and flushed at the engine's frame points, with an `OG_CHECK` refusing
+  each mode's calls in the other. The Unreal server stopped selecting the frame-locked mode in task 14, and task 15 deleted it
+  with the flag; the client lost its frame-locked mode in task 13 (`SimNetClient-rationale.md` §16).
+- **Three calls**, all on the owner thread:
+  - **`drain()`**: the lifecycle queue, then the inbox (§3, §15). A host that drains on every wake of its loop, activity
+    wakes included, drains a datagram in the wake it woke.
   - **Relay at receipt.** Inside the drain, once `receiveInputBundle` has returned for a bundle the roster accepted, that
     character's stager flushes with `relayResendEntries` read from the borrowed `TimeConfig` (clamped as in §9) and its ring goes
     to every connection but the owner at once, with its Handed stamps: §9's step 1 for that one character (`flushRelays(simId)`).
     A bundle the roster refused, or one that does not decode, flushes nothing.
-  - **`afterInlineBatch(serverTick)`**: the corrections (§9 step 2), then the clock (step 3), then the reap (§7), then the window
-    line (§12). The host writes the batch's corrections (NetSync's `sendCorrectionAll`) and publishes the clock before it calls
-    it, so both leave after the batch that made them.
-- **Every send leaves when it is made.** An immediate transport hands each send to the endpoint at once
-  (`SimNetTransport-rationale.md` §7), so the roster messages, the floor and the tier also go when they happen, nothing is held,
-  and the transport's `flushFrame()` is never called.
-- **Refused calls**, each an `OG_CHECK`: `dispatchFrame()` and `flushFrame()` on an immediate session, and `afterInlineBatch` on a
-  frame-locked one. A frame flush would send from the frame's thread, while on the authority loop the server's endpoint is
-  serviced by the runner alone (mode B; `SimNetIdle-rationale.md` §3).
-- **One thread.** With the loop on, the drain, the sends, the reap and the window run on the runner, and og-net services the
+  - **`afterInlineBatch(serverTick)`**, after each batch of steps: the corrections (§9 step 2), then the clock (step 3), then
+    the reap (§7), then the window line (§12). The host writes the batch's corrections (NetSync's `sendCorrectionAll`) and
+    publishes the clock before it calls it, so both leave after the batch that made them.
+- **Every send leaves when it is made.** The transport hands each send to the endpoint at once
+  (`SimNetTransport-rationale.md` §7), so the roster messages, the floor and the tier also go when they happen. The server has
+  no flush: a send from another thread would race the owner thread, which alone services the server's endpoint in mode B
+  (`SimNetIdle-rationale.md` §3).
+- **One thread.** The drain, the sends, the reap and the window run on the owner thread, and in mode B og-net services the
   endpoint on that thread too, through `SimNetIdle`. og-net queues a send made on its servicing thread and flushes it at the
-  start of its next pass, so a relay sent in a drain leaves in the same wake, before the runner idles.
-- **What changes on the wire.** A ring is published per accepted bundle rather than once per frame per character, so a relayed
-  capture leaves when its bundle is drained, not at the next frame flush. The stager's counters and its `[RelayFlush] window`
-  line count flushes, so they then count bundles, not frames. And a burst no longer collects in one flush past the stage's
-  eight entries, where the oldest are dropped (`stageOverflowDrops`).
-- **Frame-locked mode is unchanged** (EQUIV with `immediate=false`): `dispatchFrame` and `flushFrame` run as in §3 and §9, and
-  the drain's relay branch is not taken.
-- **The server's `[SimNet.Lifecycle]` line** (§15) is the one new line in either mode; it needs a host that registers through
-  the lifecycle queue, and none does yet.
+  start of its next pass, so a relay sent in a drain leaves in the same wake, before the owner idles.
+- **The stager counts bundles.** A ring is published when its bundle is drained, so the stager's counters and its
+  `[RelayFlush] window` line count bundles, and a burst does not collect in one flush past the stage's eight entries, where
+  the oldest are dropped (`stageOverflowDrops`). Until og-session-runtime task 15 a frame-locked server published a ring once
+  per frame per character, at the frame flush, and counted frames.
+- **The server's `[SimNet.Lifecycle]` line** (§15) is written when a queued registration is refused.

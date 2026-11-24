@@ -1,14 +1,12 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
-<!-- lint-external-ref: hasServerTierWiring() -- deleted by og-session-runtime task 7b (no caller after task 3 deleted the brawler's Chaos host); kept in the history -->
 <!-- lint-external-ref: applyTierTransitionStall -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: hadAnyTier -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: shouldStallForTierTransition -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: OnRep -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: onRelayDelayFloorReplayed -- deleted by og-input-latency task P5-9 (the relay actors, their listeners and the session's two replay members); kept in the history -->
-<!-- lint-external-ref: OutBytes -- Unreal Engine connection stat, outside every scan root (G-19) -->
-<!-- lint-external-ref: OutPackets -- Unreal Engine connection stat, outside every scan root (G-19) -->
+<!-- lint-external-ref: OutBytes -- Unreal Engine connection stat, outside every scan root (retired G-19) -->
+<!-- lint-external-ref: OutPackets -- Unreal Engine connection stat, outside every scan root (retired G-19) -->
 <!-- lint-external-ref: ResimCooldownTicks -- ABSENCE FENCE (G-16): the ini key that was built and removed on a ruling. It must NOT resolve -->
-<!-- lint-external-ref: ChaosTickBackendUImpl.cpp -- deleted by og-session-runtime task 3 (the brawler's Chaos backend arm: the Chaos host, the Chaos binding and their four docs); kept in the history -->
 # `UESimulationSession.h` — guards
 
 Prohibitions with a tagged site in `Plugins/OGSimulation/Source/OGSimulationUnreal/UESimulationSession.h`. Ids are opaque,
@@ -20,7 +18,7 @@ task P5-32 also the hitch's delay cvar and its marker line; rationale §10), sha
 
 The member order is checked by the compiler, not here: `compositionContractsHold()` asserts the construction chain and
 the destruction-order rows (since task 25 also the tier consumer's, and since og-input-latency task P5-7 og-sim-net's
-server's, below the manager, its host and the detached lanes), and the constructor asserts `compositionContractsHold()`
+server's, below the manager and its host; the session's own detached lanes until og-session-runtime task 14), and the constructor asserts `compositionContractsHold()`
 (rationale §2). So is the shape of `getTimeConfigPtr` (a pointer, rationale §8), so is the owner type, og-sim-net's one
 channel for both roles (since P5-7; the session's being both reception sinks before, rationale §16.7), so is the order of the
 client's og-net bind after the manager and the tier consumer (a `checkf` in `beginClientSimNet` since P5-7, which replaced
@@ -250,7 +248,8 @@ og-ue-simulationcomponentandmanagersplit task 25, with the statement it marks.*
 
 ## G-10 — the destructor touches no `UObject`: it clears the static instance table and unbinds from the og-net lanes, nothing else
 
-**Tag site:** `UESimulationSession.h`, the first statement of `~UESimulationSession` (the `s_instances[0]` test).
+**Tag site:** `UESimulationSession.h`, the first statement of `~UESimulationSession` (the `unregisterInstance()` call; the
+`s_instances[0]` test until og-session-runtime task 16b).
 
 **The prohibition.** ⛔ Do not call `GetWorld()` on the owner, or any other method that reaches the owner actor's outer,
 its world or another `UObject`, from the destructor. Unbinding from engine objects belongs in `endPlay`, which the owner's
@@ -297,15 +296,14 @@ through another transport function (or the one accessor the table names).
 
 **The allow-list, built from the moved code (og-ue-simulationcomponentandmanagersplit tasks 25 and 26b).** "Transport
 state" is the transport's own members (`s_instances`, `m_replicatedTierConsumer`, `m_lastPublishedEffectiveInputDelayTicks`,
-`m_onTimingInfoReceivedCallback`, and since task 26b the two frame probes `m_frameHealthProbe` and `m_connectionBudgetProbe`;
-the timing relay pointer until og-input-latency task P5-7), which M4 moves with the functions.
+`m_onTimingInfoReceivedCallback`, and since task 26b the frame probe `m_frameHealthProbe`; PROBE 6's until og-session-runtime
+task 14, the timing relay pointer until og-input-latency task P5-7), which M4 moves with the functions.
 
 | function | may reach |
 |---|---|
-| `instanceFor`, `~UESimulationSession` | transport state `s_instances` |
+| `instanceFor`, `~UESimulationSession` | transport state `s_instances`; since og-session-runtime task 16b also each registered session's `m_registeredWorld` and `m_registeredAsAuthority` (`instanceFor`) and `unregisterInstance` (the destructor), which reaches `s_instances` and `s_startedSessions` |
 | `setOnTimingInfoReceivedCallback` | transport state `m_onTimingInfoReceivedCallback` |
 | `onTimingInfoReceived` | transport state `m_onTimingInfoReceivedCallback`; `m_manager`: `has_value`, `editNetworkEstimator`; **exempt (Q-I):** `m_latencyBudgetDiagnostics.noteWireSample` |
-| `publishServerClock_GameThread` | `m_manager`: `has_value`, `runsPrediction`; the accessor `getServerClock` (itself checked: `m_manager`: `getServerClock`); og-sim-net's server (`m_simNetServer`: `has_value`, `publishClock`) since og-input-latency task P5-7 |
 | `publishClientEffectiveInputDelayTicks` / `getClientEffectiveInputDelayTicks` | `m_inputResolution`: `setClientEffectiveInputDelayTicks` / `getClientEffectiveInputDelayTicks` (the atomic) |
 | `getReplicatedTierConsumer`, `applyReplicatedConnectionTier` | transport state `m_replicatedTierConsumer` |
 | `onConnectionTierReceived` | transport calls `applyReplicatedConnectionTier`, `payInputDelayTransition`; `m_manager`: `has_value`, `getTimeConfig` (the floor its line prints; og-input-latency P6-2) |
@@ -320,22 +318,21 @@ the timing relay pointer until og-input-latency task P5-7), which M4 moves with 
 | `applySessionKnobs` (task 26b) | `m_manager`: `getTimeConfig`, `setRelayDelayFloorTicks`, `setCorrectionRotationK` (the two clamped setters); transport call `logRelayDelayFloorAdvisory`; og-sim-net's server (`m_simNetServer`: `has_value`, `publishFloor`) since og-input-latency task P5-7, where the timing relay's lookup stood |
 | `applyResimTriggerPolicy` (task 26b) | `m_manager`: `getTimeConfig`, and the resim-policy sink `setResimTriggerPolicy` |
 | `applyLatencyKnobs` (og-input-latency task 4) | `m_manager`: `getTimeConfig`, `setRedundancyFrames`, `setRelayResendEntries` (two more clamped setters) |
-| `onFrameStepsDue_Step` (task 26b) | transport state `m_frameHealthProbe`, `m_connectionBudgetProbe`, and its own one-shot latch for the `[PacketBudget]` line (a function-local static); `m_manager`: `has_value`, `runsPrediction`; the server's presence test, `m_simNetServer.has_value` (`⛔G-18`; the coordinator's presence until og-input-latency task P5-7); the owner as an `AActor`: `m_owner.GetWorld` |
+| `onFrameStepsDue_Step` (task 26b) | transport state `m_frameHealthProbe` and the runner's wake count; `m_manager`: `has_value`, `runsPrediction` (until og-session-runtime task 14 also PROBE 6's state and its one-shot `[PacketBudget]` latch, the server's presence test and the owner as an `AActor`, for the in-frame server) |
 
 **The exemption (ruled Q-I, 2026-10-20).** The wire sample in `onTimingInfoReceived` is the session's own call to its typed
 latency member; it stays typed under M4 (its binding would take it), so the ruling exempts it instead of widening §9's list.
 The ruling's other exemption, the relay host's character cast in the input-relay listener member, went with that member
 (og-input-latency task P5-7).
 
-**One reach §9 does not name.** Since task 26b PROBE 6 reads the owner's world for its net driver (`m_owner.GetWorld()`; the
-timing relay's lookup iterated it the same way until P5-7). That is the owner as an `AActor`, a `UObject` reach, not a game
-type; M4's binding would need the world or the actor.
+**One reach §9 did not name.** From task 26b until og-session-runtime task 14 PROBE 6 read the owner's world for its net
+driver (the timing relay's lookup iterated it the same way until P5-7): the owner as an `AActor`, a `UObject` reach, not a game
+type. It went with PROBE 6.
 
-**The knobs and the frame probes (task 26b)** are on the seam: the three knob functions reach the manager only through its
-session controls (`getTimeConfig` and the two clamped setters) and the resim-policy sink, and the frame probes reach the
-manager's role (`has_value`, `runsPrediction`) and the coordinator's presence, nothing else of the coordinator. That
-presence test is the one reach into the input-reception state a seam function has, and §9 names it (PROBE 6's
-coordinator-presence test).
+**The knobs and the frame probe (task 26b)** are on the seam: the three knob functions reach the manager only through its
+session controls (`getTimeConfig` and the two clamped setters) and the resim-policy sink, and the frame probe reaches the
+manager's role (`has_value`, `runsPrediction`) only. Until og-session-runtime task 14 PROBE 6 also reached the coordinator's
+presence, the one reach into the input-reception state a seam function had (§9 named it).
 
 **A fourth knob function (og-input-latency task 4).** `applyLatencyKnobs` reaches the manager through `getTimeConfig` and
 two more clamped setters, `setRedundancyFrames` and `setRelayResendEntries`. They are the same kind of session control
@@ -343,17 +340,17 @@ as the first two (an integer clamped into one `TimeConfig` field), so "the clamp
 seam script's list predates them: run it with the row above added, or it does not check this function.
 
 **Exempt by design: the input reception and the og-net hookup.** `getReceptionCoordinator`,
-`getServerReceptionTick`, `releaseDelayedInputsForStep`, `afterAuthorityBatch` (the reap) and `forEachAuthorityCorrectionTick`
-(the walk for the latency member) are typed on the per-step release (task 26a): erasing the game's input type there would put
+`getServerReceptionTick`, `releaseDelayedInputsForStep` and `afterAuthorityBatch` (the reap) are typed on the per-step release
+(task 26a; the in-frame server's correction-tick walk for the latency member too, until og-session-runtime task 14): erasing the game's input type there would put
 an indirect call on the step path (manager design §9, step 5). Since og-input-latency task P5-7 they reach og-sim-net's server,
 which is typed on the game's composition, and the og-net hookup joins them: `findDriverSimNetLanes`, `beginServerSimNet`,
 `beginClientSimNet`, `logSimNetHostLine`, `onSimNetLanesStopping`, `detachFromSimNetLanes`, `clientBindStep`,
-`addSimNetCharacter`, `registeredChannelFor`, `forgetSimNetCharacter`, `onSimNetRegisteredRemoved` and `unregisterCharacter`,
-with their state (`m_detachedSimNetLanes`, `m_simNetLanes`, `m_simNetServerHost`, `m_simNetServer`,
-`m_registeredComponentsById`, `m_simChannelsById`, `m_authoritativeSlotsByActor`, `m_simUnregisteredIds`). og-sim-net is the
+`forgetSimNetCharacter` and `onSimNetRegisteredRemoved`, with their state (`m_simNetLanes`, `m_simNetServerHost`,
+`m_simNetServer`, `m_registeredComponentsById`, `m_authoritativeSlotsByActor`, `m_simUnregisteredIds`). og-sim-net is the
 typed transport M4 was to make type-free, so they stay in this class, are not on the list above, and the script does not check
-them. Of the functions above, `publishServerClock_GameThread` and `applySessionKnobs` reach the server (to publish), and
-`onFrameStepsDue_Step` its presence. Until P5-7 this list was the session's own coordinator, the delayed-input map and
+them. Of the functions above, `applySessionKnobs` reaches the server (to publish). Until og-session-runtime task 14 the in-frame
+server's clock publish reached it too, `onFrameStepsDue_Step` tested its presence, and the hookup also held the in-frame
+server's add and unregistration with their channel map and the session's detached lanes. Until P5-7 this list was the session's own coordinator, the delayed-input map and
 its registration, the two sinks with PROBE 5, the coordinator's emplace and the forget.
 
 **What breaks if the edit is made.** A typed reach in a transport function compiles and behaves; what breaks is M4. Each
@@ -370,36 +367,6 @@ session cannot carry a call past the check. Its seen-failing arms each fail it: 
 use in a tier helper, an `m_storage` read, a call to `getReceptionCoordinator()`), and task 26b's (a knob function calling
 a manager member outside its list, `(*this).getReceptionCoordinator()`, a reference and a pointer alias of the session, and
 an allowance the body stopped using). The script is the reviewer's tool, not a build step: nothing in the build runs it.
-
----
-
-## G-13 — `forgetSimNetCharacter` stays in the unregistration, after `unregisterSimulatable` and before the game's forget
-
-**Tag site:** `UESimulationSession.h`, directly above `forgetSimNetCharacter(id, isAuthority);` in `unregisterCharacter`
-(since og-input-latency task P5-7; until then above the delayed-input map's erase in the session's reception forget, which the
-unregistration called at this position).
-
-**The prohibition.** ⛔ The unregistration calls `forgetSimNetCharacter` here, once per id, after `unregisterSimulatable` and
-before `m_game.onUnregistered`. Do not drop the call, do not move it above `unregisterSimulatable`, and do not move it out of
-the unregistration: it erases the registered-component map, the channel map and the slot, then removes the server's
-character (og-sim-net's `removeCharacter`, which destroys the channel) or marks a client's binding unregistered.
-
-**What breaks if the edit is made.**
-* Moved above `unregisterSimulatable`: on the server `removeCharacter` destroys the channel the net-sync peer still holds as
-  both owners, and `unregisterSimulatable` then clears callbacks on a destroyed object, on the game thread.
-* Dropped, or moved out: the maps keep the id after the character left storage. The brawler's ring-out score push
-  (`BrawlerRosterUImpl::pushRingoutScores`, from the game's post-visualization hook) fails its fatal check that every
-  registered id still has a score entry (the unregistration's first statement, the executor's notify, removed it); the
-  latency member's correction-tick walk (`forEachAuthorityCorrectionTick`) reads a channel `removeCharacter` never destroyed,
-  so the server keeps relaying and correcting a character that left; and the client's roster ledger stays `registered`, so its
-  next Remove unregisters a second time.
-
-**What breaks if the tag moves.** Nothing mechanical checks the order: no test runs a component's teardown against a live
-session.
-
-*New in og-ue-simulationcomponentandmanagersplit task 26a (the map's erase, held until then by the statement order of the
-owner's unregistration alone). Re-sited and re-worded by og-input-latency task P5-7: the map's erase is part of
-`forgetSimNetCharacter`, and the reader that dereferenced the sibling (the session's relay sink) is gone with the sinks.*
 
 ---
 
@@ -552,65 +519,6 @@ owner's `BeginPlay`; the block's statements are `applyResimTriggerPolicy`'s body
 
 ---
 
-## G-18 — the frame function's coordinator test guards PROBE 6 only, never PROBE A
-
-**Tag site:** `UESimulationSession.h`, directly above `if (!m_simNetServer.has_value()) return;` in
-`onFrameStepsDue_Step`, between PROBE A and PROBE 6 (the test was the session's own coordinator's presence until
-og-input-latency task P5-7; og-sim-net's server holds the coordinator since).
-
-**The prohibition, as it stood in the source** (in the owner's `releaseDelayedInputsForStep`, before
-og-simulationscheduler-withjolt task 51):
-
-> ⛔ The coordinator early-return guards ONLY the drain, never PROBE A, which runs on both. §8
-
-**Rewritten and re-sited, id kept (task 51), in the brawler's file.** Task 51 split the owner's
-`releaseDelayedInputsForStep`: PROBE A, PROBE 6 and `[PacketBudget]` moved, in that order, into
-`onFrameStepsDue_GameThread`, and the drain kept the old name with a coordinator test of its own. The return this tag
-marks stands between PROBE A and PROBE 6. ⛔ Do not hoist it above PROBE A. PROBE 6 and `[PacketBudget]` below it are
-server-only and correctly behind it.
-
-**The consequence.** Hoisted to the top of the function, the return stops the frame-health probe on every client, because a
-pure client never has an og-sim-net server. The drain and the reap do not depend on it: `releaseDelayedInputsForStep` and the reap,
-`afterAuthorityBatch`, each test the coordinator themselves (the reap since og-input-latency task P5-5; until then the
-tick-driver binding's `afterInlineBatch` reaped only through a non-null `getReceptionCoordinator()`). The former
-self-scheduled host, the brawler's Chaos host, tested it before its drain and reap (through `hasServerTierWiring()` since
-P5-5) until og-session-runtime task 3 deleted it.
-
-*R0, task 26b:* verified against the session (`releaseDelayedInputsForStep`'s first statement is its own test) and the
-brawler's two hosts (`BrawlerTickDriverGameUImpl.h`, `ChaosTickBackendUImpl.cpp`).
-
-*R0, og-input-latency task P5-5:* re-verified: `afterAuthorityBatch`'s one statement is the coordinator test with the reap
-under it; `afterInlineBatch` calls it, and `InjectInputs_External` calls the drain and it behind `hasServerTierWiring()`.
-
-*R0, og-input-latency task P5-7:* re-verified on og-sim-net's server: `releaseDelayedInputsForStep` and `afterAuthorityBatch`
-each test `m_simNetServer` first, and `hasServerTierWiring()` is its presence.
-
-*Moved from `OGBrawlerSimulationManager-guards.md` G-70 (the brawler's; re-sited on the session's coordinator by task 26a) by
-og-ue-simulationcomponentandmanagersplit task 26b, with the test it marks.*
-
----
-
-## G-19 — the send-budget probe feeds the engine's cumulative counters, not `OutBytes` / `OutPackets`
-
-**Tag site:** `UESimulationSession.h`, directly above the `m_connectionBudgetProbe.noteSample(` call in
-`onFrameStepsDue_Step`.
-
-**The prohibition, as it stood in the source:**
-
-> ⛔ CUMULATIVE COUNTERS, NOT `OutBytes`/`OutPackets`: the engine zeroes those mid-window.
-
-**The consequence.** The per-period accumulators reset on the engine's own schedule, so differencing them across a probe
-window silently loses whatever was reset in the middle.
-
-*R0, task 26b:* verified: the call passes `OutTotalBytes`, `OutTotalPackets` and `OutTotalPacketsLost`, and the probe's
-own declaration states the same rule (og-simulation's `RelayWritePathProbe.h`, `ConnectionBudgetProbe::noteSample`).
-
-*Moved from `OGBrawlerSimulationManager-guards.md` G-72 (the brawler's, its task 12 conversion; the call moved into
-`onFrameStepsDue_GameThread` by og-simulationscheduler-withjolt task 51) by og-ue-simulationcomponentandmanagersplit task
-26b, with the call it marks.*
-
----
-
 ## G-20 — `m_physicsBackend.onEndPlayBegin()` stays the first statement of `endPlay`: nothing moves above it
 
 **Tag site:** `UESimulationSession.h`, directly above `m_physicsBackend.onEndPlayBegin();`, the first statement of `endPlay`.
@@ -645,6 +553,16 @@ every teardown, present or added later, after the wait.
 *R0, og-input-latency task P5-7:* re-checked: the og-net unbind and og-sim-net's server's reset (an authority object; a client
 has none) follow the call, and the tier consumer is fed on the game thread by the og-net client host (the relay listeners
 until P5-7).
+
+*R0, og-session-runtime task 11:* the no-session return (`UESimulationSession-rationale.md` §23) follows the call, which is
+safe with nothing started: the frame host's `unregisterTickFunctions` returns on a null owner, no runner exists to join,
+and the tick backend's `stop` has no driver.
+
+*R0, og-session-runtime task 16:* the task-27a correction above ("an authority steps inline, on the game thread") and the
+P5-7 one (the tier consumer fed on the game thread) describe retired modes. Since og-session-runtime task 14 an authority
+steps on its runner, which `onEndPlayBegin` joins (`stopAuthorityLoop_GameThread`); since task 12 a client's tier consumer is
+fed by its drain on the step's thread (the rationale's §24). The rule is unchanged: both threads have stopped when the call
+returns.
 
 *Moved from `OGBrawlerSimulationManager-guards.md` G-85 (og-simulationscheduler-withjolt task 83, rework 1; the half of the
 old G-80 that is typed in the owner's teardown) by og-ue-simulationcomponentandmanagersplit task 27a, with the call it
@@ -796,69 +714,6 @@ call, which moved here with the start-up; G-17 keeps the body's three prohibitio
 
 ---
 
-## G-25 — the systems executor is notified only once the character is in storage, and before `Ready`
-
-**Tag site:** `UESimulationSession.h`, directly above `m_manager->notifyCharacterRegistered(id);` in `tryRegister`, after
-`registerSimulatable` and the game's `afterRegistered` hook, before the backend's `onRegistered_GameThread` and the
-`return TryRegisterStatus::Ready;`.
-
-**The prohibition, as it stood in the source:**
-
-> Notify the executor: the character is IN STORAGE, so
-> brawlerHitRouting::System::onCharacterRegistered can index it and read capsuleBodyId. §10
->
-> ⛔ The notify and the drop of the adapter's m_byRootBodyId insert land TOGETHER.
-
-**Why, in the session's terms.** The notify reaches every system of the systems executor whose role affinity fires on this
-peer, synchronously on the game thread, and hands each a storage view: a system's `onCharacterRegistered` may read the
-just-registered character out of storage. So the notify must follow `registerSimulatable`, which puts the character there,
-and must run before `tryRegister` returns `Ready`, after which the owner's component starts using the registration (since
-og-input-latency task P5-7 `tryRegister` writes the registered-component map itself, before the notify, and the ring-out push
-reads it from the next post-physics pass on; until P5-7 the authority's route entry was written by the binding's registration
-skeleton after `Ready`, its guard G-11 then).
-
-**The consequence.** A notify moved above `registerSimulatable` hands a system a character that is not in storage. A notify
-moved after the `return` (into the owner's loop) lets a reader of the route table reach a character whose systems have not
-indexed it. The brawler has both kinds of dependant: its hit-routing and hit-detection systems read the character's
-capsule body id out of storage in `onCharacterRegistered`, and its ring-out score system seeds the roster entry the score
-push's fatal check requires (`BrawlerSessionGameUImpl-rationale.md` §7, in OGBrawlerUnreal's docs).
-
-*R0, task 28:* verified: `SimulationManager::notifyCharacterRegistered` forwards to `SimulationSystemsExecutor::notifyCharacterRegistered`
-with the storage and the role, which calls each system whose `firesOnRole` holds with a `projectTo` view. The quoted second
-line is history: the adapter-owned root-body map is gone; the root-body map is the brawler's hit-routing system's own
-(`m_byRootBodyId`), written only by its `onCharacterRegistered`. The source's §10 said the notify ran on the authority path; it
-runs on both roles, unconditionally, and the role filter is per system (rationale §12.4).
-
-*Moved from `OGBrawlerSimulationManager-guards.md` G-69 (the brawler's task 12 conversion) by og-ue-simulationcomponentandmanagersplit task 28, with the call it
-marks: `tryRegister` became the session's own sequence.*
-
----
-
-## G-26 — unregistration notifies the executor before `unregisterSimulatable`, behind the `has<>` guard
-
-**Tag site:** `UESimulationSession.h`, directly above `if (m_storage.template has<Simulatable>(id))` at the top of
-`unregisterFromNewFramework` (after its hook check).
-
-**The prohibition, as it stood in the source:**
-
-> ⛔ Drop the routing entry BEFORE unregisterSimulatable destroys it, while still in storage. §10
->
-> ⛔ The has<> guard is preserved: an unregistered character's view.get<>(id) is unsafe.
-
-**The consequence.** A notify after the destroy lets a system's unregister hook reach a character that storage has already
-freed. Dropping the guard notifies for a character that never finished registering (its `tryRegister` returned `Pending`, or
-never ran), and a hook's `view.get<>(id)` then has nothing to return.
-
-*R0, task 28:* verified: the brawler's hit-routing system's `onCharacterUnregistered` takes `&view.get<SimulatableBrawler>(id)`
-and erases its root-body entries by that pointer, so it needs the character still in storage; the hit-detection and score
-systems erase by id. `unregisterSimulatable` is the call that removes the character from storage. The unregistration is
-called for any component ending play, including one whose registration never reached `Ready`.
-
-*Moved from `OGBrawlerSimulationManager-guards.md` G-73 (the brawler's task 12 conversion) by og-ue-simulationcomponentandmanagersplit task 28, with the test it
-marks: `unregisterFromNewFramework` became the session's own sequence.*
-
----
-
 ## G-27 — the latency-knob intake is not authority-gated
 
 **Tag site:** `UESimulationSession.h`, directly above `if (GConfig != nullptr)`, the latency-knob intake in
@@ -917,11 +772,14 @@ no predicate is installed.
 ## G-30 — the pawn's unregistration returns at once for an id already unregistered by a roster Remove or the lanes' stop
 
 **Tag site:** `UESimulationSession.h`, directly above `if (m_simUnregisteredIds.erase(id) != 0u) return;`, the first statement
-of `unregisterFromNewFramework` after its hook check (og-input-latency task P5-7).
+of `unregisterFromNewFramework` after its hook check (og-input-latency task P5-7) and its no-session return
+(og-session-runtime task 11, `UESimulationSession-rationale.md` §23).
 
-**The prohibition.** ⛔ Keep this early return, and keep it first. A client's roster Remove of a registered id
-(`onSimNetRegisteredRemoved`) and the og-net lanes' stop (`onSimNetLanesStopping`) unregister a character before its pawn ends
-play, and each records the id; the pawn's `EndPlay` then calls this function for the same id, and must do nothing. Do not
+**The prohibition.** ⛔ Keep this early return, and keep it first (after the no-session return, which runs only in a
+world that registered nothing). A client's roster Remove of a registered id
+(`onSimNetRegisteredRemoved` on the step, its host work finished and the id recorded by `collectLifecycleOutcomes_GameThread`
+since og-session-runtime task 12) and the og-net lanes' stop (`onSimNetLanesStopping`) unregister a character before its pawn
+ends play, and each records the id; the pawn's `EndPlay` then calls this function for the same id, and must do nothing. Do not
 replace the set by a test of the registered map (a pending, never-registered pawn is in neither map and must still run the
 whole sequence: its bodies exist), and do not erase the id anywhere else. `endPlay`'s clear of the whole set (G-21's list, since
 og-input-latency task P5-9) is not such an erase: the same `endPlay` clears this session's registry slot (`s_instances`), and a
@@ -950,7 +808,7 @@ the top of the drain that follows, and og-sim-net's `unregisterSimulatable` take
 
 **What breaks if the edit is made.**
 * Moved into `applied`, or after the drain: a system's `onCharacterUnregistered` reaches a character storage has already freed.
-  The brawler's hit routing takes `&view.get<SimulatableBrawler>(id)` there (`⛔G-26`'s R0), so it reads a destroyed object.
+  The brawler's hit routing takes `&view.get<SimulatableBrawler>(id)` there (the R0 of G-26, retired by og-session-runtime task 14), so it reads a destroyed object.
 * The notified-set test dropped: the executor is told of the removal of a character it was never told of (one whose register
   applied while an unregister was pending, `⛔G-32`). The brawler's systems erase by id or by pointer and tolerate it; the pair of
   notifies no longer matches.
@@ -1033,7 +891,7 @@ test, and do not move the notify after the hook returns.
 Remove, a queued unregister, `removeCharacter`; `SimNetHost-rationale.md` §4a), on the drain's thread. Without the `erase` test
 the executor hears of one unregistration twice (an immediate client's queued unregister already notified at its enqueue, G-31).
 Without the `has<>` test the brawler's `brawlerHitRouting::System::onCharacterUnregistered` takes `view.get<SimulatableBrawler>(id)`
-of a character that is not there (G-26's reason). Moved out of the hook, the notify runs after the facade destroyed the storage
+of a character that is not there (the reason of G-26, retired by og-session-runtime task 14). Moved out of the hook, the notify runs after the facade destroyed the storage
 entry, or not at all for a roster Remove: the hit-routing system then keeps a pointer to the destroyed brawler (og-input-latency
 task P5-17's F1).
 
@@ -1056,8 +914,8 @@ the record.
 Without the record, `onSimNetLifecycleUnregistering` (G-35) finds no notified id at the character's unregistration and never tells
 the executor, so the hit-routing system keeps a pointer into freed storage.
 
-**What breaks if the tag moves.** Nothing at compile time; with `og.Sim.AuthorityLoop=1` a leave or a hit after a leave reaches
-freed storage, or a join races a step.
+**What breaks if the tag moves.** Nothing at compile time; on the authority (every one runs the loop since og-session-runtime
+task 14) a leave or a hit after a leave reaches freed storage, or a join races a step.
 
 ---
 
@@ -1191,12 +1049,12 @@ its `[RelayProbe.Write]` lines are gone (rationale §16.3).
 
 ### G-29 — RETIRED by og-input-latency task P5-7 (2026-11-18): its subject was deleted
 
-**Was:** *"the correction-tick loop skips a component whose binding is not bound"*. Its tag sat above the skip in
-`forEachAuthorityCorrectionTick`.
+**Was:** *"the correction-tick loop skips a component whose binding is not bound"*. Its tag sat above the skip in the session's
+correction-tick walk (forEachAuthorityCorrectionTick, which og-session-runtime task 14 deleted with the in-frame server).
 
-**Why it retired.** The walk reads og-sim-net channels since P5-7, which have no binding to lose: a channel exists exactly while
-its character is registered (`m_simChannelsById` is written at `Ready` and erased by `forgetSimNetCharacter`, `⛔G-13`). The
-walk's remaining skips (a buffer shorter than its header, tick 0) are plain bounds.
+**Why it retired.** The walk read og-sim-net channels from P5-7, which have no binding to lose: a channel existed exactly while
+its character was registered (the session's channel map was written at `Ready` and erased by `forgetSimNetCharacter`, G-13,
+retired by task 14 too). The walk's remaining skips (a buffer shorter than its header, tick 0) were plain bounds.
 
 ### G-08 — RETIRED by og-input-latency P6-2 (2026-11-22): its subject was deleted
 
@@ -1208,3 +1066,50 @@ statement in `onConnectionTierReceived`. Its prohibition: read it before the app
 pays the recompute's change, either sign, the first arrival included (`⛔G-40`), and reads no prior-arrival flag. The fact it
 guarded, that a first arrival's `oldTier` of 0 is the wire's default and not a tier the client ran, still holds; the recompute
 answers it by reading the consumer's own state, the fallback before the arrival (rationale §9.4).
+
+### G-13 — RETIRED by og-session-runtime task 14 (2026-11-24): its site was deleted
+
+**Was:** *"`forgetSimNetCharacter` stays in the unregistration, after `unregisterSimulatable` and before the game's forget"*. Its
+tag sat above the forget call in the session's in-frame unregistration (unregisterCharacter).
+
+**Why it retired.** Task 14 deleted that unregistration with the in-frame server: every authority session runs the authority
+loop, whose unregistration goes through og-sim-net's queue on the runner (`requestRunnerUnregister_GameThread`, `⛔G-37`), and a
+client's teardown unregisters through its own queue before the lanes' stop reaches the session (the client arm of the call was
+already unreachable: a `checkf` in `onSimNetLanesStopping` states it). Neither path calls `unregisterSimulatable` on the game
+thread, so the order it guarded has no site. `forgetSimNetCharacter` is still called, by `unregisterCharacterHostOnly`, and its
+server arm (og-sim-net's remove) went too. **Successor:** none: removed by og-session-runtime task 14.
+
+### G-18 — RETIRED by og-session-runtime task 14 (2026-11-24): its site was deleted
+
+**Was:** *"the frame function's coordinator test guards PROBE 6 only, never PROBE A"*. Its tag sat above the og-sim-net server's
+presence test in `onFrameStepsDue_Step`, between PROBE A and PROBE 6.
+
+**Why it retired.** Task 14 deleted PROBE 6 and the `[PacketBudget]` line, which ran only on the in-frame server, and with them
+the test and the loop-on return under it: nothing in the function runs after PROBE A. **Successor:** none: removed by
+og-session-runtime task 14.
+
+### G-19 — RETIRED by og-session-runtime task 14 (2026-11-24): its site was deleted
+
+**Was:** *"the send-budget probe feeds the engine's cumulative counters, not `OutBytes` / `OutPackets`"*. Its tag sat above PROBE 6's
+sample call in `onFrameStepsDue_Step`.
+
+**Why it retired.** Task 14 deleted PROBE 6 (the session's call and og-simulation's probe, `RelayProbes-rationale.md` §12): it
+was fed only by the in-frame server, on the game thread. **Successor:** none: removed by og-session-runtime task 14.
+
+### G-25 — RETIRED by og-session-runtime task 14 (2026-11-24): its site was deleted
+
+**Was:** *"the systems executor is notified only once the character is in storage, and before `Ready`"*. Its tag sat above the
+notify in the authority's unqueued arm of `tryRegister`, the in-frame server's game-thread registration.
+
+**Why it retired.** Task 14 deleted that arm: an authority registers on its runner, a client through its queue. The rule is
+each remaining path's own guard. **Successors:** `⛔G-36` (the authority runner's applied hook) and `⛔G-32` (a client's applied
+hook).
+
+### G-26 — RETIRED by og-session-runtime task 14 (2026-11-24): its site was deleted
+
+**Was:** *"unregistration notifies the executor before `unregisterSimulatable`, behind the `has<>` guard"*. Its tag sat above
+the `has<>` test at the top of the in-frame unregistration.
+
+**Why it retired.** Task 14 deleted that unregistration with the in-frame server. The same order and the same guard are each
+remaining path's own. **Successors:** `⛔G-31` (a client's queued unregistration) and `⛔G-35` (og-sim-net's unregistering hook,
+which the authority runner's queue reaches).

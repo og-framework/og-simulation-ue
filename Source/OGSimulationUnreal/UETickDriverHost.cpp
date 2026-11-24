@@ -34,8 +34,9 @@ namespace
 	TAutoConsoleVariable<int32> CVarSimRunInline(
 		TEXT("og.Sim.RunInline"),
 		0,
-		TEXT("Jolt configuration only. 1 = a client steps inline on the game thread instead of on a worker task. ")
-		TEXT("Read once, at the simulation manager's BeginPlay. The authority always steps inline."),
+		TEXT("Retired: a client always steps on a worker task. Any value but 0 is refused at the simulation manager's ")
+		TEXT("BeginPlay ([SimHost.Refused] knob=og.Sim.RunInline): that world starts no simulation session, and a dedicated ")
+		TEXT("server exits with code 3."),
 		ECVF_Default);
 
 #if !UE_BUILD_SHIPPING
@@ -160,9 +161,9 @@ int32 UETickDriverHost::requestedMaxCatchUpSteps()
 	return CVarSimMaxCatchUpSteps.GetValueOnGameThread();
 }
 
-bool UETickDriverHost::runInline()
+int32 UETickDriverHost::retiredRunInlineValue()
 {
-	return CVarSimRunInline.GetValueOnGameThread() != 0;
+	return CVarSimRunInline.GetValueOnGameThread();
 }
 
 void UETickDriverHost::registerTickFunctions(UObject& owner, ULevel& level, void* target,
