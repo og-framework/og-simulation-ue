@@ -32,41 +32,9 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
-
-class FClockSampleLatch
-{
-public:
-	template <class SessionT>
-	void onSample(SessionT* session, const ogsimnet::SimNetClockSample& sample)
-	{
-		if (session == nullptr)
-		{
-			m_sample = sample;
-			return;
-		}
-		m_sample.reset();
-		session->onSimClockSample(sample);
-	}
-
-	template <class SessionT>
-	std::optional<ogsimnet::SimNetClockSample> onTimingInfo(SessionT* session, uint32_t authorityTick, double roundTripSeconds)
-	{
-		if (session == nullptr)
-			return std::nullopt;
-		const std::optional<ogsimnet::SimNetClockSample> held = std::exchange(m_sample, std::nullopt);
-		if (held.has_value())
-			session->onSimClockSample(*held);
-		session->onTimingInfoReceived(authorityTick, roundTripSeconds);
-		return held;
-	}
-
-	bool holdsSample() const { return m_sample.has_value(); }
-
-private:
-	std::optional<ogsimnet::SimNetClockSample> m_sample;
-};
 
 namespace ogsimnet
 {
@@ -168,6 +136,25 @@ static_assert(simNetWindowCounterCount(kSimNetClientWindowFormat) == 18u
 		&& kSimNetWindowLineBytes >= sizeof(kSimNetClientWindowFormat) + simNetWindowCounterCount(kSimNetClientWindowFormat) * 20u,
 	"kSimNetWindowLineBytes must hold the client's [SimNet.Window] line with each of its eighteen counters at 20 digits");
 
+inline constexpr char kClockSourceHeldTag[] = "[ClockSource.Held]";
+inline constexpr char kClockSourceHeldFormat[] =
+	"[ClockSource.Held] fed the SimClock sample held while no world session was bound, ahead of authority tick %u: "
+	"rttMs=%.3f heldMs=%.1f";
+inline constexpr size_t kClockSourceHeldLineBytes = 192u;
+
+static_assert(std::string_view(kClockSourceHeldFormat).starts_with(kClockSourceHeldTag),
+	"kClockSourceHeldFormat begins with kClockSourceHeldTag: a host routes the line to its category and level by that tag");
+static_assert(kClockSourceHeldLineBytes >= sizeof(kClockSourceHeldFormat) + 10u + 2u * 20u,
+	"kClockSourceHeldLineBytes must hold the [ClockSource.Held] line with a 10-digit tick and each reading at 20 characters "
+	"(any reading below 1e15 ms)");
+
+inline std::array<char, kClockSourceHeldLineBytes> formatClockSourceHeld(uint32_t authorityTick, double rttMs, double heldMs)
+{
+	std::array<char, kClockSourceHeldLineBytes> line{};
+	std::snprintf(line.data(), line.size(), kClockSourceHeldFormat, static_cast<unsigned>(authorityTick), rttMs, heldMs);
+	return line;
+}
+
 template <SimNetGame Game, SimNetClientHost HostT, SimNetClientTransport TransportT>
 class SimNetClient
 {
@@ -198,9 +185,9 @@ public:
 		"SimNetClient: the host's onLifecycleUnregistering member, if it has one, must be callable as "
 		"onLifecycleUnregistering(uint8_t simId) -> void; any other shape would never be called, and a queue-registered "
 		"character's removal would leave the game's systems pointing at freed storage");
-	static_assert(SimNetClockSampleHookWellFormed<HostT>,
+	static_assert(SimNetClockRttSampleHookWellFormed<HostT>,
 		"SimNetClient: the host's onClockSample member, if it has one, must be callable as onClockSample(const "
-		"SimNetClockSample&) -> void; any other shape would never be called, and the clock would stay on the engine ping");
+		"SimClockRttSample&) -> void; any other shape would never be called, and the clock would stay on the engine ping");
 
 	SimNetClient(HostT& host, TransportT& transport)
 		: m_host(host)
@@ -293,6 +280,7 @@ public:
 	bool wireMismatchLatched() const { return m_wireMismatch; }
 	std::optional<uint8_t> latchedFloor() const { return m_floor; }
 	std::optional<SimNetConnectionTierLatch> latchedTier() const { return m_tier; }
+	std::optional<SimClockRttSample> heldClockSample() const { return m_heldClockSample; }
 	size_t heldRingCount() const { return m_heldRings.size(); }
 	const CorrectionStaleFilter& staleFilter() const { return m_staleFilter; }
 	const NewestTickFilter& clockFilter() const { return m_clockFilter; }
@@ -422,7 +410,7 @@ private:
 			++m_stats.ignoredWhileRefused;
 			return;
 		}
-		if (const std::optional<SimNetClockSample> sample = simNetClock::readSample(record))
+		if (const std::optional<SimClockRttSample> sample = simNetClock::readSample(record))
 		{
 			onClockSample(*sample);
 			return;
@@ -607,13 +595,23 @@ private:
 		m_pendingClock = tick;
 	}
 
-	void onClockSample(const SimNetClockSample& sample)
+	void onClockSample(const SimClockRttSample& sample)
 	{
 		++m_stats.clockSamples;
-		if constexpr (SimNetClockSampleHook<HostT>)
+		if constexpr (SimNetClockRttSampleHook<HostT>)
+		{
+			if (!m_listenerBound)
+			{
+				m_heldClockSample = sample;
+				return;
+			}
+			m_heldClockSample.reset();
 			m_host.onClockSample(sample);
+		}
 		else
+		{
 			++m_stats.clockSamplesUnheard;
+		}
 	}
 
 	void deliverNewestClock()
@@ -622,7 +620,34 @@ private:
 		if (!tick)
 			return;
 		++m_stats.clocksDelivered;
-		m_host.onTimingInfo(*tick, m_host.serverRttSeconds());
+		const double roundTripSeconds = m_host.serverRttSeconds();
+		// ⛔G-14  docs/SimNetClient-guards.md
+		const std::optional<SimClockRttSample> held = feedHeldClockSample();
+		m_host.onTimingInfo(*tick, roundTripSeconds);
+		if (held)
+			logHeldClockSample(*tick, *held);
+	}
+
+	std::optional<SimClockRttSample> feedHeldClockSample()
+	{
+		if constexpr (SimNetClockRttSampleHook<HostT>)
+		{
+			if (!m_listenerBound || !m_heldClockSample)
+				return std::nullopt;
+			const SimClockRttSample held = *std::exchange(m_heldClockSample, std::nullopt);
+			m_host.onClockSample(held);
+			return held;
+		}
+		else
+		{
+			return std::nullopt;
+		}
+	}
+
+	void logHeldClockSample(uint32_t authorityTick, const SimClockRttSample& held)
+	{
+		m_host.log(formatClockSourceHeld(
+			authorityTick, held.rttSeconds * 1000.0, (m_host.nowSeconds() - held.t3Seconds) * 1000.0).data());
 	}
 
 	void onFloor(uint8_t floorTicks)
@@ -787,6 +812,7 @@ private:
 	bool m_listenerBound = false;
 	std::optional<uint8_t> m_floor;
 	std::optional<SimNetConnectionTierLatch> m_tier;
+	std::optional<SimClockRttSample> m_heldClockSample;
 
 	SimNetClientStats m_stats;
 	WindowCounters m_window;

@@ -37,7 +37,6 @@ using simNetEquivalence::EqGame;
 using simNetEquivalence::Transport;
 using ognet::test::TestHost;
 using ognet::test::VirtualNetwork;
-using ogsimnet::SimNetClockSample;
 using ogsimnet::SimNetConfig;
 using ClockServer = ogsimnet::SimNetClockServer<Transport, TestHost>;
 using ClockClient = ogsimnet::SimNetClockClient<Transport, TestHost>;
@@ -196,7 +195,7 @@ public:
 
 	uint32_t expectedTickAt(double serverSeconds) const
 	{
-		uint32_t tick = ogsimnet::kNoServerTick;
+		uint32_t tick = SimClockRttSample::kNoServerTick;
 		for (const Publication& publication : publications)
 		{
 			if (publication.atSeconds <= serverSeconds)
@@ -210,7 +209,7 @@ public:
 
 	std::unique_ptr<Peer> server;
 	std::unique_ptr<Peer> client;
-	std::vector<SimNetClockSample> samples;
+	std::vector<SimClockRttSample> samples;
 	std::vector<std::vector<std::byte>> clockMessages;
 	std::vector<Publication> publications;
 	uint64_t serverMessages = 0u;
@@ -240,7 +239,7 @@ private:
 			}
 			if (client->clockClient)
 			{
-				if (const std::optional<SimNetClockSample> sample = client->clockClient->readSample(record))
+				if (const std::optional<SimClockRttSample> sample = client->clockClient->readSample(record))
 				{
 					samples.push_back(*sample);
 					return;
@@ -269,10 +268,10 @@ struct Extent
 };
 
 template <class FieldT>
-Extent extentOf(const std::vector<SimNetClockSample>& samples, FieldT field)
+Extent extentOf(const std::vector<SimClockRttSample>& samples, FieldT field)
 {
 	Extent out{field(samples.front()), field(samples.front())};
-	for (const SimNetClockSample& sample : samples)
+	for (const SimClockRttSample& sample : samples)
 	{
 		out.min = std::min(out.min, field(sample));
 		out.max = std::max(out.max, field(sample));
@@ -280,27 +279,27 @@ Extent extentOf(const std::vector<SimNetClockSample>& samples, FieldT field)
 	return out;
 }
 
-void quote(const char* label, const std::vector<SimNetClockSample>& samples)
+void quote(const char* label, const std::vector<SimClockRttSample>& samples)
 {
 	if (samples.empty())
 	{
 		std::printf("%s: 0 samples\n", label);
 		return;
 	}
-	const Extent rtt = extentOf(samples, [](const SimNetClockSample& s) { return s.rttSeconds; });
-	const Extent theta = extentOf(samples, [](const SimNetClockSample& s) { return s.thetaSeconds; });
-	const Extent turnaround = extentOf(samples, [](const SimNetClockSample& s) { return s.t2 - s.t1; });
-	const Extent drainDelay = extentOf(samples, [](const SimNetClockSample& s) { return s.t3 - s.t0 - s.rttSeconds; });
+	const Extent rtt = extentOf(samples, [](const SimClockRttSample& s) { return s.rttSeconds; });
+	const Extent theta = extentOf(samples, [](const SimClockRttSample& s) { return s.thetaSeconds; });
+	const Extent turnaround = extentOf(samples, [](const SimClockRttSample& s) { return s.t2Seconds - s.t1Seconds; });
+	const Extent drainDelay = extentOf(samples, [](const SimClockRttSample& s) { return s.t3Seconds - s.t0Seconds - s.rttSeconds; });
 	std::printf("%s: %zu samples, rtt min/max = %.6f/%.6f ms, theta min/max = %.6f/%.6f ms, t2-t1 min/max = %.6f/%.6f ms, "
 				"(t3-t0)-rtt max = %.6f ms\n",
 		label, samples.size(), rtt.min / kMs, rtt.max / kMs, theta.min / kMs, theta.max / kMs, turnaround.min / kMs,
 		turnaround.max / kMs, drainDelay.max / kMs);
 }
 
-void requireEverySample(const std::vector<SimNetClockSample>& samples, double rttSeconds, double thetaSeconds)
+void requireEverySample(const std::vector<SimClockRttSample>& samples, double rttSeconds, double thetaSeconds)
 {
 	REQUIRE(samples.size() >= static_cast<size_t>(kRunSeconds / ogsimnet::kClockPingIntervalSeconds) - 2u);
-	for (const SimNetClockSample& sample : samples)
+	for (const SimClockRttSample& sample : samples)
 	{
 		CHECK(std::abs(sample.rttSeconds - rttSeconds) <= kToleranceSeconds);
 		CHECK(std::abs(sample.thetaSeconds - thetaSeconds) <= kToleranceSeconds);
@@ -364,7 +363,7 @@ public:
 			return m_tee.m_inner.inbox().drain([&](const InboundSimRecord& record) {
 				if (m_tee.m_clock != nullptr)
 				{
-					if (const std::optional<SimNetClockSample> sample = m_tee.m_clock->readSample(record))
+					if (const std::optional<SimClockRttSample> sample = m_tee.m_clock->readSample(record))
 					{
 						m_tee.shadow.push_back(*sample);
 						return;
@@ -388,7 +387,7 @@ public:
 	void setServerConnection(SimConnectionId id) { m_inner.setServerConnection(id); }
 	SimConnectionId serverConnection() const { return m_inner.serverConnection(); }
 
-	std::vector<SimNetClockSample> shadow;
+	std::vector<SimClockRttSample> shadow;
 
 private:
 	Transport& m_inner;
@@ -407,7 +406,7 @@ struct SessionRun
 	uint64_t clientMessages = 0u;
 	uint64_t badDecode = 0u;
 	uint64_t clocksDelivered = 0u;
-	std::vector<SimNetClockSample> shadow;
+	std::vector<SimClockRttSample> shadow;
 };
 
 SessionRun runSessions(bool clock)
@@ -498,11 +497,11 @@ TEST_CASE("SimNetClock.WithFixed20And30MsOneWayLagsTheRttIs50MsAndThetaIsTheOffs
 	rig.runFor(kRunSeconds);
 	quote("20/30 ms, offset 750 ms", rig.samples);
 	requireEverySample(rig.samples, 50.0 * kMs, 0.75 + (20.0 - 30.0) / 2.0 * kMs);
-	for (const SimNetClockSample& sample : rig.samples)
+	for (const SimClockRttSample& sample : rig.samples)
 	{
-		CHECK(sample.t2 - sample.t1 >= 0.0);
-		CHECK(sample.t2 - sample.t1 < 1.0 * kMs);
-		CHECK(sample.serverTick == rig.expectedTickAt(sample.t1));
+		CHECK(sample.t2Seconds - sample.t1Seconds >= 0.0);
+		CHECK(sample.t2Seconds - sample.t1Seconds < 1.0 * kMs);
+		CHECK(sample.serverTick == rig.expectedTickAt(sample.t1Seconds));
 	}
 	CHECK(rig.clockClient().stats().pongsReceived <= rig.clockServer().stats().pingsAnswered);
 	CHECK(rig.clockServer().stats().pingsAnswered - rig.clockClient().stats().pongsReceived <= 1u);
@@ -528,7 +527,7 @@ TEST_CASE("SimNetClock.AServerThatNeverRunsItsSessionAnswersEachPingAtReceiptAnd
 	quote("server with no session pump", rig.samples);
 	requireEverySample(rig.samples, 50.0 * kMs, 0.75 + (20.0 - 30.0) / 2.0 * kMs);
 	for (size_t i = 0u; i < rig.samples.size(); ++i)
-		CHECK(rig.samples[i].t2 - rig.samples[i].t1 < 1.0 * kMs);
+		CHECK(rig.samples[i].t2Seconds - rig.samples[i].t1Seconds < 1.0 * kMs);
 	const ogsimnet::SimNetTransportStats stats = rig.server->transport->stats();
 	CHECK(stats.directSends == 0u);
 	CHECK(stats.clockSends == rig.clockServer().stats().pingsAnswered);
@@ -563,9 +562,9 @@ TEST_CASE("SimNetClock.BeforeTheAuthorityPublishesATickThePongCarriesNoServerTic
 	ClockRig rig(spec);
 	rig.runFor(0.5);
 	REQUIRE_FALSE(rig.samples.empty());
-	for (const SimNetClockSample& sample : rig.samples)
-		CHECK(sample.serverTick == ogsimnet::kNoServerTick);
-	CHECK(rig.clockServer().publishedServerTick() == ogsimnet::kNoServerTick);
+	for (const SimClockRttSample& sample : rig.samples)
+		CHECK(sample.serverTick == SimClockRttSample::kNoServerTick);
+	CHECK(rig.clockServer().publishedServerTick() == SimClockRttSample::kNoServerTick);
 }
 
 TEST_CASE("SimNetClock.EachSamplesServerTickAgeIsThePongsSendTimeMinusTheStartTimeItsTickWasPublishedWith", "[NetTransport]")
@@ -575,13 +574,13 @@ TEST_CASE("SimNetClock.EachSamplesServerTickAgeIsThePongsSendTimeMinusTheStartTi
 	REQUIRE(rig.samples.size() >= static_cast<size_t>(kRunSeconds / ogsimnet::kClockPingIntervalSeconds) - 2u);
 	double minAge = rig.samples.front().serverTickAgeSeconds;
 	double maxAge = minAge;
-	for (const SimNetClockSample& sample : rig.samples)
+	for (const SimClockRttSample& sample : rig.samples)
 	{
-		REQUIRE(sample.serverTick != ogsimnet::kNoServerTick);
+		REQUIRE(sample.serverTick != SimClockRttSample::kNoServerTick);
 		const auto publication = std::find_if(rig.publications.begin(), rig.publications.end(),
 			[&](const Publication& p) { return p.tick == sample.serverTick; });
 		REQUIRE(publication != rig.publications.end());
-		CHECK(std::abs(sample.serverTickAgeSeconds - (sample.t2 - publication->atSeconds)) <= 1e-6);
+		CHECK(std::abs(sample.serverTickAgeSeconds - (sample.t2Seconds - publication->atSeconds)) <= 1e-6);
 		CHECK(sample.serverTickAgeSeconds >= 0.0);
 		CHECK(sample.serverTickAgeSeconds < kTickSeconds + 2.0 * kStepSeconds);
 		minAge = std::min(minAge, sample.serverTickAgeSeconds);
@@ -644,7 +643,7 @@ TEST_CASE("SimNetClock.TheClockNeverTouchesTheEnginePingPathWhileTheSourceIsEngi
 	CHECK(off.badDecode == 0u);
 	CHECK(off.shadow.empty());
 	REQUIRE(on.shadow.size() >= static_cast<size_t>(kRunSeconds / ogsimnet::kClockPingIntervalSeconds));
-	for (const SimNetClockSample& sample : on.shadow)
+	for (const SimClockRttSample& sample : on.shadow)
 		CHECK(std::abs(sample.rttSeconds - 50.0 * kMs) <= kToleranceSeconds);
 }
 

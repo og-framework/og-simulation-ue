@@ -5,7 +5,8 @@
 keeps a mirror of the server's roster with one channel per character, hands relay rings and corrections to those channels in
 arrival order, drops corrections and clock ticks older than ones already delivered, latches the relay floor and the
 connection tier for a listener that binds late, and emits its window line from `flushFrame` (§13). It hands SimClock samples to an
-optional host hook ahead of its decode (§4). It drains at step start (§16) and sends each tick's input set at capture, from the
+optional host hook ahead of its decode (§4), and while its listener is unbound holds the newest one for the first clock
+tick after the bind (§19). It drains at step start (§16) and sends each tick's input set at capture, from the
 step (§17). A host can
 enqueue a character's registration and unregistration for the drain to apply (§18). The prohibitions that govern its lines are in `SimNetClient-guards.md`; the host services it calls are described in
 `SimNetHost-rationale.md`.
@@ -104,8 +105,9 @@ does the same (`SimNetServer-rationale.md` §3).
 session's transport gets one clockSample record in the inbox per pong (`SimNetClock-rationale.md` §6). After the refusal check
 (a refused session ignores a sample like any message, G-04) and before the decode, `onMessage` asks
 `simNetClock::readSample(record)`; a sample goes to the host's optional `onClockSample(sample)` (`SimNetHost-rationale.md`
-§4b), in drain order, so a sample drained before a clock tick reaches the host before that drain's `onTimingInfo` (§8). It is
-counted in `clockSamples`, and in `clockSamplesUnheard` too when the host has no hook. Without the branch the decode would
+§4b), in drain order, so a sample drained before a clock tick reaches the host before that drain's `onTimingInfo` (§8). While the listener is
+unbound the session holds the newest sample instead of handing it over (§19). Every sample is counted in `clockSamples`, and in
+`clockSamplesUnheard` too when the host has no hook. Without the branch the decode would
 refuse the record (its version byte is one no envelope carries) and count a `badDecode`. The delivery hook sees a record like
 any message.
 
@@ -193,6 +195,11 @@ exists, so nothing is dropped for lack of a listener. The latched tick is delive
 so a clock admitted before a `Disconnected` record or a roster refusal in the same drain reaches the host after it, and the
 host takes one sample from a connection that has closed (a clock message after a refusal is ignored, G-04, and never
 latched).
+
+**The held SimClock sample goes first** (og-session-runtime task 20). When the listener is bound and a sample is held (§19),
+the drain that delivers a tick hands the held sample to the host's `onClockSample` just before the tick's `onTimingInfo`
+(G-14). It reads `serverRttSeconds()` before both, as the Unreal host's latch it replaced did (the reading was the
+`onTimingInfo` argument, evaluated before the latch fed the sample).
 
 **Why the coalesce, and why here** (og-input-latency task 27, scope (i)). The server publishes its clock regularly, and while
 a client does not drain (at a join) the messages queue: og-input-latency's Ph3 gate run (task P5-25) counted 10 to 17 in a client's first drain, as many as
@@ -310,11 +317,22 @@ recording endpoint; the others run P2-10's server session and the client session
   the transport, as `afterCaptureTick_Step` does.
 - **The delivery hook:** a host with `noteDelivered` sees one call per message record, with its lane and receive time (a
   malformed message and one ignored while refused included), and none for connection events.
-- **SimClock samples** (`SimNetClockSampleRouteTest.cpp`, `[NetTransport][SimNetClockSample]`): a real `SimNetClockClient` on
-  the session's transport pings through a capturing endpoint, and a pong delivered through the SimClock lane's handler reaches
+- **SimClock samples** (the route test, `[NetTransport][SimNetClockRoute]`): a real `SimNetClockClient` on the session's
+  transport, with the listener bound, pings through a capturing endpoint, and a pong delivered through the SimClock lane's handler reaches
   the host's `onClockSample` bit for bit as `simNetClock::sampleOf(pong, t3)`, before the drain's clock tick, with no
   `badDecode`; a session that refused the roster ignores a later sample; a host without the hook compiles and gets the sample
   counted (`clockSamplesUnheard`), not decoded.
+- **The held sample** (§19; the hold test, `[NetTransport][SimNetClockHold]`, og-session-runtime task 20): the cases of the
+  Unreal automation test it replaced (OGBrawler.SimNet.ClockSampleLatch, deleted by task 20; its successor is this test's
+  `ClockSampleLatch.*` cases), under its name and with its check texts, through a real
+  transport and session and a host that forwards as the Unreal client host does: two samples before the bind and a tick hold
+  the newest (71 ms, not 87 ms) and reach nothing; the first tick after the bind gets the held sample first, then the tick, and
+  the `[ClockSource.Held]` line with its exact text; the next tick comes alone; a sample drained after the bind supersedes the
+  held one; with nothing held a tick arrives alone. A transcription of the Unreal latch and its host (`UESimNetLanes.h` at
+  `3b8a211`) runs 300 seeded scripted joins (binds, unbinds, samples and ticks per drain) beside the session and gives the same
+  session calls, bit for bit, the same `[ClockSource.Held]` lines and the same held state after every drain. A host without
+  the hook holds nothing. Seen failing: the tick delivered before the held sample fails the seed case and the transcription;
+  the held sample fed at the bind fails those two and the superseding case (G-14).
 - **One channel type:** over one transport the client's `Channel` and the server's `Channel<SimT>` are the same type, and it
   satisfies both NetSync owner concepts.
 - **The SimInput rate:** four local players, one set per 144 Hz frame and one per 60 Hz tick, at 3 and 8 slots, against the
@@ -479,3 +497,49 @@ og-session-runtime task 15 removed the transport's flag.
   thread. The session destroys its channels with itself, so a host
   unregisters its characters, or stops using the simulation, before it destroys the session, as with a direct registration.
   `lifecycleRegistered(simId)` and `lifecycleStats()` (`SimNetLifecycleStats`, `SimNetServer.h`) belong to the drain's owner.
+
+## §19 The SimClock sample held while the listener is unbound (og-session-runtime task 20)
+
+A client pings from its driver's first frames, long before its world exists, so pongs come back while no world session is
+bound. Until og-input-latency P3-11 the Unreal host dropped those samples, as it drops a clock tick, and the estimator's first
+sample came 4 to 43 ms after the first authority tick: the join's hard resync landed on the floor target and took a second one
+when the reading arrived (` cause=firstRtt`, og-simulation `TimeConfig-rationale.md` §16). P3-11 added a latch to the Unreal
+client host; og-session-runtime task 20 moved it here, beside the floor and tier replay (§9), so every host has it.
+
+- **Held.** While the listener is unbound (§9, G-10), `onClockSample` keeps the newest sample (`heldClockSample()`) and does
+  not call the host. A host without the hook holds nothing: its samples are counted unheard (§4).
+- **Superseded.** A sample drained while the listener is bound goes to the host at once and drops the held one, so an older
+  reading is never fed after a newer one.
+- **Fed once, ahead of the first tick after the bind.** The drain that delivers a clock tick (§8) with the listener bound and
+  a sample held hands the held sample to `onClockSample`, then the tick to `onTimingInfo` (G-14), and logs one line through the
+  host's `log`: `[ClockSource.Held] fed the SimClock sample held while no world session was bound, ahead of authority tick
+  <t>: rttMs=<r> heldMs=<h>` (`kClockSourceHeldFormat`, `formatClockSourceHeld`). `heldMs` is the host's `nowSeconds()` minus
+  the sample's receive stamp `t3Seconds`; a host whose `nowSeconds()` is the clock og-net stamps receive times with (the
+  Unreal host's is) reads the time the sample waited. A drain that delivers no tick feeds nothing. A join with nothing held
+  logs nothing, and so does one whose bind drain carries a fresh sample, which supersedes the held one. The line is the smoke's
+  evidence that a join's first sample came before its world.
+- **The line's text, category and level.** The text is the one the Unreal host logged with `UE_LOG` until task 20. The line
+  carries no `[Warning]` token: the Unreal client host routes it by its tag (`kClockSourceHeldTag`, which a `static_assert`
+  checks the format begins with) to the category and level it had, `LogOGNet` at `Warning` (`UESimNetLanes-rationale.md`
+  §13); a UE-side test compares the bytes, the category and the level with the old `UE_LOG`'s.
+- **Why at the first tick and not at the bind.** The Unreal session binds the lanes before it applies its latency knobs, and
+  the estimator switches its RTT source to SimClock at the first valid sample it takes while its config says SimClock, and
+  never back (`NetworkTimeEstimator::noteSimClockSample`). Fed at the bind, the sample would meet the compiled default, and an
+  ini `ClockRttSource=Engine` arm would already have switched. The first tick is on the drain's thread, after the session is
+  configured, and ahead of the advance that resyncs. So the bind replays the floor and the tier (§9) but not the sample.
+- **An unbind holds again.** Samples drained after it are kept, and the next bind's first tick feeds the newest.
+- **Threads.** The hold is written by the drains before the bind and read by the first drain after it, which is where every
+  other piece of the session's state changes hands when a host's drain moves threads at the bind (the Unreal client drains
+  on the game thread until its world session binds, then on the step's thread: `UESimNetLanes-guards.md` G-02).
+- **Equivalent to the latch it replaced.** The latch held while the host had no world session; the session holds while its
+  listener is unbound. The Unreal lanes bind the two together (`bindClientSession`: the host's session, then `bindListener`)
+  and unbind them together, on the game thread between drains, so every drain sees the same state either way. The
+  transcription case of the hold test (§15) checks it.
+- **Measured.** og-input-latency P3-11's diagnostic run on shape (a), three joins: each held 4 or 5 samples before its world;
+  two fed the newest, held 16 and 32 ms, and one was superseded. Since og-session-runtime task 9 (`bTickPhysicsAsync=False`)
+  a client's world binds a frame or two later. Joins that fed a held sample (a `[ClockSource.Held]` line in the client's
+  log) since then: in og-session-runtime's Editor smokes (`SR*_smoke*` under `Saved/Profiling`, three joins each, the
+  async-physics arm aside), 5 of 6 in task 9's two smokes, 4 of 27 in SR2's nine and 1 of 12 in SR3's four (1 of 18 in the
+  six before task 9); in its packaged gates, 1 to 4 of 6 clients per side on shape (a) (G-SR1c's candidate 4, G-SR2's
+  reference 4 and candidate 1) and none on shapes (b) and (c) (0 of 4 and 0 of 3 per side). So a held sample is fed on
+  some joins, not most.

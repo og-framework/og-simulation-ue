@@ -30,6 +30,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <type_traits>
@@ -72,6 +73,19 @@ struct FUEPlatformClock
 
 using UESimNetClockServer = ogsimnet::SimNetClockServer<UESimNetTransport, FUEPlatformClock>;
 using UESimNetClockClient = ogsimnet::SimNetClockClient<UESimNetTransport, FUEPlatformClock>;
+
+namespace ueSimNetLanes
+{
+inline void routeClientLine(const char* line)
+{
+	if (std::strncmp(line, ogsimnet::kClockSourceHeldTag, sizeof(ogsimnet::kClockSourceHeldTag) - 1u) == 0)
+	{
+		UE_LOG(LogOGNet, Warning, TEXT("%s"), *FString(line));
+		return;
+	}
+	ueSimNetHost::routeLine(line);
+}
+} // namespace ueSimNetLanes
 
 inline constexpr size_t kRunnerRttSlots = 64u;
 
@@ -194,23 +208,13 @@ public:
 			this->session()->onSimNetLifecycleUnregistering(simId);
 	}
 
-	void onClockSample(const ogsimnet::SimNetClockSample& sample) { m_clockLatch.onSample(this->session(), sample); }
-
-	void onTimingInfo(uint32_t authorityTick, double roundTripSeconds)
+	void onClockSample(const SimClockRttSample& sample)
 	{
-		const std::optional<ogsimnet::SimNetClockSample> held =
-			m_clockLatch.onTimingInfo(this->session(), authorityTick, roundTripSeconds);
-		if (held.has_value())
-		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[ClockSource.Held] fed the SimClock sample held while no world session was bound, ahead of authority tick %u: ")
-				TEXT("rttMs=%.3f heldMs=%.1f"),
-				authorityTick, held->rttSeconds * 1000.0, (FPlatformTime::Seconds() - held->t3) * 1000.0);
-		}
+		if (this->session() != nullptr)
+			this->session()->onSimClockSample(sample);
 	}
 
-private:
-	FClockSampleLatch m_clockLatch;
+	void log(const char* line) { ueSimNetLanes::routeClientLine(line); }
 };
 
 template <typename TraitsT>
@@ -228,10 +232,16 @@ public:
 	UESimNetLanes(UOGNetDriver* ognetDriver, bool bIsServer) : m_driver(ognetDriver), m_isServer(bIsServer)
 	{
 		static_assert(compositionContractsHold());
-		static_assert(std::is_same_v<decltype(&ClientHost::onTimingInfo), void (ClientHost::*)(uint32_t, double)>,
-			"UESimNetLanesClientHost declares its own onTimingInfo, so the SimClock sample it latched while no session was "
-			"bound reaches the estimator ahead of the first authority tick. With the base host's, the tick would arrive "
-			"unseeded and the join would resync a second time (cause=firstRtt). Was P3-10 part B F1 (og-input-latency P3-11)");
+		static_assert(ogsimnet::SimNetClockRttSampleHook<ClientHost>,
+			"UESimNetLanesClientHost has onClockSample(const SimClockRttSample&), so the client session hands it every SimClock "
+			"sample and feeds the one it held while unbound ahead of the first authority tick after the bind. Without the hook "
+			"the session counts the samples unheard, the clock stays on the engine ping and the join resyncs a second time "
+			"(cause=firstRtt). Was the static_assert on the host's own onTimingInfo (og-input-latency P3-11), whose latch "
+			"og-session-runtime task 20 moved into SimNetClient");
+		static_assert(std::is_same_v<decltype(&ClientHost::log), void (ClientHost::*)(const char*)>,
+			"UESimNetLanesClientHost declares its own log, so the client session's [ClockSource.Held] line keeps the "
+			"LogOGNet category and the Warning level it had as a UE_LOG (og-session-runtime task 20); the base host's log "
+			"routes by the og-sim prefix table, which has no row for it");
 	}
 
 	UESimNetLanes(const UESimNetLanes&) = delete;

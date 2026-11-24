@@ -2489,9 +2489,10 @@ started, and the age is measured from it:
 
 - **Two feeds, one estimator, one thread.** The engine's round trip arrives in `onTimingInfoReceived` (once per drain that
   delivers a clock tick, §9.6) and goes to `NetworkTimeEstimator::noteEngineRttSample`. A SimClock sample arrives in
-  `onSimClockSample`, from the client host's `onClockSample` (`UESimNetLanes-rationale.md` §13); it is copied field by field
-  into og-simulation's `SimClockRttSample` (og-simulation names no og-sim-net type; since og-time-dilation task 8 with the
-  server tick and its age, §22.1) and goes to `noteSimClockSample`. Both run on
+  `onSimClockSample`, from the client host's `onClockSample` (`UESimNetLanes-rationale.md` §13), as og-simulation's
+  `SimClockRttSample`, the type og-sim-net's clock produces since og-session-runtime task 20 (og-simulation names no
+  og-sim-net type; until task 20 the session copied og-sim-net's own sample type into it field by field), and goes to
+  `noteSimClockSample` unchanged, the server tick and its age included (§22.1). Both run on
   the client session's drain thread, the estimator's writer: the step's thread once the session is bound. Which
   feed moves the estimate is the estimator's rule (og-simulation `TimeConfig-rationale.md` §15): the engine until the first valid
   SimClock sample under `ClockRttSource=SimClock`, which switches it once without a reset, and the SimClock after that.
@@ -2632,14 +2633,15 @@ through the tick driver's rate door. The compiled default stays `Off` until the 
 
 ### 22.1 The server tick on the SimClock sample
 
-`onSimClockSample` copies og-sim-net's `SimNetClockSample` into og-simulation's `SimClockRttSample` field by field (§20), now with
-its last two fields: `serverTick`, the server tick the pong carried, and `serverTickAgeSeconds`, how long after that tick the server
-answered. `NetworkTimeEstimator::noteSimClockSample` feeds them to its `ServerTickEstimator`, the stage's sensor. Before this task
-the copy left both at their defaults (`kNoServerTick`, which the estimator ignores), so the sensor never moved.
+`onSimClockSample` passes og-simulation's `SimClockRttSample` (§20) to the estimator with its last two fields: `serverTick`, the
+server tick the pong carried, and `serverTickAgeSeconds`, how long after that tick the server answered.
+`NetworkTimeEstimator::noteSimClockSample` feeds them to its `ServerTickEstimator`, the stage's sensor. Before og-time-dilation
+task 8 the session's field-by-field copy of og-sim-net's sample left both at their defaults (`kNoServerTick`, which the estimator
+ignores), so the sensor never moved.
 
-A `static_assert` at the copy checks that og-sim-net's `ogsimnet::kNoServerTick` and og-simulation's
-`SimClockRttSample::kNoServerTick` are one value: the copy passes the tick through unchanged, so a pong sent before the server's
-first tick reaches the estimator as "no tick" only while the two sentinels agree. Both are `0xFFFFFFFF` today.
+Since og-session-runtime task 20 og-sim-net's clock produces `SimClockRttSample` itself and writes
+`SimClockRttSample::kNoServerTick` into a pong sent before the server's first tick, so one sentinel serves both modules. The
+`static_assert` that checked og-sim-net's own sentinel against og-simulation's (both `0xFFFFFFFF`) went with the copy.
 
 ### 22.2 The knob and its proof line
 
@@ -2933,7 +2935,7 @@ has not begun play or does not exist; "`getManager()` empty" is this section's w
 | `unregisterFromNewFramework` | the in-frame unregistration's notify, behind `has<>` (until og-session-runtime task 14; the role's request since) | `AOGBrawlerSimulationManager::unregisterFromNewFramework`, from the component's `EndPlay` through `instanceFor` | skipped by the caller | would run the backend's unregistration on an unbuilt session for an id it never registered | returns at once: nothing was registered |
 | `endPlay` | none directly; it resets what `beginPlay` built (G-21) | `AOGBrawlerSimulationManager::EndPlay`, always | — | would unbind and reset state that never existed | after `onEndPlayBegin` (safe with nothing started, G-20), clears the slot and returns |
 | `hasGameThreadVizWorld` | none before task 11 (it read the loop flag only); `runsPrediction()` since task 14, behind the test | the component's `initializeWithManager` and `TickComponent` | not reached | true on a client, so `initializeWithManager` registers a viz volume, which asserts in `physicsSlotFor`. Seen failing in task 11 (`SR2_t11_sf_P1`): `Assertion failed: m_manager.has_value() [...UESimulationSession.h] [Line: 2183]` | `m_manager.has_value()` first (task 11; `&& runsPrediction()` since task 14, the loop flag's test before): false, so the component neither registers nor draws |
-| `onTimingInfoReceived`, `onSimClockSample`, `onConnectionTierReceived`, `onRelayDelayFloorReceived` | behind `m_manager.has_value()`, or the tier consumer's `has_value()` | `UESimNetClientHost`, whose session pointer is null until `bindClientSession`; `FClockSampleLatch`, which latches on a null session | — | not reached (nothing binds), and safe if reached | none |
+| `onTimingInfoReceived`, `onSimClockSample`, `onConnectionTierReceived`, `onRelayDelayFloorReceived` | behind `m_manager.has_value()`, or the tier consumer's `has_value()` | `UESimNetClientHost`, whose session pointer is null until `bindClientSession` (og-sim-net's client session holds a SimClock sample while its listener is unbound, which the lanes bind with the session) | — | not reached (nothing binds), and safe if reached | none |
 | `getTimeConfigPtr`, `getManager`, `getSystemsExec`, `getReplicatedTierConsumer`, `getReceptionCoordinator` | they return the optional or a pointer | `BrawlerSessionGameUImpl`'s score push and the input-history feed, each testing `has_value()` first | — | empty or null, and every caller tests it | none |
 
 The other public members never reach `m_manager` and are safe in such a world:

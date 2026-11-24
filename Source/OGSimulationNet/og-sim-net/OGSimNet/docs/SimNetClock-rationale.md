@@ -46,8 +46,9 @@ least affected, which is why the consumer takes its offset from it.
   measures. `t0` travels to the server and back unchanged, so the client keeps no table of pings in flight: a pong is a
   sample on its own, and a lost ping or pong costs one sample.
 - **`serverTick`** is the last tick the authority published with `SimNetClockServer::publishServerTick`, read when the pong is
-  written. Before the first publish it is `kNoServerTick` (`UINT32_MAX`), so a consumer can tell a pong from before the
-  authority's first step.
+  written. Before the first publish it is `SimClockRttSample::kNoServerTick` (`UINT32_MAX`; og-simulation's sentinel, which
+  the server-tick estimator ignores, and since og-session-runtime task 20 og-sim-net's too: its own constant of the same value
+  went), so a consumer can tell a pong from before the authority's first step.
 - **`serverTickAgeUs`** (og-time-dilation task 2) is the server's time from the start of the step that produced `serverTick`
   to sending the pong (`t2`), in whole microseconds, little-endian right after the tick (§5; measured from the publication
   until task 2b). It is 0 when the tick is `kNoServerTick`. The sample
@@ -61,7 +62,8 @@ least affected, which is why the consumer takes its offset from it.
   pong has no version byte of its own: `readPong` refuses any length but `kPongBytes`, so a 30-byte pong reaching a new
   client, or a 34-byte pong reaching an old one, is dropped and counted (`pongsMalformed`) and that client never gets a
   sample. The version therefore joins the brawler's build-identity wire token as `.ck2` (`OGBuildIdentity-rationale.md`
-  §8 in the brawler), so a server refuses a client of the other clock layout at login. og-simulation's
+  §8 in the brawler), since og-session-runtime task 21 through og-sim-net's fragment `ro<roster>.ck<clock>`
+  (`OGSimNet-rationale.md` §7), so a server refuses a client of the other clock layout at login. og-simulation's
   `kSimEnvelopeVersion` is unchanged: the pong's layout is og-sim-net's own.
 - **The envelope refuses both kinds.** `simEnvelope::decode` has no body layout for kinds 5 and 6 (`hasBodyLayout`), so a
   session's drain that meets a raw ping or pong counts a bad decode and applies nothing. The clock's handler (§3) is their
@@ -70,8 +72,11 @@ least affected, which is why the consumer takes its offset from it.
   envelope refuses a record (`Version`) and a record cannot be mistaken for a pong. It was 0 before the age; the next
   value, 1, is the envelope's, which the header's `static_assert` refuses, so the age took 2. A message from the network that is shaped
   like a record is dropped by the client's handler and counted (`forgedRecordsDropped`): only the handler writes records.
-  `simNetClock::readSample(record)`, or the client's `readSample`, turns an inbox record back into a `SimNetClockSample`, and
-  returns nothing for any other record.
+  `simNetClock::readSample(record)`, or the client's `readSample`, turns an inbox record back into a sample, and returns
+  nothing for any other record.
+- **The sample is og-simulation's `SimClockRttSample`** (`NetworkTimeEstimator.h`), the type the estimator takes, since
+  og-session-runtime task 20: og-sim-net's own sample type, which the Unreal session copied field by field, went. Its fields
+  are in the record's order: `rttSeconds`, `thetaSeconds`, `t0Seconds` to `t3Seconds`, `serverTick`, `serverTickAgeSeconds`.
 - **Malformed** pings and pongs (the right header, the wrong length) are dropped and counted (`pingsMalformed`,
   `pongsMalformed`).
 - **Size and rate.** A pong is inside the 40 B the envelope table gives the clock kinds. og-net caps the SimClock lane at 100
@@ -171,13 +176,16 @@ The record is the transport half of og-input-latency's P3 §7.1 clock-source swi
 - takes `theta` from the window's minimum-RTT sample, and a one-way delay variation per direction (RFC 3550) from the raw
   stamps the record carries (`t1 − t0` and `t3 − t2` move with their own direction's delay plus a constant offset);
 - reads `serverTick` with its own receive time (`t3`);
-- since og-time-dilation task 2 the sample also carries `serverTickAgeSeconds`; since that initiative's task 8 the Unreal
-  session copies `serverTick` and the age into og-simulation's `SimClockRttSample`, whose server-tick estimator reads them.
+- since og-time-dilation task 2 the sample also carries `serverTickAgeSeconds`; since that initiative's task 8 the estimator's
+  server-tick sensor reads `serverTick` and the age. Since og-session-runtime task 20 the sample is the estimator's own
+  `SimClockRttSample`, so the session passes it through.
 
 **The client session reads records ahead of its decode** (og-input-latency task P3-10). `SimNetClient`'s drain calls
 `simNetClock::readSample(record)` on every message record before `simEnvelope::decode`, which would refuse a record
 (`Version`) and count a bad decode, and hands a sample to the host's optional `onClockSample` (`SimNetHost-rationale.md` §4b,
-`SimNetClient-rationale.md` §4). A host without the hook gets the samples counted and dropped. Before that branch existed a
+`SimNetClient-rationale.md` §4); while the session's listener is unbound it holds the newest sample and hands it over just
+before the first clock tick after the bind (`SimNetClient-rationale.md` §19). A host without the hook gets the samples counted
+and dropped. Before that branch existed a
 host had to drain the records out of the inbox ahead of the session, which `SimNetClock.TheClockNeverTouchesTheEnginePingPathWhileTheSourceIsEngine`
 still does through its tee (its session never meets a record either way). With no clock installed, no record exists and the
 SimClock lane is the copy-only path, byte for byte.
@@ -216,8 +224,9 @@ once per 60 Hz frame:
 - hidden `[.][OGSimDeath]`: a clock handler set after `installHandlers`, and a second clock handler, each fail the transport's
   check.
 
-`tests/SimNetClockSampleRouteTest.cpp`, `[NetTransport][SimNetClockSample]`, drives a real `SimNetClockServer` through a
-capturing endpoint and a manual clock (og-time-dilation task 2):
+The route test in `tests/`, `[NetTransport][SimNetClockRoute]` (its tag and case prefix renamed from the deleted sample type's
+name by og-session-runtime task 20), drives a real `SimNetClockServer` through a capturing endpoint and a manual clock
+(og-time-dilation task 2):
 
 - the pong codec writes the age little-endian at bytes 30 to 33, right after the tick, and reads all five fields back; a
   30-byte pong is refused;
@@ -227,5 +236,5 @@ capturing endpoint and a manual clock (og-time-dilation task 2):
 - the one-argument `publishServerTick(tick)` does not compile and the two-argument one does (a `static_assert`, task 2b);
 - published at microsecond 2³² − 100 and answered 250 µs later, the age is 250 (the wrap);
 - before the first publish the pong carries `kNoServerTick` and an age of 0;
-- the sample record carries `serverTickAgeSeconds` bit for bit, standalone and through the client session to the host's
-  `onClockSample`.
+- the sample record carries `serverTickAgeSeconds` bit for bit, standalone and through the client session (its listener
+  bound) to the host's `onClockSample`.

@@ -7,6 +7,8 @@
 #include <concepts>
 #include <cstdint>
 
+struct SimClockRttSample;
+
 namespace ogsimnet
 {
 enum class SimNetStream : uint8_t { Input, State };
@@ -88,10 +90,8 @@ concept SimNetHostHasNoUnregisteringMember = requires { &simNetHostMemberNames::
 template <class H>
 concept SimNetLifecycleUnregisteringHookWellFormed = SimNetLifecycleUnregisteringHook<H> || SimNetHostHasNoUnregisteringMember<H>;
 
-struct SimNetClockSample;
-
 template <class H>
-concept SimNetClockSampleHook = requires(H& host, const SimNetClockSample& sample)
+concept SimNetClockRttSampleHook = requires(H& host, const SimClockRttSample& sample)
 {
 	{ host.onClockSample(sample) } -> std::same_as<void>;
 };
@@ -113,7 +113,7 @@ template <class H>
 concept SimNetHostHasNoClockSampleMember = requires { &simNetHostMemberNames::ClockSampleProbe<H>::onClockSample; };
 
 template <class H>
-concept SimNetClockSampleHookWellFormed = SimNetClockSampleHook<H> || SimNetHostHasNoClockSampleMember<H>;
+concept SimNetClockRttSampleHookWellFormed = SimNetClockRttSampleHook<H> || SimNetHostHasNoClockSampleMember<H>;
 
 namespace simNetHostSelfCheck
 {
@@ -190,18 +190,18 @@ private:
 
 struct ReferenceClockSampleClientHost : ReferenceClientHost
 {
-	void onClockSample(const SimNetClockSample& sample);
+	void onClockSample(const SimClockRttSample& sample);
 };
 
 struct HostWithATwoArgumentClockSampleHook : ReferenceClientHost
 {
-	void onClockSample(const SimNetClockSample& sample, double nowSeconds);
+	void onClockSample(const SimClockRttSample& sample, double nowSeconds);
 };
 
 struct HostWithAPrivateClockSampleHook : ReferenceClientHost
 {
 private:
-	void onClockSample(const SimNetClockSample& sample);
+	void onClockSample(const SimClockRttSample& sample);
 };
 
 static_assert(SimNetServerHost<ReferenceServerHost>, "SimNetServerHost self-check: the reference server host must satisfy the concept");
@@ -238,17 +238,17 @@ static_assert(!SimNetLifecycleUnregisteringHookWellFormed<HostWithAnUnregisterin
 	"SimNetLifecycleUnregisteringHookWellFormed: a host member named onLifecycleUnregistering that the sessions cannot call as "
 	"onLifecycleUnregistering(uint8_t) -> void (another return type, or private) is refused, because the sessions would "
 	"silently never call it and a queue-registered character would leave the game's systems pointing at freed storage");
-static_assert(SimNetClientHost<ReferenceClockSampleClientHost> && SimNetClockSampleHook<ReferenceClockSampleClientHost>
-		&& SimNetClockSampleHookWellFormed<ReferenceClockSampleClientHost> && !SimNetHostHasNoClockSampleMember<ReferenceClockSampleClientHost>,
-	"SimNetClockSampleHook self-check: a client host with onClockSample(const SimNetClockSample&) is still a client host, has the "
+static_assert(SimNetClientHost<ReferenceClockSampleClientHost> && SimNetClockRttSampleHook<ReferenceClockSampleClientHost>
+		&& SimNetClockRttSampleHookWellFormed<ReferenceClockSampleClientHost> && !SimNetHostHasNoClockSampleMember<ReferenceClockSampleClientHost>,
+	"SimNetClockRttSampleHook self-check: a client host with onClockSample(const SimClockRttSample&) is still a client host, has the "
 	"hook, and the name probe sees it");
-static_assert(!SimNetClockSampleHook<ReferenceClientHost> && SimNetClockSampleHookWellFormed<ReferenceClientHost>,
-	"SimNetClockSampleHook: the hook is optional; a client host without an onClockSample member is well formed, and the session "
+static_assert(!SimNetClockRttSampleHook<ReferenceClientHost> && SimNetClockRttSampleHookWellFormed<ReferenceClientHost>,
+	"SimNetClockRttSampleHook: the hook is optional; a client host without an onClockSample member is well formed, and the session "
 	"drops the SimClock samples it drains (counted, never decoded as a message)");
-static_assert(!SimNetClockSampleHookWellFormed<HostWithATwoArgumentClockSampleHook>
-		&& !SimNetClockSampleHookWellFormed<HostWithAPrivateClockSampleHook>,
-	"SimNetClockSampleHookWellFormed: a host member named onClockSample that the client session cannot call as "
-	"onClockSample(const SimNetClockSample&) -> void (another arity, or private) is refused, because the session would "
+static_assert(!SimNetClockRttSampleHookWellFormed<HostWithATwoArgumentClockSampleHook>
+		&& !SimNetClockRttSampleHookWellFormed<HostWithAPrivateClockSampleHook>,
+	"SimNetClockRttSampleHookWellFormed: a host member named onClockSample that the client session cannot call as "
+	"onClockSample(const SimClockRttSample&) -> void (another arity, or private) is refused, because the session would "
 	"silently never call it and the clock would stay on the engine ping");
 } // namespace simNetHostSelfCheck
 } // namespace ogsimnet

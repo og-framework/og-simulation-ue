@@ -347,17 +347,11 @@ public:
 		maybeLogClockSourceWindow();
 	}
 
-	void onSimClockSample(const ogsimnet::SimNetClockSample& sample)
+	void onSimClockSample(const SimClockRttSample& sample)
 	{
-		static_assert(ogsimnet::kNoServerTick == SimClockRttSample::kNoServerTick,
-			"onSimClockSample copies og-sim-net's serverTick into og-simulation's SimClockRttSample unchanged, so the two "
-			"'no server tick yet' sentinels must be one value, or a pong sent before the server's first tick would reach "
-			"the ServerTickEstimator as a real tick (og-time-dilation task 8)");
 		if (!m_manager.has_value())
 			return;
-		m_manager->editNetworkEstimator().noteSimClockSample(
-			SimClockRttSample{ sample.rttSeconds, sample.thetaSeconds, sample.t0, sample.t1, sample.t2, sample.t3,
-				sample.serverTick, sample.serverTickAgeSeconds });
+		m_manager->editNetworkEstimator().noteSimClockSample(sample);
 		maybeLogClockSourceWindow();
 	}
 

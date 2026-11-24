@@ -159,6 +159,26 @@ the consequence of ignoring it.
 
 ---
 
+## G-14 — the held SimClock sample is fed at the first tick after the bind, ahead of that tick
+
+- **Site:** the `const std::optional<SimClockRttSample> held = feedHeldClockSample();` in `deliverNewestClock`.
+- **Prohibition:** do not move the feed below `m_host.onTimingInfo(*tick, roundTripSeconds)`, do not drop it, and do not
+  feed the held sample in `applyBind` (the bind) instead or as well.
+- **Consequence:** the held sample is the client's only SimClock reading from before its world. Fed after the first authority
+  tick, or never, the tick reaches the estimator unseeded: the join's hard resync lands on the floor target and a second
+  resync follows when the reading arrives (` cause=firstRtt`, og-input-latency P3-11). Fed at the bind, it reaches the
+  estimator before the Unreal session applies its latency knobs, so the estimator's one-way switch of its RTT source follows
+  the compiled default and an ini `ClockRttSource=Engine` arm has already switched (rationale §19).
+- **What breaks if it moves:** below the tick (seen failing, og-session-runtime task 20):
+  `ClockSampleLatch.TheNewestUnboundSampleIsHeldAndSeedsTheEstimatorBeforeTheFirstAuthorityTick` fails at "the first event is
+  the newest unbound sample (71 ms, not 87 ms)" and "the first authority tick follows the sample", and
+  `ClockSampleLatch.TheSessionsHoldMatchesTheUELatchItReplacedOnScriptedJoins` at `REQUIRE( sameEvent(...) )`. Fed at the bind
+  as well (seen failing, same task): the seed case at `REQUIRE( rig.host.lines.size() == 1u )` with `0 == 1`,
+  `ClockSampleLatch.ABoundSampleSupersedesTheHeldOne` at `REQUIRE( session.events.size() == 2u )` with `3 == 2`, and the
+  transcription at its event count.
+
+---
+
 ## §R Retired ids
 
 ### G-05 — RETIRED by og-input-latency task P5-1 (2026-11-17): moved to `SimNetChannel-guards.md` G-05

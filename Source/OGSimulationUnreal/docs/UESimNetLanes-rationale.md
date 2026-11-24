@@ -228,8 +228,10 @@ read the connection itself, on the game thread.
   - both answer og-sim-net's optional `onLifecycleUnregistering(simId)` (`SimNetHost-rationale.md` §4a) by forwarding it to the
     world session, which notifies its systems while the character is still in storage;
   - the client host also answers the optional `onClockSample(sample)` (`SimNetHost-rationale.md` §4b) by forwarding it to the
-    world session (`onSimClockSample`, §13); with no session bound the newest sample is held, and fed ahead of the first
-    authority tick after the bind (`FClockSampleLatch`, §13; a clock tick with no session is dropped);
+    world session (`onSimClockSample`, §13); the client session holds the newest sample while its listener is unbound and
+    feeds it ahead of the first authority tick after the bind (`SimNetClient-rationale.md` §19; a clock tick with no session
+    is dropped by the base host). Its own `log` routes the session's `[ClockSource.Held]` line (§13) and hands every other
+    line to the base host's;
   - the server host answers `rttMs` from `FRunnerRttTable` and posts its two probe stamps through the latency mailbox:
     `stampServerReceived` through `stampServerReceived_Internal` and `stampHanded` through `stampHandedAndLeft_Internal` (the
     hand-over is the send at once, on the runner; `UELatencyBudgetDiagnostics-rationale.md` §14). og-sim-net calls the
@@ -285,28 +287,26 @@ read the connection itself, on the game thread.
 - **The pong is a sample, not a message.** The clock's lane handler turns each pong into a clockSample record on og-net's
   servicing thread and pushes it into the inbox; the client session reads it ahead of its envelope decode
   (`SimNetClient-rationale.md` §4) and calls the client host's `onClockSample`, which forwards it to the world session on the
-  drain's thread, the step's thread once a session is bound: the estimator's writer.
-- **Held while no session is bound, fed ahead of the first tick** (og-input-latency P3-11, from P3-10 part B F1). Pongs come
-  back from the driver's first frames, long before the world, and a host with no session used to drop them, as it drops a clock
-  tick. The estimator's first sample then came 4 to 43 ms after the first authority tick, and the join's hard resync landed on
-  the floor target and took a second one when the reading arrived (` cause=firstRtt`, `TimeConfig-rationale.md` §16). The
-  client host keeps the newest unbound sample in a `FClockSampleLatch`, and its own `onTimingInfo` (which hides the base
-  host's) feeds it to the session just before the first authority tick that reaches a bound session. A sample that reaches a
-  bound session first supersedes it, and it is fed once. It is the floor and tier latch's pattern (`SimNetClient-rationale.md` §9):
-  held while unbound, delivered on the first drain after the bind. A `static_assert` in the lanes' constructor checks that the
-  client host declares its own `onTimingInfo`. When it feeds a held sample the host logs one line, at `Warning` under
-  `LogOGNet`: `[ClockSource.Held] fed the SimClock sample held while no world session was bound, ahead of authority tick <t>:
-  rttMs=<r> heldMs=<h>`, `heldMs` the time since the pong arrived (now minus its receive stamp t3, one clock as above). It is the
-  smoke's evidence that a join's first sample came before its world. A join with none held logs nothing, and so does one whose
-  bind drain carries a fresh pong, which supersedes the held one (og-input-latency P3-11's diagnostic run on shape (a), three
-  joins: each held 4 or 5 samples before its world; two fed the newest, held 16 and 32 ms, and one was superseded).
-  - **Why on the first tick and not in `bindClientSession`.** The session binds the lanes before it applies its knobs
-    (`UESimulationSession-rationale.md`), and the first SimClock sample switches the estimator's source once, by the knob it
-    reads then: fed at the bind, an ini `ClockRttSource=Engine` arm would already have switched. The first tick is on the
-    drain's thread, after the session is configured, and ahead of the advance that resyncs.
-  - **Threads.** The latch is written by unbound drains, on the game thread (a client drains on the game thread until its
-    session binds, `UESimNetLanes-guards.md` G-02), and read by the first bound drain, on the step's thread. That hand-over is
-    the one every other piece of the client session's state takes when a client's steps start.
+  drain's thread, the step's thread once a session is bound: the estimator's writer. The sample is og-simulation's
+  `SimClockRttSample`, the estimator's type, so the session passes it through (og-session-runtime task 20).
+- **Held while no session is bound, fed ahead of the first tick** (og-input-latency P3-11, from P3-10 part B F1; in og-sim-net's
+  client session since og-session-runtime task 20). Pongs come back from the driver's first frames, long before the world. The
+  client session keeps the newest sample while its listener is unbound and hands it to `onClockSample` just before the first
+  authority tick after the bind (`SimNetClient-rationale.md` §19 has the why, the threads and the measurements; its G-14
+  guards the order). The lanes bind the listener together with the world session (`bindClientSession`, §5), so "unbound" is
+  "no world session", which is what the host's own latch keyed on until task 20. The client host's `onClockSample` only
+  forwards, and its `onTimingInfo` is the base host's. A `static_assert` in the lanes' constructor checks that the client host
+  has the hook (it checked the host's own `onTimingInfo` while the latch lived here).
+  - **The line.** When the session feeds a held sample it formats `[ClockSource.Held] fed the SimClock sample held while no
+    world session was bound, ahead of authority tick <t>: rttMs=<r> heldMs=<h>` (`heldMs` the time since the pong arrived, on
+    `FPlatformTime::Seconds()`, the clock og-net stamps receive times with) and hands it to the host's `log`. The client host's
+    own `log` (`ueSimNetLanes::routeClientLine`) logs a line that begins with `kClockSourceHeldTag` at `Warning` under
+    `LogOGNet`, the category and level of the `UE_LOG` that wrote it here until task 20, and hands every other line to the base
+    host's (`ueSimNetHost::routeLine`). The base host's route would not keep them: no og-sim prefix row matches the tag, so the
+    line would land in `LogOG` at `Log`, and a `[Warning]` token would stay in its text. A second `static_assert` in the
+    constructor checks that the client host declares its own `log`. The automation test `OGBrawler.SimNet.ClockHeldLine` (the
+    brawler's `UESimNetClockHeldLineTest.cpp`) formats nine value sets both ways and compares the bytes, then logs each the old
+    way and through the route and compares the text, the category and the level. A join with none held logs nothing.
 - **The ack RTT.** `afterDispatch` also publishes og-net's smoothed ack RTT to the server connection
   (`UOGNetDriver::GetSmoothedRttSeconds`, game-thread only) into one relaxed atomic (`ackSrttSeconds()`), which the session's
   `[ClockSource.Window]` line reads on the drain's thread as a cross-check (`UESimulationSession-rationale.md` §20). It reads

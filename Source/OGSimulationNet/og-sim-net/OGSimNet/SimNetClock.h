@@ -9,6 +9,7 @@
 #include "OGSimulation/Network/SimInbox.h"
 #include "OGSimulation/Network/SimTransport.h"
 #include "OGSimulation/OGAssert.h"
+#include "OGSimulation/PCTimeManagement/NetworkTimeEstimator.h"
 
 #include <array>
 #include <atomic>
@@ -25,27 +26,14 @@ namespace ogsimnet
 {
 inline constexpr uint8_t kClockWireVersion = 2u;
 inline constexpr double kClockPingIntervalSeconds = 1.0 / 20.0;
-inline constexpr uint32_t kNoServerTick = std::numeric_limits<uint32_t>::max();
 
 struct SimNetClockPong
 {
 	double t0 = 0.0;
 	double t1 = 0.0;
 	double t2 = 0.0;
-	uint32_t serverTick = kNoServerTick;
+	uint32_t serverTick = SimClockRttSample::kNoServerTick;
 	uint32_t serverTickAgeUs = 0;
-};
-
-struct SimNetClockSample
-{
-	double rttSeconds = 0.0;
-	double thetaSeconds = 0.0;
-	uint32_t serverTick = kNoServerTick;
-	double serverTickAgeSeconds = 0.0;
-	double t0 = 0.0;
-	double t1 = 0.0;
-	double t2 = 0.0;
-	double t3 = 0.0;
 };
 
 struct SimNetClockStats
@@ -204,21 +192,21 @@ namespace simNetClock
 		return pong;
 	}
 
-	constexpr SimNetClockSample sampleOf(const SimNetClockPong& pong, double t3)
+	constexpr SimClockRttSample sampleOf(const SimNetClockPong& pong, double t3)
 	{
-		SimNetClockSample sample;
+		SimClockRttSample sample;
 		sample.rttSeconds = (t3 - pong.t0) - (pong.t2 - pong.t1);
 		sample.thetaSeconds = ((pong.t1 - pong.t0) + (pong.t2 - t3)) / 2.0;
 		sample.serverTick = pong.serverTick;
 		sample.serverTickAgeSeconds = detail::secondsOfMicroseconds(pong.serverTickAgeUs);
-		sample.t0 = pong.t0;
-		sample.t1 = pong.t1;
-		sample.t2 = pong.t2;
-		sample.t3 = t3;
+		sample.t0Seconds = pong.t0;
+		sample.t1Seconds = pong.t1;
+		sample.t2Seconds = pong.t2;
+		sample.t3Seconds = t3;
 		return sample;
 	}
 
-	[[nodiscard]] constexpr size_t writeSampleRecord(std::span<std::byte> out, const SimNetClockSample& sample)
+	[[nodiscard]] constexpr size_t writeSampleRecord(std::span<std::byte> out, const SimClockRttSample& sample)
 	{
 		if (out.size() < kSampleRecordBytes)
 			return 0u;
@@ -226,33 +214,33 @@ namespace simNetClock
 		detail::putHeader(out, kSampleRecordVersion, SimMessageKind::ClockPong);
 		detail::putStamp(out, offset, sample.rttSeconds);
 		detail::putStamp(out, offset += kStampBytes, sample.thetaSeconds);
-		detail::putStamp(out, offset += kStampBytes, sample.t0);
-		detail::putStamp(out, offset += kStampBytes, sample.t1);
-		detail::putStamp(out, offset += kStampBytes, sample.t2);
-		detail::putStamp(out, offset += kStampBytes, sample.t3);
+		detail::putStamp(out, offset += kStampBytes, sample.t0Seconds);
+		detail::putStamp(out, offset += kStampBytes, sample.t1Seconds);
+		detail::putStamp(out, offset += kStampBytes, sample.t2Seconds);
+		detail::putStamp(out, offset += kStampBytes, sample.t3Seconds);
 		detail::putU32(out, offset += kStampBytes, sample.serverTick);
 		detail::putU32(out, offset += sizeof(uint32_t), detail::microsecondsOfSeconds(sample.serverTickAgeSeconds));
 		return kSampleRecordBytes;
 	}
 
-	constexpr std::optional<SimNetClockSample> readSampleRecord(std::span<const std::byte> bytes)
+	constexpr std::optional<SimClockRttSample> readSampleRecord(std::span<const std::byte> bytes)
 	{
 		if (!isSampleRecord(bytes) || bytes.size() != kSampleRecordBytes)
 			return std::nullopt;
 		size_t offset = simEnvelope::kHeaderBytes;
-		SimNetClockSample sample;
+		SimClockRttSample sample;
 		sample.rttSeconds = detail::stampAt(bytes, offset);
 		sample.thetaSeconds = detail::stampAt(bytes, offset += kStampBytes);
-		sample.t0 = detail::stampAt(bytes, offset += kStampBytes);
-		sample.t1 = detail::stampAt(bytes, offset += kStampBytes);
-		sample.t2 = detail::stampAt(bytes, offset += kStampBytes);
-		sample.t3 = detail::stampAt(bytes, offset += kStampBytes);
+		sample.t0Seconds = detail::stampAt(bytes, offset += kStampBytes);
+		sample.t1Seconds = detail::stampAt(bytes, offset += kStampBytes);
+		sample.t2Seconds = detail::stampAt(bytes, offset += kStampBytes);
+		sample.t3Seconds = detail::stampAt(bytes, offset += kStampBytes);
 		sample.serverTick = detail::u32At(bytes, offset += kStampBytes);
 		sample.serverTickAgeSeconds = detail::secondsOfMicroseconds(detail::u32At(bytes, offset += sizeof(uint32_t)));
 		return sample;
 	}
 
-	inline std::optional<SimNetClockSample> readSample(const InboundSimRecord& record)
+	inline std::optional<SimClockRttSample> readSample(const InboundSimRecord& record)
 	{
 		if (record.kind != InboundKind::Message || record.lane != SimLane::SimClock)
 			return std::nullopt;
@@ -286,23 +274,24 @@ namespace simNetClock
 
 		constexpr bool sampleIsTheNtpPair()
 		{
-			const SimNetClockSample sample = sampleOf(kPong, kT3);
-			return sample.rttSeconds == 0.125 && sample.thetaSeconds == 0.6875 && sample.serverTick == 4242u && sample.t3 == kT3
+			const SimClockRttSample sample = sampleOf(kPong, kT3);
+			return sample.rttSeconds == 0.125 && sample.thetaSeconds == 0.6875 && sample.serverTick == 4242u && sample.t3Seconds == kT3
 				&& sample.serverTickAgeSeconds > 0.0043209 && sample.serverTickAgeSeconds < 0.0043211;
 		}
 
 		constexpr bool sampleRecordRoundTripsAndNeverDecodes()
 		{
 			std::array<std::byte, kSampleRecordBytes> record{};
-			const SimNetClockSample sample = sampleOf(kPong, kT3);
+			const SimClockRttSample sample = sampleOf(kPong, kT3);
 			if (writeSampleRecord(record, sample) != kSampleRecordBytes)
 				return false;
-			const std::optional<SimNetClockSample> read = readSampleRecord(record);
+			const std::optional<SimClockRttSample> read = readSampleRecord(record);
 			const DecodedSimMessage decoded =
 				simEnvelope::decode<simEnvelope::Shape<4u, 4u>>(SimLane::SimClock, SimDirection::ServerToClient, record);
 			return read && read->rttSeconds == sample.rttSeconds && read->thetaSeconds == sample.thetaSeconds
 				&& read->serverTick == sample.serverTick && read->serverTickAgeSeconds == sample.serverTickAgeSeconds
-				&& read->t0 == sample.t0 && read->t1 == sample.t1 && read->t2 == sample.t2 && read->t3 == sample.t3
+				&& read->t0Seconds == sample.t0Seconds && read->t1Seconds == sample.t1Seconds && read->t2Seconds == sample.t2Seconds
+				&& read->t3Seconds == sample.t3Seconds
 				&& !isPong(record) && decoded.refusal == DecodeRefusal::Version;
 		}
 
@@ -312,11 +301,11 @@ namespace simNetClock
 			{
 				SimNetClockPong pong = kPong;
 				pong.serverTickAgeUs = ageUs;
-				const SimNetClockSample sample = sampleOf(pong, kT3);
+				const SimClockRttSample sample = sampleOf(pong, kT3);
 				std::array<std::byte, kSampleRecordBytes> record{};
 				if (writeSampleRecord(record, sample) != kSampleRecordBytes)
 					return false;
-				const std::optional<SimNetClockSample> read = readSampleRecord(record);
+				const std::optional<SimClockRttSample> read = readSampleRecord(record);
 				if (!read || read->serverTickAgeSeconds != sample.serverTickAgeSeconds
 					|| detail::microsecondsOfSeconds(read->serverTickAgeSeconds) != ageUs)
 					return false;
@@ -423,7 +412,7 @@ private:
 		const uint64_t published = m_published.load(std::memory_order_acquire);
 		pong.serverTick = static_cast<uint32_t>(published >> 32u);
 		pong.t2 = m_clock.nowSeconds();
-		if (pong.serverTick != kNoServerTick)
+		if (pong.serverTick != SimClockRttSample::kNoServerTick)
 			pong.serverTickAgeUs = static_cast<uint32_t>(simNetClockDetail::microsecondsLow32(pong.t2) - static_cast<uint32_t>(published));
 		std::array<std::byte, simNetClock::kPongBytes> out{};
 		const size_t size = simNetClock::writePong(out, pong);
@@ -433,7 +422,7 @@ private:
 
 	TransportT& m_transport;
 	ClockT& m_clock;
-	std::atomic<uint64_t> m_published{static_cast<uint64_t>(kNoServerTick) << 32u};
+	std::atomic<uint64_t> m_published{static_cast<uint64_t>(SimClockRttSample::kNoServerTick) << 32u};
 	std::atomic<uint64_t> m_pingsAnswered{0};
 	std::atomic<uint64_t> m_pingsRefused{0};
 	std::atomic<uint64_t> m_pingsMalformed{0};
@@ -483,7 +472,7 @@ public:
 		return true;
 	}
 
-	std::optional<SimNetClockSample> readSample(const InboundSimRecord& record) const { return simNetClock::readSample(record); }
+	std::optional<SimClockRttSample> readSample(const InboundSimRecord& record) const { return simNetClock::readSample(record); }
 
 	SimNetClockStats stats() const
 	{
