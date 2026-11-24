@@ -64,14 +64,20 @@ og-net:
 ## §4 What it requires of the endpoint
 
 `SimNetIdleEndpoint<E>`: `serviceUntil(double)` returning `ognet::ServiceResult`. og-net's `NetEndpoint` has it; so does the
-Unreal plugin's `SimLaneEndpoint`, which forwards it to the og-net core of the engine-lane driver. The self-checks in the
-header pin that an endpoint without the member, or one that returns anything but a `ServiceResult`, is refused, and that a
-game which forwards `idleUntil` to a `SimNetIdle` satisfies `TickDriverIdleGame`.
+Unreal plugin's `SimLaneEndpoint`, which forwards it to the og-net core of the engine-lane driver. The compile-time
+self-checks (`ogsimnet::simNetIdleSelfCheck`, in `tests/SimNetAuthorityLoopTest.cpp`, §5) pin that an endpoint without the
+member, or one that returns anything but a `ServiceResult`, is refused, that `idleUntil` returns `IdleWake`, and that a game
+which forwards `idleUntil` to a `SimNetIdle` satisfies `TickDriverIdleGame`.
+
+They live in the test, not the header, since og-session-runtime task 18: the last one needs og-tickdriver's concepts header
+(`TickDriverIdleGame`, and `tickDriverGameSelfCheck::Conforming` as the game's base), and og-sim-net's headers depend only on
+og-sim's vocabulary (`IdleWake`, in `TickDriverGameTypes.h`), not on og-tickdriver.
 
 ## §5 Tests
 
 `SimNetAuthorityLoopTest.cpp` (`[NetTransport]`):
 
+- at compile time, the self-checks of §4 (`static_assert`s at namespace scope; the test target does not build if one fails);
 - each `ServiceResult` maps to its wake, and the deadline reaches `serviceUntil` unchanged;
 - over `VirtualNetwork` in virtual time, a `FreeRunning` driver whose game forwards `idleUntil` here relays a SimInput that
   arrives mid-idle in the same wake (relay latency 0); that case is the mapping's seen-failing

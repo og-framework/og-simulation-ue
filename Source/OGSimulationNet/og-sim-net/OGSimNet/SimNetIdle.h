@@ -4,12 +4,10 @@
 
 #include "OGNet/Endpoint/EndpointConfig.h"
 #include "OGSimulation/OGAssert.h"
-#include "OGSimulation/TickDriverConcepts.h"
 #include "OGSimulation/TickDriverGameTypes.h"
 
 #include <concepts>
 #include <cstddef>
-#include <utility>
 
 namespace ogsimnet
 {
@@ -69,37 +67,4 @@ public:
 private:
 	EndpointT& m_endpoint;
 };
-
-namespace simNetIdleSelfCheck
-{
-struct ReferenceEndpoint
-{
-	ognet::ServiceResult serviceUntil(double);
-};
-
-struct ReturnsBool
-{
-	bool serviceUntil(double);
-};
-
-struct NoServiceUntil
-{
-};
-
-struct ForwardingGame : tickDriverGameSelfCheck::Conforming
-{
-	SimNetIdle<ReferenceEndpoint>* idle = nullptr;
-
-	decltype(auto) idleUntil(double deadlineSeconds) { return idle->idleUntil(deadlineSeconds); }
-};
-
-static_assert(SimNetIdleEndpoint<ReferenceEndpoint>, "SimNetIdleEndpoint self-check: og-net's serviceUntil shape must satisfy it");
-static_assert(!SimNetIdleEndpoint<ReturnsBool> && !SimNetIdleEndpoint<NoServiceUntil>,
-	"SimNetIdleEndpoint self-check: an endpoint without serviceUntil, or one whose pass does not report og-net's ServiceResult, "
-	"has nothing to map");
-static_assert(std::same_as<decltype(std::declval<SimNetIdle<ReferenceEndpoint>&>().idleUntil(0.0)), IdleWake>,
-	"SimNetIdle::idleUntil returns the tick driver's IdleWake");
-static_assert(TickDriverIdleGame<ForwardingGame>,
-	"SimNetIdle: a game that forwards idleUntil to SimNetIdle satisfies TickDriverIdleGame, the FreeRunning driver's idle hook");
-} // namespace simNetIdleSelfCheck
 } // namespace ogsimnet
