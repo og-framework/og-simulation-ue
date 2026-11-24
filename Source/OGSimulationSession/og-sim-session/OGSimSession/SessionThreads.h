@@ -1,0 +1,184 @@
+#pragma once
+// SPDX-License-Identifier: MPL-2.0
+// docs/SessionThreads-rationale.md
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <thread>
+
+#include "OGSimulation/OGAssert.h"
+#include "OGSimulation/TickDriverThreadContext.h"
+#include "OGSimSession/SessionTypes.h"
+
+namespace ogsession
+{
+enum class SessionThread : uint8_t
+{
+	Frame,
+	Step,
+	NetIo,
+};
+
+enum class SessionOp : uint8_t
+{
+	SampleInput,
+	RateDoor,
+	TryRegister,
+	RequestUnregister,
+	PollOutcomes,
+	AcquireDisplay,
+	Present,
+	DrainInbox,
+	ApplyLifecycleRequests,
+	Capture,
+	Step,
+	Send,
+	Publish,
+	ServiceNet,
+	LinkFrameService,
+	Count,
+};
+
+inline constexpr std::size_t kSessionOpCount = static_cast<std::size_t>(SessionOp::Count);
+
+struct SessionOpThread
+{
+	SessionOp                    op;
+	std::optional<SessionThread> thread;
+};
+
+using SessionThreadTable = std::array<SessionOpThread, kSessionOpCount>;
+
+inline constexpr SessionThreadTable kPredictionThreads{ {
+	{ SessionOp::SampleInput,            SessionThread::Frame },
+	{ SessionOp::RateDoor,               SessionThread::Frame },
+	{ SessionOp::TryRegister,            SessionThread::Frame },
+	{ SessionOp::RequestUnregister,      SessionThread::Frame },
+	{ SessionOp::PollOutcomes,           SessionThread::Frame },
+	{ SessionOp::AcquireDisplay,         SessionThread::Frame },
+	{ SessionOp::Present,                SessionThread::Frame },
+	{ SessionOp::DrainInbox,             SessionThread::Step },
+	{ SessionOp::ApplyLifecycleRequests, SessionThread::Step },
+	{ SessionOp::Capture,                SessionThread::Step },
+	{ SessionOp::Step,                   SessionThread::Step },
+	{ SessionOp::Send,                   SessionThread::Step },
+	{ SessionOp::Publish,                SessionThread::Step },
+	{ SessionOp::ServiceNet,             SessionThread::NetIo },
+	{ SessionOp::LinkFrameService,       SessionThread::Frame },
+} };
+
+inline constexpr SessionThreadTable kAuthorityThreads{ {
+	{ SessionOp::SampleInput,            std::nullopt },
+	{ SessionOp::RateDoor,               SessionThread::Step },
+	{ SessionOp::TryRegister,            SessionThread::Frame },
+	{ SessionOp::RequestUnregister,      SessionThread::Frame },
+	{ SessionOp::PollOutcomes,           SessionThread::Frame },
+	{ SessionOp::AcquireDisplay,         SessionThread::Frame },
+	{ SessionOp::Present,                SessionThread::Frame },
+	{ SessionOp::DrainInbox,             SessionThread::Step },
+	{ SessionOp::ApplyLifecycleRequests, SessionThread::Step },
+	{ SessionOp::Capture,                SessionThread::Step },
+	{ SessionOp::Step,                   SessionThread::Step },
+	{ SessionOp::Send,                   SessionThread::Step },
+	{ SessionOp::Publish,                SessionThread::Step },
+	{ SessionOp::ServiceNet,             SessionThread::NetIo },
+	{ SessionOp::LinkFrameService,       SessionThread::Frame },
+} };
+
+namespace sessionThreadTable
+{
+consteval bool isIndexedByOp(const SessionThreadTable& table)
+{
+	for (std::size_t index = 0u; index < table.size(); ++index)
+	{
+		if (static_cast<std::size_t>(table[index].op) != index)
+			return false;
+	}
+	return true;
+}
+
+consteval bool stepWorkIsOffTheFrame(const SessionThreadTable& table)
+{
+	for (std::size_t index = static_cast<std::size_t>(SessionOp::DrainInbox);
+		 index <= static_cast<std::size_t>(SessionOp::ServiceNet); ++index)
+	{
+		if (table[index].thread == SessionThread::Frame)
+			return false;
+	}
+	return true;
+}
+} // namespace sessionThreadTable
+
+static_assert(sessionThreadTable::isIndexedByOp(kPredictionThreads) && sessionThreadTable::isIndexedByOp(kAuthorityThreads),
+	"kPredictionThreads, kAuthorityThreads: one row per SessionOp, in the enum's order, so a row's position is its op");
+static_assert(sessionThreadTable::stepWorkIsOffTheFrame(kPredictionThreads)
+		&& sessionThreadTable::stepWorkIsOffTheFrame(kAuthorityThreads),
+	"kPredictionThreads, kAuthorityThreads: draining the inbox, applying the lifecycle requests, capture, the step, the send, "
+	"the publish and the og-net service never run on the frame thread, on either role");
+static_assert(!kAuthorityThreads[static_cast<std::size_t>(SessionOp::SampleInput)].thread.has_value(),
+	"kAuthorityThreads: the authority samples no input; its characters' inputs arrive over the network");
+
+class SessionThreadChecks
+{
+public:
+	SessionThreadChecks(SessionRole role, const TickDriverThreadContext* context, std::thread::id frameThread)
+		: m_role(role)
+		, m_context(context)
+		, m_frameThread(frameThread)
+	{
+	}
+
+	static const SessionThreadTable& tableFor(SessionRole role)
+	{
+		return role == SessionRole::Authority ? kAuthorityThreads : kPredictionThreads;
+	}
+
+	std::optional<SessionThread> threadOf(SessionOp op) const
+	{
+		const std::size_t index = static_cast<std::size_t>(op);
+		if (index >= kSessionOpCount)
+			return std::nullopt;
+		return tableFor(m_role)[index].thread;
+	}
+
+	bool isOn(SessionThread thread) const
+	{
+		const bool onFrame = std::this_thread::get_id() == m_frameThread;
+		if (thread == SessionThread::Frame)
+			return onFrame;
+		if (m_context == nullptr || m_context->roleBit() != roleBit())
+			return false;
+		if (m_role == SessionRole::Authority)
+			return m_context->isOwnerThreadForRole();
+		const bool inStep = m_context->isStepRunningOnThisThread();
+		return thread == SessionThread::Step ? inStep : (!onFrame && !inStep);
+	}
+
+	bool isAllowed(SessionOp op) const
+	{
+		const std::optional<SessionThread> thread = threadOf(op);
+		return thread.has_value() && isOn(*thread);
+	}
+
+	void checkOp(SessionOp op) const
+	{
+		OG_CHECK(isAllowed(op),
+			"SessionThreadChecks::checkOp: this operation ran on a thread its role's row of the session thread table does not "
+			"name (kPredictionThreads, kAuthorityThreads)");
+	}
+
+	SessionRole role() const { return m_role; }
+
+private:
+	uint8_t roleBit() const
+	{
+		return m_role == SessionRole::Authority ? tickDriverThread::kAuthorityRoleBit : tickDriverThread::kClientRoleBit;
+	}
+
+	SessionRole                    m_role;
+	const TickDriverThreadContext* m_context;
+	std::thread::id                m_frameThread;
+};
+} // namespace ogsession

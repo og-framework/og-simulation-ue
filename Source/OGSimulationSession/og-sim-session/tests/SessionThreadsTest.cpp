@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: MPL-2.0
+#include "catch_amalgamated.hpp"
+
+#include "OGSimSession/SessionThreads.h"
+#include "OGSimSession/SessionTypes.h"
+#include "OGSimulation/TickDriverThreadContext.h"
+
+#include <array>
+#include <cstddef>
+#include <optional>
+#include <thread>
+
+namespace
+{
+using ogsession::kSessionOpCount;
+using ogsession::SessionOp;
+using ogsession::SessionRole;
+using ogsession::SessionThread;
+using ogsession::SessionThreadChecks;
+
+struct ExpectedRow
+{
+	SessionOp                    op;
+	const char*                  name;
+	std::optional<SessionThread> prediction;
+	std::optional<SessionThread> authority;
+};
+
+constexpr std::array<ExpectedRow, kSessionOpCount> kExpected{ {
+	{ SessionOp::SampleInput,            "SampleInput",            SessionThread::Frame, std::nullopt },
+	{ SessionOp::RateDoor,               "RateDoor",               SessionThread::Frame, SessionThread::Step },
+	{ SessionOp::TryRegister,            "TryRegister",            SessionThread::Frame, SessionThread::Frame },
+	{ SessionOp::RequestUnregister,      "RequestUnregister",      SessionThread::Frame, SessionThread::Frame },
+	{ SessionOp::PollOutcomes,           "PollOutcomes",           SessionThread::Frame, SessionThread::Frame },
+	{ SessionOp::AcquireDisplay,         "AcquireDisplay",         SessionThread::Frame, SessionThread::Frame },
+	{ SessionOp::Present,                "Present",                SessionThread::Frame, SessionThread::Frame },
+	{ SessionOp::DrainInbox,             "DrainInbox",             SessionThread::Step,  SessionThread::Step },
+	{ SessionOp::ApplyLifecycleRequests, "ApplyLifecycleRequests", SessionThread::Step,  SessionThread::Step },
+	{ SessionOp::Capture,                "Capture",                SessionThread::Step,  SessionThread::Step },
+	{ SessionOp::Step,                   "Step",                   SessionThread::Step,  SessionThread::Step },
+	{ SessionOp::Send,                   "Send",                   SessionThread::Step,  SessionThread::Step },
+	{ SessionOp::Publish,                "Publish",                SessionThread::Step,  SessionThread::Step },
+	{ SessionOp::ServiceNet,             "ServiceNet",             SessionThread::NetIo, SessionThread::NetIo },
+	{ SessionOp::LinkFrameService,       "LinkFrameService",       SessionThread::Frame, SessionThread::Frame },
+} };
+
+using Allowed = std::array<bool, kSessionOpCount>;
+
+Allowed allowedHere(const SessionThreadChecks& checks)
+{
+	Allowed allowed{};
+	for (std::size_t index = 0u; index < kSessionOpCount; ++index)
+		allowed[index] = checks.isAllowed(static_cast<SessionOp>(index));
+	return allowed;
+}
+
+Allowed allowedOnAPlainThread(const SessionThreadChecks& checks)
+{
+	Allowed allowed{};
+	std::thread thread([&] { allowed = allowedHere(checks); });
+	thread.join();
+	return allowed;
+}
+
+Allowed allowedInAStep(const SessionThreadChecks& checks, const TickDriverThreadContext& context)
+{
+	Allowed allowed{};
+	std::thread thread(
+		[&]
+		{
+			const StepScope step(context);
+			allowed = allowedHere(checks);
+		});
+	thread.join();
+	return allowed;
+}
+
+struct PredictionRig
+{
+	PredictionRig() { context.configure<true>(tickDriverThread::kClientRoleBit, StepThreading::FrameBounded); }
+
+	TickDriverThreadContext context;
+	SessionThreadChecks     checks{ SessionRole::Prediction, &context, std::this_thread::get_id() };
+};
+
+struct AuthorityRig
+{
+	Allowed allowedOnTheRunner()
+	{
+		Allowed allowed{};
+		std::thread runner(
+			[&]
+			{
+				context.configure<true>(tickDriverThread::kAuthorityRoleBit, StepThreading::FreeRunning);
+				allowed = allowedHere(checks);
+			});
+		runner.join();
+		return allowed;
+	}
+
+	TickDriverThreadContext context;
+	SessionThreadChecks     checks{ SessionRole::Authority, &context, std::this_thread::get_id() };
+};
+} // namespace
+
+TEST_CASE("SessionThreads.TheTablesAreTheDesignsTable", "[Session]")
+{
+	for (std::size_t index = 0u; index < kSessionOpCount; ++index)
+	{
+		const ExpectedRow& row = kExpected[index];
+		INFO(row.name);
+		REQUIRE(static_cast<std::size_t>(row.op) == index);
+		CHECK(ogsession::kPredictionThreads[index].op == row.op);
+		CHECK(ogsession::kAuthorityThreads[index].op == row.op);
+		CHECK(ogsession::kPredictionThreads[index].thread == row.prediction);
+		CHECK(ogsession::kAuthorityThreads[index].thread == row.authority);
+	}
+}
+
+TEST_CASE("SessionThreads.APredictionOpPassesOnItsThreadAndOnNoOther", "[Session]")
+{
+	PredictionRig rig;
+	const Allowed onFrame = allowedHere(rig.checks);
+	const Allowed inStep  = allowedInAStep(rig.checks, rig.context);
+	const Allowed onNetIo = allowedOnAPlainThread(rig.checks);
+
+	uint32_t allowedCases = 0u;
+	uint32_t forbiddenCases = 0u;
+	for (std::size_t index = 0u; index < kSessionOpCount; ++index)
+	{
+		const ExpectedRow& row = kExpected[index];
+		INFO(row.name);
+		REQUIRE(row.prediction.has_value());
+		CHECK(onFrame[index] == (*row.prediction == SessionThread::Frame));
+		CHECK(inStep[index] == (*row.prediction == SessionThread::Step));
+		CHECK(onNetIo[index] == (*row.prediction == SessionThread::NetIo));
+		allowedCases += static_cast<uint32_t>(onFrame[index]) + inStep[index] + onNetIo[index];
+		forbiddenCases += static_cast<uint32_t>(!onFrame[index]) + !inStep[index] + !onNetIo[index];
+	}
+	CHECK(allowedCases == kSessionOpCount);
+	CHECK(forbiddenCases == 2u * kSessionOpCount);
+}
+
+TEST_CASE("SessionThreads.AnAuthorityOpPassesOnItsThreadAndOnNoOther", "[Session]")
+{
+	AuthorityRig rig;
+	const Allowed onRunner = rig.allowedOnTheRunner();
+	const Allowed onFrame  = allowedHere(rig.checks);
+	const Allowed onOther  = allowedOnAPlainThread(rig.checks);
+
+	uint32_t allowedCases = 0u;
+	for (std::size_t index = 0u; index < kSessionOpCount; ++index)
+	{
+		const ExpectedRow& row = kExpected[index];
+		INFO(row.name);
+		const bool frameRow = row.authority == SessionThread::Frame;
+		const bool runnerRow = row.authority == SessionThread::Step || row.authority == SessionThread::NetIo;
+		CHECK(onFrame[index] == frameRow);
+		CHECK(onRunner[index] == runnerRow);
+		CHECK_FALSE(onOther[index]);
+		allowedCases += static_cast<uint32_t>(onFrame[index]) + onRunner[index] + onOther[index];
+	}
+	CHECK(allowedCases == kSessionOpCount - 1u);
+	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::SampleInput)]);
+	CHECK_FALSE(onRunner[static_cast<std::size_t>(SessionOp::SampleInput)]);
+}
+
+TEST_CASE("SessionThreads.WithoutTheRolesContextOnlyTheFrameRowsPass", "[Session]")
+{
+	const SessionThreadChecks noContext(SessionRole::Prediction, nullptr, std::this_thread::get_id());
+	TickDriverThreadContext clientContext;
+	clientContext.configure<true>(tickDriverThread::kClientRoleBit, StepThreading::FrameBounded);
+	const SessionThreadChecks otherRole(SessionRole::Authority, &clientContext, std::this_thread::get_id());
+
+	const Allowed noContextInStep = allowedInAStep(noContext, clientContext);
+	const Allowed noContextOffFrame = allowedOnAPlainThread(noContext);
+	const Allowed otherRoleInStep = allowedInAStep(otherRole, clientContext);
+	for (std::size_t index = 0u; index < kSessionOpCount; ++index)
+	{
+		INFO(kExpected[index].name);
+		CHECK_FALSE(noContextInStep[index]);
+		CHECK_FALSE(noContextOffFrame[index]);
+		CHECK_FALSE(otherRoleInStep[index]);
+	}
+	CHECK(noContext.isAllowed(SessionOp::SampleInput));
+	CHECK_FALSE(noContext.isAllowed(SessionOp::DrainInbox));
+}
+
+TEST_CASE("SessionThreads.CheckOpIsSilentOnTheRowsThreadAndTheSentinelHasNoRow", "[Session]")
+{
+	PredictionRig rig;
+	rig.checks.checkOp(SessionOp::SampleInput);
+	rig.checks.checkOp(SessionOp::TryRegister);
+	rig.checks.checkOp(SessionOp::LinkFrameService);
+	CHECK(rig.checks.role() == SessionRole::Prediction);
+
+	CHECK_FALSE(rig.checks.threadOf(SessionOp::Count).has_value());
+	CHECK_FALSE(rig.checks.isAllowed(SessionOp::Count));
+}
+
+TEST_CASE("SessionThreads.DrainInboxOnTheFrameTripsTheCheck", "[.][SessionThreadsDeath]")
+{
+	PredictionRig rig;
+	rig.checks.checkOp(SessionOp::DrainInbox);
+	FAIL("SessionThreadChecks::checkOp(DrainInbox) on the frame thread did NOT fire - the check is vacuous in this target");
+}

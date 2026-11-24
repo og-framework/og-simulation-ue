@@ -103,7 +103,9 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
   or foreign-driver world starts none), the retired knobs' refusals (task 11), the registered instance slot, the registration
   line, every public member with no session, and what a refused client and its server do.
 * **§24** is og-session-runtime task 16: the threads, who calls what on which thread for both roles, the per-step
-  order and what crosses; og-simulation's `ThreadingCrossings.md` points here for the callers.
+  order and what crosses; og-simulation's `ThreadingCrossings.md` points here for the callers. og-session-runtime
+  task 22 moved its text to og-sim-session's `SessionThreads-rationale.md` §7; §24 keeps the pointers and the
+  no-session world's note.
 
 ---
 
@@ -2993,85 +2995,23 @@ the runs and their lines are in the task's notes).
 
 ## §24 Threads: who calls what, on which thread (og-session-runtime task 16)
 
-The one table of who calls what on which thread, for both roles, read from the code after og-session-runtime task 15
-(`UESimulationSession.h`, `BrawlerTickDriverGameUImpl.h`, og-simulation's `SimulationTickDriver.h`, `TickDriverStepHooks.h`
-and `SimulationStepDriver.h`, `UESimNetLanes.h`, `UESimNetHost.h`). og-simulation and og-sim-net state only their own
-contracts ("the owner thread only", "one consumer at a time") and name no caller; og-simulation's `ThreadingCrossings.md`
-indexes the shared data structures and points here for the callers. og-session-runtime task 22 moves this table to the
-runtime (design §3.4, its SessionThreads component).
-
-Each role has one shape. A **client** steps on a worker task, one task at a time (`StepThreading::FrameBounded`; the frame
-waits for its own single step, `FrameWait::ThisFramesSingleStep`). An **authority** runs only on a dedicated server with
-the og-net driver (§23) and steps on its runner, the authority loop (`StepThreading::FreeRunning`, §19). The names used
-below:
-
-- **frame**: UE's game thread. It runs the tick functions (`startFrame`, `endFrame`), the components' registration and
-  `EndPlay`, the session's `beginPlay` and `endPlay`, and the og-net driver's `UESimNetLanes::afterDispatch`.
-- **step**: a client's worker task while it runs a batch.
-- **runner**: an authority's runner thread (`FUEAuthorityRunner`), which builds the world, pumps, steps and services og-net.
-- **og-net**: og-net's own I/O thread; a client's lanes use it (`simLanesIoMode`), a dedicated server's lanes do not.
-
-### 24.1 The table
-
-| Operation | Client | Authority |
-|---|---|---|
-| Sample input (`sampleInput`: each character publishes its input sample to its mailbox); the rate door (`beforePump_Owner` → `runClockDilation_GameThread`); `tryRegister`, `unregisterFromNewFramework`; collect the lifecycle outcomes (`collectLifecycleOutcomes_GameThread`); acquire the display (`refreshDisplayView_GameThread`); present (`beforePresent_GameThread`) | frame | frame, except: no input sample (`startFrame` returns at once in `FreeRunning`), and the rate door runs on the runner (`noteAuthorityRateDoor_Owner`); the presentation slices are applied (`presentAuthority_GameThread`) where a client acquires its display |
-| Drain the inbox; apply the lifecycle requests; capture; step; send; publish the display or the presentation | step: `receiveForClientStep_Step` (→ `applyUnregisterRequests_Step` → `UESimNetLanes::drainClient_Step` → `SimNetClient::drain`), the send at capture (`afterClientCapture_Step` → `SimNetClient::afterCaptureTick_Step`), `publishDisplaySnapshot_Step` after the batch | runner: `beforePump_Owner` (the queued runner requests, then `SimNetServer::drain`), `releaseInputsForAuthorityTick` per step, `afterAuthorityBatch` after the batch (the send, the corrections, the clock, `publishAuthorityPresentation_Runner`) |
-| Service og-net (receive, push into the inbox, answer a clock ping) | og-net | runner, in `idleUntil_Runner` (`SimNetIdle`), between batches |
-| The link's frame service (clock ping, the pre-bind drain, the RTT publish) | frame, in `UESimNetLanes::afterDispatch`: `servicePing`, `publishServerRtt_GameThread`, and the drain while no session is bound (`UESimNetLanes-guards.md` G-02) | frame, in `UESimNetLanes::afterDispatch`: `publishRunnerRtt_GameThread` (`FRunnerRttTable`, read on the runner) |
-| Start | frame: `beginPlay` builds the world, configures the session and starts stepping | frame starts the runner and waits for it (`runAuthorityLoop_GameThread`, `waitForStart_GameThread`); the runner builds the world and configures the session (§19.2) |
-| Stop | frame: `endPlay` → `onEndPlayBegin` (the tick functions unregistered, the steps waited for), then the teardown drain (`teardownImmediateClient_GameThread` → `drainClientWhileStopped_GameThread`) | frame: `onEndPlayBegin` joins the runner (`stopAuthorityLoop_GameThread`), or the lanes' stop has joined it first (`onAuthorityRunnerJoined_GameThread`) |
-
-A body is created where its role registers it: a client creates it on the frame (`createBodies_GameThread`, the frame-thread
-door, design Q12) and queues the registration, which og-sim-net applies in the next drain on the step
-(`onQueuedRegisterApplied_Step`); an authority builds a body request on the frame (`makeBodyRequest_GameThread`) and posts it
-(`postRunnerRequest`), and the runner creates the bodies and registers (`createBodies_Runner`, `onRunnerRegisterApplied_Runner`).
-Each posts an outcome that the frame collects.
-
-### 24.2 The per-step order
-
-- **Client, frame, `startFrame`:** `sampleInput` → the frame time → `beforePump` (`runClockDilation_GameThread`, the dilation
-  stage) → the pump → `onFrameStepsDue` (`onFrameStepsDue_Step`: PROBE A's `[ResimProbe.Frame]` lines) → the batch is
-  dispatched to a worker task.
-- **Client, step, per step:** the occupancy commands → `receiveForStep` (the unregister requests → `SimNetClient::drain`: the
-  lifecycle queue, the inbox, the newest clock sample → the disconnect request) → resimulate if requested → capture the
-  correction → collect and capture the input → `onStepStarted` (the latency stamp; the send at capture) → physics →
-  `onStepEnded` (the latency stamp; `afterStep_Step`, which returns at once on a client) → the presenter's publish → the world
-  host → the tick offset → the step cost. **After the batch:** `publishForDisplay` (`publishDisplaySnapshot_Step`).
-- **Client, frame, `endFrame`:** wait for this frame's step → `onPostPhysics` (`onPostPhysicsStep`: present → collect the
-  lifecycle outcomes → `refreshDisplayView_GameThread` → the game's `afterVisualization` → the diagnostics tick).
-- **Authority, runner, per wake:** `beforePump` (`noteAuthorityRateDoor_Owner` → the queued runner requests →
-  `SimNetServer::drain`: the queued registrations, then each bundle is parked and relayed at once) → the pump →
-  `onFrameStepsDue` (PROBE A's `[RelayProbe.Frame]` lines) → per step: `releaseInputsForAuthorityTick`
-  (`noteAuthorityStepTime_Step` → `releaseDelayedInputsForStep` → `SimNetServer::releaseForStep`) → the step → `onStepEnded`
-  (`afterStep_Step`: the server tick to the SimClock server with its start time) → after the batch: `afterInlineBatch`
-  (`afterAuthorityBatch`: `SimulationManager::onPostSimulationGameThread`, the manager's post-simulation send, on the runner
-  despite its name → `SimNetServer::publishClock` → `SimNetServer::afterInlineBatch`: the reap, the corrections, the clock,
-  the window → `stampCorrectionsHanded_Runner` → `publishAuthorityPresentation_Runner`) → `idleUntil` (`idleUntil_Runner`:
-  og-net serviced to the deadline).
-- **Authority, frame, `endFrame`:** `onPostPhysics` only (`onPostPhysicsStep`: present → collect the lifecycle outcomes →
-  `presentAuthority_GameThread` → the diagnostics tick).
-
-### 24.3 What crosses
-
-The session's shared state between these threads, each with its own synchronization:
-
-| Crossing | Writer → reader | Shape |
-|---|---|---|
-| the lifecycle bridge (`m_runnerRequests`, `m_lifecycleOutcomes`, under `m_lifecycleBridgeMutex`), and og-sim-net's own lifecycle queue under it | frame → runner (the requests); runner or step → frame (the outcomes); a client's registrations go through og-sim-net's queue to the step | a mutex around the vectors (design L9 makes it one queue) |
-| each character's input sample (`Mailbox.h`'s `TripleBuffer`) | frame → step | triple buffer, one writer, one reader |
-| the display snapshot (`SimulationDisplayPublisher`) | step → frame | snapshot channel (`ThreadingCrossings.md`, the display snapshot's crossings) |
-| the tier reading (`m_displayTier`) | step → step while the session steps; the frame writes it only while no step runs | triple buffer |
-| the presentation slices (`m_authorityPresentation`) | runner → frame | triple buffer |
-| the inbox (og-sim-net's transport) | og-net → step on a client; runner → runner on an authority | the transport's single-consumer inbox |
-| the listener-bind request (og-sim-net's client, `SimNetClient::bindListener`) | frame → step | one atomic, consumed by the drain |
-| the RTT (`FRunnerRttTable`; the client host's published RTT, read by `serverRttSeconds`) | frame → runner; frame → step | atomics, one writer |
-
-The tick driver keeps its own (the occupancy ring, the tick offset, the step-cost ring and the rest of
-`ThreadingCrossings.md`'s J-rows). Each entry point's thread is checked where the code can check it: the tick driver's
-`TickDriverThreadContext` `OG_CHECK`s, and the session's and lanes' `checkf(IsInGameThread())` and `checkf(!IsInGameThread())`.
-Design §3.4 makes every row an `OG_CHECK` (task 22).
+og-session-runtime task 22 moved this section's table and its notes, verbatim, to og-sim-session's
+`SessionThreads-rationale.md` §7, so that the thread table is kept in one place: who calls what on which thread for both
+roles (§24.1, now its §7.1), the per-step order (§24.2, now §7.2) and what crosses (§24.3, now §7.3). The runtime's own
+table and its checks, `kPredictionThreads`, `kAuthorityThreads` and `SessionThreadChecks`, are that file's §3 and §4.
 
 **A world without a session** (§23) holds its world's `s_instances` slot as a no-session session. The `instanceFor` callers'
 safety there is run-time guarding (task 11's `m_manager.has_value()` tests, listed member by member in §23), not a type: a new
 public member that reaches `m_manager` must test it too.
+
+### 24.1 The table
+
+Moved: `SessionThreads-rationale.md` §7.1.
+
+### 24.2 The per-step order
+
+Moved: `SessionThreads-rationale.md` §7.2.
+
+### 24.3 What crosses
+
+Moved: `SessionThreads-rationale.md` §7.3.
