@@ -2,7 +2,8 @@
 # `SimNetIdle.h` — rationale
 
 `SimNetIdle<EndpointT>` is the authority loop's idle hook over og-net. The tick driver's `FreeRunning` arm idles between its
-step deadlines by calling the game's `idleUntil(deadlineSeconds)` (`TickDriverIdleGame`, og-simulation's `TickDriverConcepts.h`).
+step deadlines by calling the game's `idleUntil(deadlineSeconds)` (`TickDriverIdleGame`, og-simulation's `TickDriverConcepts.h`;
+its result type `IdleWake` is in og-simulation's `TickDriverGameTypes.h`).
 A server game that runs its sim traffic over og-net forwards that call to `SimNetIdle::idleUntil`, which services the server's
 endpoint until the deadline and says why it returned. The header states no prohibition, so it has no guards document.
 

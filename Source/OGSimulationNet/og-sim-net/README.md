@@ -4,7 +4,7 @@
 og-sim-net is the engine-free layer that carries og-simulation's network traffic over og-net. It depends on og-simulation
 and og-net and includes no game-engine header.
 
-Today it holds its API version constant (`OGSimNet/SimNetVersion.h`) and a wiring test.
+Its version header (`OGSimNet/SimNetVersion.h`) holds the API version and og-sim-net's part of a build's wire token.
 
 ## Layout
 

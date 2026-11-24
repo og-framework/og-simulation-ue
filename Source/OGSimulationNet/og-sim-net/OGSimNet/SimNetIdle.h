@@ -5,6 +5,7 @@
 #include "OGNet/Endpoint/EndpointConfig.h"
 #include "OGSimulation/OGAssert.h"
 #include "OGSimulation/TickDriverConcepts.h"
+#include "OGSimulation/TickDriverGameTypes.h"
 
 #include <concepts>
 #include <cstddef>

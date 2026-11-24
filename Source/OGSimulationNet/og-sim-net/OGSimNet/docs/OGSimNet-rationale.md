@@ -69,8 +69,9 @@ subdirectories (FindInputFilesFromDirectoryRecursive, lines 2622-2630).
 - **`Core` is a private dependency**, for the module macro in `OGSimulationNetModule.cpp`.
 - **The public include path is og-sim-net's root**, so every include of an og-sim-net header is spelled `"OGSimNet/<File>.h"`.
 - **`OGSimulationNetModule.cpp` includes `SimNetVersion.h`**, so every target that builds the module compiles an og-sim-net
-  header through the public include path under that target's warning flags.
-- **Nothing is exported yet.** `SimNetVersion.h` holds only an inline constant, and the module defines no out-of-line function.
+  header through the public include path under that target's warning flags. Since og-session-runtime task 21 that header
+  includes `SimNetClock.h` and `SimNetRoster.h` (§7), so the module's one source file compiles those two as well.
+- **Nothing is exported yet.** `SimNetVersion.h` holds only inline constants, and the module defines no out-of-line function.
   Measured: the Editor build's module DLL exports one name, the engine's module marker ThisIsAnUnrealEngineModule.
   In the modular Editor every module is its own DLL, so the first out-of-line og-sim-net function that another module calls
   needs an export marker on its declaration, as og-net's `OGNET_API` does for og-net.
@@ -88,6 +89,7 @@ it yet, and later tasks keep it. It is not a wire version. The bytes on the wire
 - og-sim-net has no test target of its own. `OGSimulationTests.Build.cs` adds `og-sim-net/tests` as a source directory with
   ConditionalAddModuleDirectory, depends on `OGNet` and `OGSimulationNet`, and adds og-net's `tests/` directory as a private
   include path, for `VirtualNetwork.h`.
+- `SimNetVersionTest.cpp` pins the wire-token fragment of §7 (tag `[NetTransport][SimNetVersion]`).
 - `SimNetSkeletonTest.cpp` proves both include paths in one translation unit. It includes `SimTransport.h` (og-simulation),
   `SimNetVersion.h` (og-sim-net) and `VirtualNetwork.h` (og-net's tests), connects an og-net client and server endpoint over a
   `VirtualNetwork`, and checks that one message sent on the lane numbered by `SimLane::SimInput` arrives on og-net's SimInput
@@ -97,3 +99,19 @@ it yet, and later tasks keep it. It is not a wire version. The bytes on the wire
 - Measured: with og-net's `tests/` removed from the include path, `SimNetSkeletonTest.cpp` fails to compile, on
   `VirtualNetwork.h`.
 - **No standalone build yet.** og-sim-net has no CMake project; its tests build only through the Unreal low-level-test target.
+
+## §7 `kWireTokenFragment`: og-sim-net's part of the wire token
+
+A game presents one wire token at login, the versions of every layout its peers must read alike, and refuses a peer whose
+token differs (og-simulation's `SimWireToken-rationale.md` §1). og-sim-net owns two of those versions, so it exports them as
+one fragment, `ogsimnet::kWireTokenFragment` in `SimNetVersion.h`: `ro<roster>.ck<clock>`, written with og-simulation's
+`simWireToken::tokenOf` (og-session-runtime task 21).
+
+- **`ro`** is `kRosterWireVersion` (`SimNetRoster.h`), the first byte of every roster body (`SimNetRoster-rationale.md` §2).
+- **`ck`** is `kClockWireVersion` (`SimNetClock.h`), the layout of the SimClock ping and pong, which carry no version byte
+  of their own (`SimNetClock-rationale.md` §2).
+
+Today they are 1 and 2, so the fragment is `ro1.ck2`; `SimNetVersionTest.cpp` pins that string in a `static_assert`. A game
+joins it after og-simulation's `simWireToken::kSimFragment` and includes this header for it instead of the two headers that
+own the versions, so a bump of either changes this fragment and the game's pin of its whole token, and no game code.
+`kSimNetApiVersion` (§5) is not part of the token.

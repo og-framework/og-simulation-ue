@@ -73,39 +73,6 @@ struct FUEPlatformClock
 using UESimNetClockServer = ogsimnet::SimNetClockServer<UESimNetTransport, FUEPlatformClock>;
 using UESimNetClockClient = ogsimnet::SimNetClockClient<UESimNetTransport, FUEPlatformClock>;
 
-class FClockSampleLatch
-{
-public:
-	template <class SessionT>
-	void onSample(SessionT* session, const ogsimnet::SimNetClockSample& sample)
-	{
-		if (session == nullptr)
-		{
-			m_sample = sample;
-			return;
-		}
-		m_sample.reset();
-		session->onSimClockSample(sample);
-	}
-
-	template <class SessionT>
-	std::optional<ogsimnet::SimNetClockSample> onTimingInfo(SessionT* session, uint32_t authorityTick, double roundTripSeconds)
-	{
-		if (session == nullptr)
-			return std::nullopt;
-		const std::optional<ogsimnet::SimNetClockSample> held = std::exchange(m_sample, std::nullopt);
-		if (held.has_value())
-			session->onSimClockSample(*held);
-		session->onTimingInfoReceived(authorityTick, roundTripSeconds);
-		return held;
-	}
-
-	bool holdsSample() const { return m_sample.has_value(); }
-
-private:
-	std::optional<ogsimnet::SimNetClockSample> m_sample;
-};
-
 inline constexpr size_t kRunnerRttSlots = 64u;
 
 class FRunnerRttTable
