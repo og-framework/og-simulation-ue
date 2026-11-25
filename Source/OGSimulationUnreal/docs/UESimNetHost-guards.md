@@ -93,7 +93,7 @@ client whose corrections are all silently ignored.
 
 ## G-05 — a latched floor is applied as received: it pays for an increase
 
-**Tag site:** `UESimNetHost.h`, `UESimNetClientHost::onRelayFloor`, the line above `m_session->onRelayDelayFloorReceived(floorTicks);`.
+**Tag site:** `SimNetLink.h`, `UESimNetLanesClientHost::onRelayFloor`, the line above `m_session->onRelayDelayFloorReceived(floorTicks);`.
 
 **The prohibition.** Do not route a replayed floor (`replayed == true`) to the session's `onRelayDelayFloorReplayed`, and do not
 make the call depend on `replayed`.

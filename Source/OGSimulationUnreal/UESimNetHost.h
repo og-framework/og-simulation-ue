@@ -9,6 +9,7 @@
 #include "Engine/NetConnection.h"
 #include "GameFramework/Actor.h"
 #include "HAL/PlatformTime.h"
+#include "OGNet/NetTypes.h"
 #include "OGNetUnreal/Core/EngineLaneDriverCore.h"
 #include "OGNetUnreal/Core/SimLaneEndpoint.h"
 #include "OGNetUnreal/OGNetConnection.h"
@@ -24,7 +25,9 @@
 #include "Runtime/Engine/Public/Net/NetPing.h"
 #include "Templates/Function.h"
 
+#include <array>
 #include <atomic>
+#include <bit>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -34,9 +37,6 @@ template <typename TraitsT> class UESimulationSession;
 
 inline constexpr uint64 kSimNetWireMismatchToastKey = 0x4F47574DF0000001ull;
 inline constexpr float kSimNetWireMismatchToastSeconds = 15.f;
-inline constexpr char kSimNetRosterLinePrefix[] = "[Roster.";
-inline constexpr char kSimNetWarningToken[] = "[Warning]";
-inline constexpr size_t kSimNetWarnedRosterLineBytes = ogsimnet::kRosterLogLineBytes + sizeof(kSimNetWarningToken);
 
 OGSIMULATIONUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(LogOGRtt, Log, All);
 
@@ -290,83 +290,10 @@ inline void warnClientRttUnavailableOnce(FClientRttWarnings& warnings, EClientRt
 		logClientRttUnavailable(clientRttUnavailableText(cause));
 }
 
-class FLockedSimNetBindings
-{
-public:
-	void onRosterAdded(const ogsimnet::RosterEntry& entry)
-	{
-		const std::scoped_lock lock(m_mutex);
-		m_bindings.onRosterAdded(entry);
-	}
-
-	bool onRosterRemoved(uint8_t simId)
-	{
-		const std::scoped_lock lock(m_mutex);
-		return m_bindings.onRosterRemoved(simId);
-	}
-
-	void seedFrom(const ogsimnet::RosterMirror& mirror)
-	{
-		const std::scoped_lock lock(m_mutex);
-		m_bindings.seedFrom(mirror);
-	}
-
-	ogsimnet::BindVerdict verdict(uint8_t simId, bool engineSaysLocal) const
-	{
-		const std::scoped_lock lock(m_mutex);
-		return m_bindings.verdict(simId, engineSaysLocal);
-	}
-
-	ogsimnet::BindVerdict markRegisteredIfReady(uint8_t simId, bool engineSaysLocal)
-	{
-		const std::scoped_lock lock(m_mutex);
-		const ogsimnet::BindVerdict verdict = m_bindings.verdict(simId, engineSaysLocal);
-		if (verdict.step == ogsimnet::BindStep::Ready)
-			m_bindings.markRegistered(simId);
-		return verdict;
-	}
-
-	void markRegistered(uint8_t simId)
-	{
-		const std::scoped_lock lock(m_mutex);
-		m_bindings.markRegistered(simId);
-	}
-
-	bool markUnregistered(uint8_t simId)
-	{
-		const std::scoped_lock lock(m_mutex);
-		return m_bindings.markUnregistered(simId);
-	}
-
-	bool isRegistered(uint8_t simId) const
-	{
-		const std::scoped_lock lock(m_mutex);
-		return m_bindings.isRegistered(simId);
-	}
-
-private:
-	mutable std::mutex m_mutex;
-	ogsimnet::SimNetBindings m_bindings;
-};
-
 namespace ueSimNetHost
 {
-inline void noteDelivered(ognetunreal::SimLaneEndpoint& endpoint, SimLane lane, double recvSeconds)
-{
-	endpoint.noteDelivered(static_cast<ognet::Lane>(lane), recvSeconds, FPlatformTime::Seconds());
-}
-
-inline void routeLine(const char* line)
-{
-	if (std::strncmp(line, kSimNetRosterLinePrefix, sizeof(kSimNetRosterLinePrefix) - 1u) != 0)
-	{
-		RouteOGMessage(line);
-		return;
-	}
-	char warned[kSimNetWarnedRosterLineBytes] = {};
-	std::snprintf(warned, sizeof(warned), "%s%s", kSimNetWarningToken, line);
-	RouteOGMessage(warned);
-}
+inline void noteDelivered(ognetunreal::SimLaneEndpoint& endpoint, SimLane lane, double recvSeconds);
+inline void routeLine(const char* line);
 } // namespace ueSimNetHost
 
 template <typename TraitsT>
@@ -449,10 +376,9 @@ class UESimNetClientHost
 {
 public:
 	using Session = UESimulationSession<TraitsT>;
-	using FRegisteredRemoved = TFunction<void(uint8_t simId)>;
 
-	UESimNetClientHost(UOGNetDriver* ognetDriver, ognetunreal::SimLaneEndpoint& laneEndpoint, FLockedSimNetBindings& simBindings)
-		: m_driver(ognetDriver), m_endpoint(laneEndpoint), m_bindings(simBindings)
+	UESimNetClientHost(UOGNetDriver* ognetDriver)
+		: m_driver(ognetDriver)
 	{
 	}
 
@@ -461,8 +387,6 @@ public:
 
 	void bindSession(Session& worldSession) { m_session = &worldSession; }
 	void unbindSession() { m_session = nullptr; }
-	void setRoster(const ogsimnet::RosterMirror& roster) { m_roster = &roster; }
-	void setOnRegisteredRemoved(FRegisteredRemoved onRegisteredRemoved) { m_onRegisteredRemoved = MoveTemp(onRegisteredRemoved); }
 
 	double nowSeconds() { return FPlatformTime::Seconds(); }
 
@@ -495,52 +419,6 @@ public:
 		return kNoRttReadingSeconds;
 	}
 
-	void onTimingInfo(uint32_t authorityTick, double roundTripSeconds)
-	{
-		if (m_session != nullptr)
-			m_session->onTimingInfoReceived(authorityTick, roundTripSeconds);
-	}
-
-	void onRelayFloor(uint8_t floorTicks, [[maybe_unused]] bool replayed)
-	{
-		if (m_session == nullptr)
-			return;
-		// ⛔G-05  docs/UESimNetHost-guards.md
-		m_session->onRelayDelayFloorReceived(floorTicks);
-	}
-
-	void onConnectionTier(uint8_t oldTier, uint8_t newTier, [[maybe_unused]] bool replayed)
-	{
-		if (m_session == nullptr)
-			return;
-		m_session->onConnectionTierReceived(oldTier, newTier);
-	}
-
-	void onRosterAdded(uint8_t simId)
-	{
-		const ogsimnet::RosterEntry* const entry = m_roster != nullptr ? m_roster->entryFor(simId) : nullptr;
-		checkf(entry != nullptr,
-			TEXT("UESimNetClientHost::onRosterAdded: sim id %u is not in the roster mirror. The mirror reports an Add after it ")
-			TEXT("applied it, and the lanes set the mirror before the first drain"),
-			static_cast<unsigned>(simId));
-		if (entry != nullptr)
-			m_bindings.onRosterAdded(*entry);
-	}
-
-	void onRosterRemoved(uint8_t simId)
-	{
-		const bool wasRegistered = m_bindings.onRosterRemoved(simId);
-		checkf(!wasRegistered || static_cast<bool>(m_onRegisteredRemoved),
-			TEXT("UESimNetClientHost::onRosterRemoved: sim id %u is registered and no unregister handler is set. The client ")
-			TEXT("session sets one (setOnRegisteredRemoved) before it registers a character"),
-			static_cast<unsigned>(simId));
-		if (wasRegistered && m_onRegisteredRemoved)
-		{
-			// ⛔G-03  docs/UESimNetHost-guards.md
-			m_onRegisteredRemoved(simId);
-		}
-	}
-
 	void onWireMismatch(uint8_t received, uint8_t expected)
 	{
 		// ⛔G-04  docs/UESimNetHost-guards.md
@@ -555,18 +433,6 @@ public:
 	}
 
 	void log(const char* line) { ueSimNetHost::routeLine(line); }
-
-	void stampClientReceived(ogsimnet::SimNetStream stream, uint8_t simId, uint32_t tick, double recvSeconds)
-	{
-		if (m_session == nullptr)
-			return;
-		UELatencyBudgetDiagnostics<TraitsT>& diagnostics = m_session->editLatencyBudgetDiagnostics();
-		const latencyBudget::Stream probeStream =
-			stream == ogsimnet::SimNetStream::State ? latencyBudget::Stream::State : latencyBudget::Stream::Input;
-		diagnostics.stampClientReceived_Internal(probeStream, simId, tick, recvSeconds);
-	}
-
-	void noteDelivered(SimLane lane, double recvSeconds) { ueSimNetHost::noteDelivered(m_endpoint, lane, recvSeconds); }
 
 	UOGNetDriver* driver() const { return m_driver; }
 	Session* session() const { return m_session; }
@@ -597,12 +463,117 @@ private:
 	}
 
 	UOGNetDriver* m_driver;
-	ognetunreal::SimLaneEndpoint& m_endpoint;
-	FLockedSimNetBindings& m_bindings;
-	const ogsimnet::RosterMirror* m_roster = nullptr;
+protected:
 	Session* m_session = nullptr;
-	FRegisteredRemoved m_onRegisteredRemoved;
+private:
 	FClientRttWarnings m_rttWarnings;
 	std::atomic<double> m_publishedRttSeconds{kNoRttReadingSeconds};
 	std::atomic<EClientRttUnavailable> m_publishedRttUnavailable{EClientRttUnavailable::NotPublished};
+};
+
+inline constexpr size_t kRunnerRttSlots = 64u;
+
+class FRunnerRttTable
+{
+public:
+	static_assert(ognet::kInvalidConnection == 0u,
+		"FRunnerRttTable: a word of 0 is an empty slot, and a connection's word holds its og-net id in the high half; og-net "
+		"never assigns id 0 (kInvalidConnection), so no connection's word reads as empty. A connection still without an "
+		"og-net id is not published, and id 0 is never read. Was review_P5-19 N2 (an id 0 with a round trip of 0 read as "
+		"absent)");
+	static_assert(std::atomic<uint64_t>::is_always_lock_free,
+		"FRunnerRttTable: one connection's reading is one lock-free 64-bit word (og-net id, float milliseconds), so the runner "
+		"never reads an id with another connection's round trip. Was the runner's call into the driver's connection map, "
+		"which is game-thread state");
+
+	void publish_GameThread(size_t slot, uint32 ogNetId, double roundTripMs)
+	{
+		m_slots[slot].store((static_cast<uint64_t>(ogNetId) << 32u) | std::bit_cast<uint32_t>(static_cast<float>(roundTripMs)),
+			std::memory_order_release);
+	}
+
+	void clearFrom_GameThread(size_t firstSlot)
+	{
+		for (size_t slot = firstSlot; slot < kRunnerRttSlots; ++slot)
+			m_slots[slot].store(0u, std::memory_order_release);
+	}
+
+	double read(uint32 ogNetId) const
+	{
+		if (ogNetId == ognet::kInvalidConnection)
+			return kNoRttReadingMs;
+		for (const std::atomic<uint64_t>& slot : m_slots)
+		{
+			const uint64_t word = slot.load(std::memory_order_acquire);
+			if (word != 0u && static_cast<uint32>(word >> 32u) == ogNetId)
+				return static_cast<double>(std::bit_cast<float>(static_cast<uint32_t>(word & 0xFFFFFFFFu)));
+		}
+		return kNoRttReadingMs;
+	}
+
+private:
+	std::array<std::atomic<uint64_t>, kRunnerRttSlots> m_slots{};
+};
+
+template <typename TraitsT>
+class UESimNetLanesServerHost : public UESimNetServerHost<TraitsT>
+{
+	using Base = UESimNetServerHost<TraitsT>;
+
+public:
+	using Base::Base;
+
+	double rttMs(SimConnectionId conn) { return m_runnerRtt.read(conn); }
+
+	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds)
+	{
+		if (this->session() == nullptr)
+			return;
+		this->session()->editLatencyBudgetDiagnostics().stampServerReceived_Internal(simId, captureTick, recvSeconds);
+	}
+
+	void stampHanded(uint8_t simId, uint32_t captureTick)
+	{
+		if (this->session() != nullptr)
+			this->session()->editLatencyBudgetDiagnostics().stampHandedAndLeft_Internal(simId, captureTick);
+	}
+
+	void onLifecycleUnregistering(uint8_t simId)
+	{
+		if (this->session() != nullptr)
+			this->session()->onSimNetLifecycleUnregistering(simId);
+	}
+
+	void publishRunnerRtt_GameThread()
+	{
+		checkf(IsInGameThread(),
+			TEXT("UESimNetLanesServerHost::publishRunnerRtt_GameThread: the game thread reads the driver's connections and "
+				 "publishes each one's round trip for the authority runner, which reads only the published copy"));
+		size_t slot = 0u;
+		if (UOGNetDriver* const driver = this->driver())
+		{
+			for (UNetConnection* const connection : driver->ClientConnections)
+			{
+				UOGNetConnection* const ognetConnection = Cast<UOGNetConnection>(connection);
+				if (ognetConnection == nullptr || ognetConnection->OGNetId == ognet::kInvalidConnection || slot == kRunnerRttSlots)
+					continue;
+				m_runnerRtt.publish_GameThread(slot++, ognetConnection->OGNetId, publishedRttMs_GameThread(*ognetConnection));
+			}
+		}
+		m_runnerRtt.clearFrom_GameThread(slot);
+	}
+
+private:
+	double publishedRttMs_GameThread(UOGNetConnection& connection)
+	{
+		// ⛔G-04  docs/UESimNetLanes-guards.md
+		if (connection.ClientLoginState == EClientLoginState::ReceivedJoin)
+			return Base::rttMs(connection.OGNetId);
+		double roundTripMs = kNoRttReadingMs;
+		if (!connection.IsClosingOrClosed())
+			readRoundTripMs(connection, roundTripMs);
+		return roundTripMs;
+	}
+
+	FRunnerRttTable m_runnerRtt;
 };
