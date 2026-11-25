@@ -240,7 +240,8 @@ as the first two (an integer clamped into one `TimeConfig` field), so "the clamp
 with the move, og-session-runtime task 23.)
 
 **Exempt by design: the input reception and the og-net hookup.** `getReceptionCoordinator`,
-`getServerReceptionTick`, `releaseDelayedInputsForStep` and `afterAuthorityBatch` (the reap) are typed on the per-step release
+`getServerReceptionTick`, `releaseDelayedInputsForStep` and `afterAuthorityBatch` (the reap; og-sim-session's `SessionNetHooks`
+since og-session-runtime task 26, over the port's `Server`) are typed on the per-step release
 (task 26a; the in-frame server's correction-tick walk for the latency member too, until og-session-runtime task 14): erasing the game's input type there would put
 an indirect call on the step path (manager design §9, step 5). Since og-input-latency task P5-7 they reach og-sim-net's server,
 which is typed on the game's composition, and the og-net hookup joins them: `findDriverSimNetLanes`, `beginServerSimNet`,
@@ -589,7 +590,8 @@ the `UnregisterApplied` outcome (`collectLifecycleOutcomes_GameThread`) or the t
 **What breaks if the edit is made.** The backend's unregistration releases the character's physics slot, unbinding its bodies from
 the bind table on the game thread (`JoltTickWorldHost::release`). The character is still in storage until a step's drain
 applies the queued unregister, and that drain runs at the start of the first step that begins after the request is posted
-(`receiveForClientStep_Step`, §18.2 of the rationale). The game thread does not wait for the steps: a frame-bounded step runs on
+(og-sim-session's `SessionNetHooks::receiveForStep` since og-session-runtime task 26, the session's `receiveForClientStep_Step`
+before, §18.2 of the rationale). The game thread does not wait for the steps: a frame-bounded step runs on
 an executor task while the game thread runs, so a step that began before the request was posted, past its drain, can still be running, and it
 integrates a character whose bodies are no longer bound. (Before og-input-latency task P5-30 the drain ran after the integrate,
 so the first step after the post integrated the character too.)

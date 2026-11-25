@@ -23,6 +23,7 @@
 #include "OGSimulationUnreal/UEConfigSource.h"
 #include "OGSimulationUnreal/UELatencyBudgetDiagnostics.h"
 #include "OGSimulationUnreal/UESessionRefusal.h"
+#include "OGSimulationUnreal/UESessionTickHost.h"
 #include "OGSimulationUnreal/UESimulationLogRoutes.h"
 #include "OGSimulationUnreal/UESimNetHost.h"
 #include "OGSimulationUnreal/UESimNetLanes.h"
@@ -38,7 +39,9 @@
 #include "OGSimSession/SessionClock.h"
 #include "OGSimSession/SessionDisplay.h"
 #include "OGSimSession/SessionKnobs.h"
+#include "OGSimSession/SessionNetHooks.h"
 #include "OGSimSession/SessionThreads.h"
+#include "OGSimSession/SessionTickGame.h"
 #include "OGSimulation/PhysicsEngineTraits.h"
 #include "OGSimulation/QueryGeometry.h"
 #include "OGSimulation/RelayedInputRingCodec.h"
@@ -172,6 +175,9 @@ static_assert(ueSessionClockLineKeepsItsRoute(ogsession::sessionClockLines::kCon
 	"the hiccup advisory, [ClockSource.Window], the dilation window's own [Dilation.Window] line after its token, and "
 	"[Dilation.Authority]. Was each line's UE_LOG(LogOGNet, <Level>, ...) in UESimulationSession (og-session-runtime task "
 	"24)");
+static_assert(ueSessionClockLineKeepsItsRoute(ogsession::sessionNetHooksLines::kReleaseBatch, ELogVerbosity::Verbose),
+	"The net hooks' [ReleaseBatch] line (ogsession::sessionNetHooksLines) reaches LogOGNet at Verbose, the level its "
+	"OG_LOG_ROUTED(LogOGNet, ...) took from the route table in releaseDelayedInputsForStep (og-session-runtime task 26)");
 
 namespace ueSimulationSessionHookNames
 {
@@ -238,7 +244,7 @@ public:
 
 private:
 	friend typename TraitsT::template PhysicsBackend<UESimulationSession>;
-	friend typename TraitsT::template TickDriverGame<UESimulationSession>;
+	template <typename BindingT> friend struct UESessionTickHost;
 	friend LatencyBudgetDiagnostics;
 
 	using Composition     = typename TraitsT::Composition;
@@ -288,6 +294,27 @@ private:
 	static_assert(ogsession::SessionClockLink<ClockLink> && ogsession::SessionClockServer<UESimNetClockServer>,
 		"UESimulationSession hands its clock the lanes' ack round trip and SimClock counts (ClockLink, for the "
 		"[ClockSource.Window] line) and og-sim-net's SimClock server (publishServerTick(tick, tickStartSeconds))");
+
+	struct NetPort
+	{
+		using Lanes       = SimNetLanes;
+		using Server      = SimNetServer;
+		using Idle        = ogsimnet::SimNetIdle<ognetunreal::SimLaneEndpoint>;
+		using Simulatable = typename TraitsT::Simulatable;
+
+		UESimulationSession* session = nullptr;
+
+		Lanes*  lanes() const { return session->m_simNetLanes; }
+		Server* server() { return session->m_simNetServer.has_value() ? &*session->m_simNetServer : nullptr; }
+		Idle*   idle() { return session->m_simNetIdle.has_value() ? &*session->m_simNetIdle : nullptr; }
+		void    runRunnerRequests() { session->runRunnerRequests_Owner(); }
+		void    applyUnregisterRequests(typename Lanes::Client& client) { session->applyUnregisterRequests_Step(client); }
+		void    publishPresentation() { session->publishAuthorityPresentation_Runner(); }
+		double  nowSeconds() const { return FPlatformTime::Seconds(); }
+		void    logRouted(const char* line) { RouteOGLevelLine(line); }
+	};
+
+	using NetHooks = ogsession::SessionNetHooks<NetPort, ManagerType, NetSync, Storage, LatencyBudgetDiagnostics>;
 
 public:
 	const ServerTickClock& getServerClock() const { return m_manager->getServerClock(); }
@@ -445,17 +472,7 @@ private:
 
 	void beginServerSimNet(UWorld& world);
 
-	IdleWake idleUntil_Runner(double deadlineSeconds);
-
-	void beforePump_Owner(double hostNowSeconds, TickRateDoor& rate);
-
-	void afterStep_Step()
-	{
-		if (m_clock.has_value())
-			m_clock->publishServerTick(m_clockServer);
-	}
-
-	void stampCorrectionsHanded_Runner();
+	void runRunnerRequests_Owner();
 
 	void publishAuthorityPresentation_Runner()
 	{
@@ -484,8 +501,6 @@ private:
 		});
 	}
 
-	static uint32 correctionTickOf(const SimChannel& channel);
-
 	void postRunnerRequest(TUniqueFunction<void()> request);
 
 	TryRegisterStatus tryRegisterOnRunner(unsigned int id, typename TraitsT::Component& owner);
@@ -513,14 +528,6 @@ private:
 	bool refuseSecondSessionOfRole(UWorld& world, ENetMode netMode);
 
 	void refuseRegistrationWithoutSession(unsigned int id);
-
-	typename SimNetLanes::Client* boundImmediateClient_Step() const;
-
-	void afterClientCapture_Step();
-
-	void receiveForClientStep_Step();
-
-	void publishDisplaySnapshot_Step() { m_display->publishAfterBatch(); }
 
 	void applyUnregisterRequests_Step(typename SimNetLanes::Client& client);
 
@@ -559,16 +566,6 @@ private:
 			m_physicsBackend.overlayRenderPoses_GameThread(id, vizState);
 		});
 	}
-
-	void noteAuthorityStepTime_Step()
-	{
-		if (m_clock.has_value())
-			m_clock->noteAuthorityStepStart();
-	}
-
-	void releaseDelayedInputsForStep(int32 firstTick, int32 numSteps);
-
-	void afterAuthorityBatch(int32 firstUpcomingSimTick);
 
 	std::optional<uint32> physicsSlotFor(AActor& owner, uint64 key, unsigned int storageKey) const;
 
@@ -618,9 +615,11 @@ private:
 	std::optional<ManagerType> m_manager;
 	PhysicsBackend m_physicsBackend{ *this, m_physicsBackendWorlds };
 
+	std::optional<ogsession::SessionThreadChecks> m_threads;
 	UESessionClockEngine m_clockEngine;
 	std::optional<Clock> m_clock;
 	std::optional<Display> m_display;
+	std::optional<NetHooks> m_netHooks;
 
 	SimNetLanes* m_simNetLanes = nullptr;
 	std::optional<SimNetServerHost> m_simNetServerHost;
@@ -763,14 +762,25 @@ private:
 			"TraitsT::EngineTraits must model og-simulation's PhysicsEngineTraits (PhysicsEngineTraits.h): the session and "
 			"its integration executor read the engine's adapter types, name and visualization types through it. The engine "
 			"is the game's choice, made in its traits (user ruling 2026-10-24).");
-		static_assert(std::is_same_v<ManagerType, typename TraitsT::template TickDriverGame<UESimulationSession>::Manager>,
-			"UESimulationSession::ManagerType must BE the manager type the tick-driver game binding names "
-			"(TraitsT::TickDriverGame<UESimulationSession>::Manager). ManagerType is private, so a backend host declared "
-			"outside this class (the tick-driver backend, whose step driver is SimulationStepDriver<Manager, ...>) names "
-			"the manager through the game binding; a ManagerType that drifts from it hands that host a different "
-			"SimulationManager instantiation than m_manager. Was the owner's ManagerType row (added by "
-			"og-simulationscheduler-withjolt task 81), which compared it with the game's composition struct; moved here "
-			"by og-ue-simulationcomponentandmanagersplit task 24a.");
+		static_assert(std::is_same_v<ManagerType, typename PhysicsBackend::TickGame::Manager>,
+			"UESimulationSession::ManagerType must BE the manager type the backend's tick game names "
+			"(PhysicsBackend::TickGame::Manager, the game binding's through UESessionTickHost). ManagerType is private, so a "
+			"backend host declared outside this class (the tick-driver backend, whose step driver is "
+			"SimulationStepDriver<Manager, ...>) names the manager through the game binding; a ManagerType that drifts from "
+			"it hands that host a different SimulationManager instantiation than m_manager. Was the owner's ManagerType row "
+			"(added by og-simulationscheduler-withjolt task 81), which compared it with the game's composition struct; moved "
+			"here by og-ue-simulationcomponentandmanagersplit task 24a; compared with TraitsT::TickDriverGame until "
+			"og-session-runtime task 26.");
+		static_assert(TickDriverSampleGame<typename PhysicsBackend::TickGame>
+		           && TickDriverReceiveGame<typename PhysicsBackend::TickGame>
+		           && TickDriverDisplayGame<typename PhysicsBackend::TickGame>
+		           && TickDriverIdleGame<typename PhysicsBackend::TickGame>,
+			"UESimulationSession: the backend's tick game (og-sim-session's SessionTickGame over UESessionTickHost) must model "
+			"the four optional hooks' concepts; SessionTickGame.h states why each is needed. Were the four static_asserts on "
+			"the brawler's BrawlerTickDriverGame (og-session-runtime task 26)");
+		static_assert(std::is_same_v<Storage, typename PhysicsBackend::TickGame::Storage>,
+			"UESimulationSession::Storage must BE the storage type the backend's tick game hands the driver; the tick host "
+			"returns m_storage as it");
 		static_assert(__builtin_offsetof(UESimulationSession, m_physicsBackendWorlds)
 		                  < __builtin_offsetof(UESimulationSession, m_physAdapter)
 		           && __builtin_offsetof(UESimulationSession, m_physAdapter)
@@ -815,6 +825,14 @@ private:
 			"the clock's display-tier buffer, so it must be destroyed before all five. Keep m_storage, m_reconciliation, "
 			"m_inputResolution, m_manager and m_clock < m_display (og-session-runtime task 25: the display's members were the "
 			"session's own until then, built with it)");
+		static_assert(__builtin_offsetof(UESimulationSession, m_latencyBudgetDiagnostics) < __builtin_offsetof(UESimulationSession, m_netHooks)
+		           && __builtin_offsetof(UESimulationSession, m_storage) < __builtin_offsetof(UESimulationSession, m_netHooks)
+		           && __builtin_offsetof(UESimulationSession, m_netSync) < __builtin_offsetof(UESimulationSession, m_netHooks)
+		           && __builtin_offsetof(UESimulationSession, m_manager) < __builtin_offsetof(UESimulationSession, m_netHooks),
+			"UESimulationSession members destruct in REVERSE declaration order. The net hooks (og-sim-session's "
+			"SessionNetHooks) keep references to the latency diagnostics, the storage, the net sync and the manager, so they "
+			"must be destroyed before all four. Keep m_latencyBudgetDiagnostics, m_storage, m_netSync and m_manager < "
+			"m_netHooks (og-session-runtime task 26: the hooks were the session's member functions until then)");
 		static_assert(__builtin_offsetof(UESimulationSession, m_manager)
 		                  < __builtin_offsetof(UESimulationSession, m_simNetServer)
 		           && __builtin_offsetof(UESimulationSession, m_simNetServerHost)
@@ -1074,13 +1092,23 @@ void UESimulationSession<TraitsT>::onAuthorityRunnerJoined_GameThread()
 	m_runnerStopped = true;
 }
 
-#include "OGSimSession/SessionNetHooks.h"
-
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::postRunnerRequest(TUniqueFunction<void()> request)
 {
 	const std::scoped_lock lock(m_lifecycleBridgeMutex);
 	m_runnerRequests.push_back(MoveTemp(request));
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::runRunnerRequests_Owner()
+{
+	std::vector<TUniqueFunction<void()>> requests;
+	{
+		const std::scoped_lock lock(m_lifecycleBridgeMutex);
+		requests.swap(m_runnerRequests);
+	}
+	for (TUniqueFunction<void()>& request : requests)
+		request();
 }
 
 template <typename TraitsT>
@@ -1369,6 +1397,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 	const ogsession::SessionThreadChecks clockThreads(
 		worldIsAuthority ? ogsession::SessionRole::Authority : ogsession::SessionRole::Prediction,
 		&m_physicsBackendWorlds.host.threadContext(), std::this_thread::get_id());
+	m_threads.emplace(clockThreads);
 
 	auto configureSession = [&]()
 	{
@@ -1383,6 +1412,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 				m_storage, m_staticData, std::function<void(const char*)>(pctmloggerServer) });
 			m_clock.emplace(m_clockEngine, *m_manager, m_inputResolution, clockThreads);
 			m_display.emplace(clockThreads, *m_manager, m_storage, m_inputResolution, m_reconciliation, m_clock->displayTier());
+			m_netHooks.emplace(clockThreads, NetPort{ this }, *m_manager, m_netSync, m_storage, m_latencyBudgetDiagnostics);
 			m_reconciliation.setLogger(std::function<void(const char*)>(pctmloggerServer));
 			m_inputResolution.setLogger(std::function<void(const char*)>(pctmloggerServer));
 			m_netSync.setLogger(std::function<void(const char*)>(pctmloggerServer));
@@ -1413,6 +1443,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 				m_storage, m_staticData, std::function<void(const char*)>(pctmlogger) });
 			m_clock.emplace(m_clockEngine, *m_manager, m_inputResolution, clockThreads);
 			m_display.emplace(clockThreads, *m_manager, m_storage, m_inputResolution, m_reconciliation, m_clock->displayTier());
+			m_netHooks.emplace(clockThreads, NetPort{ this }, *m_manager, m_netSync, m_storage, m_latencyBudgetDiagnostics);
 			m_reconciliation.setLogger(std::function<void(const char*)>(pctmlogger));
 			m_inputResolution.setLogger(std::function<void(const char*)>(pctmlogger));
 			m_netSync.setLogger(std::function<void(const char*)>(pctmlogger));
@@ -2110,6 +2141,75 @@ void UESimulationSession<TraitsT>::teardownImmediateClient_GameThread()
             m_simNetLanes->editBindings().markUnregistered(static_cast<uint8_t>(it->first));
         it = m_pendingRegistrations.erase(it);
     }
+}
+
+template <typename BindingT>
+typename UESessionTickHost<BindingT>::Manager& UESessionTickHost<BindingT>::manager()
+{
+	return *session->m_manager;
+}
+
+template <typename BindingT>
+typename UESessionTickHost<BindingT>::Storage& UESessionTickHost<BindingT>::storage()
+{
+	return session->m_storage;
+}
+
+template <typename BindingT>
+const ogsession::SessionThreadChecks& UESessionTickHost<BindingT>::threads() const
+{
+	checkf(session->m_threads.has_value(),
+		TEXT("UESessionTickHost::threads: the session builds its thread checks in beginPlay, before it builds the world or "
+			 "starts the driver that calls the tick game"));
+	return *session->m_threads;
+}
+
+template <typename BindingT>
+auto* UESessionTickHost<BindingT>::clock()
+{
+	return session->m_clock.has_value() ? &*session->m_clock : nullptr;
+}
+
+template <typename BindingT>
+auto* UESessionTickHost<BindingT>::display()
+{
+	return session->m_display.has_value() ? &*session->m_display : nullptr;
+}
+
+template <typename BindingT>
+auto* UESessionTickHost<BindingT>::netHooks()
+{
+	return session->m_netHooks.has_value() ? &*session->m_netHooks : nullptr;
+}
+
+template <typename BindingT>
+auto* UESessionTickHost<BindingT>::clockServer()
+{
+	return session->m_clockServer;
+}
+
+template <typename BindingT>
+typename UESessionTickHost<BindingT>::Diagnostics& UESessionTickHost<BindingT>::diagnostics()
+{
+	return session->m_latencyBudgetDiagnostics;
+}
+
+template <typename BindingT>
+void UESessionTickHost<BindingT>::sampleInput()
+{
+	BindingT::sampleInput(*session);
+}
+
+template <typename BindingT>
+void UESessionTickHost<BindingT>::onFrameStepsDue(int32_t firstUpcomingSimTick, int32_t numSteps)
+{
+	session->onFrameStepsDue_Step(firstUpcomingSimTick, numSteps);
+}
+
+template <typename BindingT>
+void UESessionTickHost<BindingT>::onPostPhysics()
+{
+	session->onPostPhysicsStep();
 }
 
 OGSIM_OPTIMIZE_ON

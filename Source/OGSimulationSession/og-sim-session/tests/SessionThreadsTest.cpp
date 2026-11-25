@@ -43,6 +43,7 @@ constexpr std::array<ExpectedRow, kSessionOpCount> kExpected{ {
 	{ SessionOp::ServiceNet,             "ServiceNet",             SessionThread::NetIo, SessionThread::NetIo },
 	{ SessionOp::LinkFrameService,       "LinkFrameService",       SessionThread::Frame, SessionThread::Frame },
 	{ SessionOp::DrainStopped,           "DrainStopped",           SessionThread::Frame, std::nullopt },
+	{ SessionOp::FrameProbe,             "FrameProbe",             SessionThread::Frame, SessionThread::Step },
 } };
 
 using Allowed = std::array<bool, kSessionOpCount>;
@@ -86,16 +87,22 @@ struct PredictionRig
 
 struct AuthorityRig
 {
-	Allowed allowedOnTheRunner()
+	template <typename RunnerWorkT>
+	void onTheRunner(RunnerWorkT&& work)
 	{
-		Allowed allowed{};
 		std::thread runner(
 			[&]
 			{
 				context.configure<true>(tickDriverThread::kAuthorityRoleBit, StepThreading::FreeRunning);
-				allowed = allowedHere(checks);
+				work();
 			});
 		runner.join();
+	}
+
+	Allowed allowedOnTheRunner()
+	{
+		Allowed allowed{};
+		onTheRunner([&] { allowed = allowedHere(checks); });
 		return allowed;
 	}
 
@@ -187,6 +194,23 @@ TEST_CASE("SessionThreads.TheStoppedDrainIsAClientsFrameRowAndNoStepsOrAuthority
 	CHECK_FALSE(allowedHere(authority.checks)[stopped]);
 }
 
+TEST_CASE("SessionThreads.TheFrameProbeIsTheClientsFrameAndTheAuthoritysRunner", "[Session]")
+{
+	const std::size_t probe = static_cast<std::size_t>(SessionOp::FrameProbe);
+
+	PredictionRig client;
+	const Allowed clientOnFrame = allowedHere(client.checks);
+	const Allowed clientInStep  = allowedInAStep(client.checks, client.context);
+	CHECK(clientOnFrame[probe]);
+	CHECK_FALSE(clientInStep[probe]);
+	client.checks.checkOp(SessionOp::FrameProbe);
+
+	AuthorityRig authority;
+	CHECK(authority.allowedOnTheRunner()[probe]);
+	CHECK_FALSE(allowedHere(authority.checks)[probe]);
+	CHECK_FALSE(allowedOnAPlainThread(authority.checks)[probe]);
+}
+
 TEST_CASE("SessionThreads.WithoutTheRolesContextOnlyTheFrameRowsPass", "[Session]")
 {
 	const SessionThreadChecks noContext(SessionRole::Prediction, nullptr, std::this_thread::get_id());
@@ -233,4 +257,14 @@ TEST_CASE("SessionThreads.DrainStoppedOnTheAuthorityTripsTheCheck", "[.][Session
 	rig.checks.checkOp(SessionOp::DrainStopped);
 	FAIL("SessionThreadChecks::checkOp(DrainStopped) on an authority's frame thread did NOT fire - the authority has no "
 		 "stopped drain");
+}
+
+TEST_CASE("SessionThreads.FrameProbeOnAnAuthoritysFrameThreadTripsTheCheck", "[.][SessionThreadsDeath]")
+{
+	AuthorityRig rig;
+	rig.onTheRunner([] {});
+	REQUIRE(rig.context.roleBit() == tickDriverThread::kAuthorityRoleBit);
+	rig.checks.checkOp(SessionOp::FrameProbe);
+	FAIL("SessionThreadChecks::checkOp(FrameProbe) on an authority's frame thread did NOT fire - the authority's frame "
+		 "probe runs on its runner");
 }

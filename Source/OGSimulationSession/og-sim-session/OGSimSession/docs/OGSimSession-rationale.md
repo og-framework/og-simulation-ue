@@ -59,9 +59,9 @@ is the module's generated definitions header.
   include roots. og-net is reached only through og-sim-net: the tier lint forbids og-sim-session from including og-net,
   og-simulation-jolt or any engine module (`module_tiers.psd1`, the `OGSimSession` row).
 - **`Core` is a private dependency**, for the module macro in `OGSimulationSessionModule.cpp`.
-- **`OGSimulationSessionModule.cpp` includes the eight library headers** (`SessionClock.h` since og-session-runtime task 24,
+- **`OGSimulationSessionModule.cpp` includes the ten library headers** (`SessionClock.h` since og-session-runtime task 24,
   `SessionDisplay.h` and `SimulationDisplaySnapshot.h` since task 25, `SessionEngine.h`, `SessionGame.h`, `SessionKnobs.h` since
-  task 23, `SessionThreads.h`, `SessionTypes.h`), so every target that builds the module compiles each of them, with their
+  task 23, `SessionNetHooks.h` and `SessionTickGame.h` since task 26, `SessionThreads.h`, `SessionTypes.h`), so every target that builds the module compiles each of them, with their
   self-check `static_assert`s, under that target's flags and after an engine header. That is where an identifier that
   collides with an engine macro would show first; it is why `SessionThreadChecks`' check is `checkOp`, not `check`
   (`SessionThreads-rationale.md` §4).
@@ -75,7 +75,10 @@ is the module's generated definitions header.
   `SessionKnobs.h`. Since task 24 `UESimulationSession.h` also includes `SessionClock.h` and `SessionThreads.h` (the clock
   routing and the schedule, and the clock's thread checks), and `OGBrawlerUnreal`'s clock route test includes `SessionClock.h`.
   Since task 25 `UESimulationSession.h` includes `SessionDisplay.h` (the display) and `SimulationDisplaySnapshot.h` (moved here
-  from og-simulation; `OGBrawlerUnreal`'s visualization readers reach it through the session).
+  from og-simulation; `OGBrawlerUnreal`'s visualization readers reach it through the session). Since task 26
+  `UESimulationSession.h` includes `SessionNetHooks.h` (the per-step net hooks) and `SessionTickGame.h`, and
+  `UESessionTickHost.h` (which `TickDriverBackendUImpl.h` includes) includes `SessionTickGame.h` (the tick driver's game the
+  backend holds).
   `SessionClock.h` includes og-sim-net's `SimNetClock.h` (the SimClock client's counts on the window line) and `SimNetServer.h`
   (`kSimNetWindowSeconds`, the window's length, which only that header declares).
 

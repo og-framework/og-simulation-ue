@@ -73,9 +73,10 @@ retired frame-host G-05).
 *Added by og-sim-metres-yup task 7 (2026-10-25), when the literal `glm::vec3(0.f, 0.f, g)` was routed through the
 frame.*
 
-**Site:** `config.gravity = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(m_owner));` in `buildWorld`.
+**Site:** `config.gravity = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(m_owner.m_staticData));` in
+`buildWorld` (the hook took the session until og-session-runtime task 26, and takes its static data since).
 
-**The prohibition.** ⛔ Do not write the gravity as `simFrame::kUp * GameBindingT::gravity(m_owner)`, as `-kUp * …`,
+**The prohibition.** ⛔ Do not write the gravity as `simFrame::kUp * GameBindingT::gravity(m_owner.m_staticData)`, as `-kUp * …`,
 or through any other product of an axis and the scalar.
 
 **The consequence.** The game's gravity is negative (the brawler's movement gravity, which the session checks against the world's `GetGravityZ()`, Unreal's default −980 cm/s²). An axis times
@@ -146,9 +147,9 @@ written by og-tickdriver task 9 with the code.
 replicated slot; tag at the call) and G-02 (a wait returns no slot; tag at the wait's return), written by
 og-tickdriver task 5 with the code.
 
-**The caller's half has no tag, by decision.** The role is now computed in the game binding's `callWithSlotRequest`
-(the brawler's `BrawlerTickDriverGameUImpl`, `session.GetNetMode() != NM_Client`; in this class, on the owner,
-until og-tickdriver task 15e), outside the slot table. A client that passes `true` there makes the table
+**The caller's half has no tag, by decision.** The role is computed in this class's `callWithSlotRequest`
+(`m_owner.owner().GetNetMode() != NM_Client`, on the owner: until og-tickdriver task 15e and again since og-session-runtime
+task 26; in the brawler's binding in between) and passed to the game binding's `callWithSlotRequest`, outside the slot table. A client that passes `true` there makes the table
 assign a slot as the authority and then publish it through `SetAuthoritativePhysicsSlot`, whose `checkf` that it runs
 on the authority fires on the first client acquire in a development build: a run-time check, so no tag (as this
 entry's own "what breaks" said of the role line). The reverse edit, the authority passing `false`, makes the

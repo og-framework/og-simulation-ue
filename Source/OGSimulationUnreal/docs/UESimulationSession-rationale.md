@@ -209,7 +209,8 @@ template is compiled only when it is used, and the constructor is the one member
 | `m_storage` < `m_staticData` < `m_reconciliation` < `m_inputResolution` < `m_netSync` | construction: each peer binds the members above it in its initializer, and the static data's hook runs between the storage and the peers |
 | `Storage`, `Reconciliation`, `InputResolution`, `NetSync` and `ManagerType` are the composition's own `Storage`, `Reconciliation`, `InputResolution`, `NetSync` and `Manager` | the session requires og-simulation's own core systems and spells them itself (user ruling 2026-10-24, §13); a composition that names another type fails here |
 | `IntegrationExec` and `SystemsExec` are the composition's own `IntegrationExec` and `SystemsExec`; `EngineTraits` models og-simulation's `PhysicsEngineTraits` | the session requires og-simulation's own executors and spells them itself, and the engine is the game's choice through its traits (user ruling 2026-10-24, §14); a composition whose executors differ, or a traits engine that is no engine, fails here |
-| `ManagerType` is the tick-driver game binding's `Manager` | `ManagerType` is private; the tick-driver host names the manager through the game binding (`TraitsT::TickDriverGame<UESimulationSession>::Manager`), so the two must be one `SimulationManager` instantiation |
+| `ManagerType` is the tick-driver game binding's `Manager` | `ManagerType` is private; the tick-driver host names the manager through the game binding (`PhysicsBackend::TickGame::Manager`, the binding's through `UESessionTickHost` since og-session-runtime task 26; the
+binding's TraitsT::TickDriverGame alias before), so the two must be one `SimulationManager` instantiation |
 | `m_physicsBackendWorlds` < `m_physAdapter` < {`m_physReaderAdapter`, `m_queryAdapter`} < `m_integrationLayer` | destruction: the backend's worlds outlive every adapter bound to them, and the integration layer goes before the adapters it holds |
 | `m_manager` < `m_physicsBackend` | destruction: the backend holds the step driver, which unregisters its resync callback from the manager's client clock when it goes, so the backend goes first |
 | `m_manager`, `m_inputResolution`, `m_clockEngine` < `m_clock` | destruction: the clock holds references to all three, and its tier consumer borrows the manager's `TimeConfig`, so it goes first (the `m_manager` < `m_replicatedTierConsumer` row, moved onto the clock with the consumer by og-session-runtime task 24; task 25; in the owner it was declared above the manager's owner, and only the owner's `EndPlay` reset protected it; that reset is `endPlay`'s since task 27a, `⛔G-21`) |
@@ -244,8 +245,9 @@ emplaced in the role branches.
 *this, m_physicsBackendWorlds }`. The traits pick the host:
 
 * **A driver-scheduled engine (Jolt)**: the worlds are `TickDriverBackendWorldsUImpl` over the engine's world host, and
-  the backend is `TickDriverBackendUImpl` over the game's tick-driver binding, `TraitsT::TickDriverGame<UESimulationSession>`
-  (`TickDriverBackendUImpl-rationale.md` §1, §10, §12).
+  the backend is `TickDriverBackendUImpl` over the game's binding (the session hooks, which the traits' `PhysicsBackend` names),
+  holding og-sim-session's `SessionTickGame` over `UESessionTickHost` as the driver's game since og-session-runtime task 26
+  (§25; the game's tick-driver binding was the driver's game before) (`TickDriverBackendUImpl-rationale.md` §1, §10, §12).
 * **A self-scheduled engine (Chaos)** was the other shape: the game's own host, with an empty worlds struct. It is the
   former Chaos configuration, removed by og-session-runtime tasks 3–6 (task 3 deleted the brawler's Chaos host and its
   docs; task 6 made og-simulation's `PhysicsEngineTraits` require a world host of every engine), so every host is now
@@ -266,9 +268,10 @@ game asserts it beside its traits, on the type this class holds (`BrawlerSession
 
 ## §4 Access: the friends, the accessors and the interim path
 
-**The friends (ruled, Q-G).** The class befriends `typename TraitsT::template PhysicsBackend<UESimulationSession>`,
-`typename TraitsT::template TickDriverGame<UESimulationSession>` and its latency member, `UELatencyBudgetDiagnostics<TraitsT>`.
-These were the owner's three friend lines (the configuration's backend, the tick-driver binding template and the latency
+**The friends (ruled, Q-G).** The class befriends `typename TraitsT::template PhysicsBackend<UESimulationSession>`, the tick
+host template `UESessionTickHost` (since og-session-runtime task 26, §25, in place of the game's tick-driver binding
+TraitsT::TickDriverGame) and its latency member, `UELatencyBudgetDiagnostics<TraitsT>`. Until task 26 they were the owner's
+three friend lines (the configuration's backend, the tick-driver binding template and the latency
 template); the owner kept its own three for the interim path below until task 27b deleted them (by then they
 covered no call). The hosts need mutable production state on the physics thread (the manager's simulation calls, the adapter
 emplacement, the storage), and og-simulation's tick-driver binding hands out `Manager&` and `Storage&`, so they are
@@ -1587,6 +1590,8 @@ this header through `SimulationManager.h` (task 34); the other two are new to th
 
 ## §15 The seams for the switch (og-input-latency task P5-5)
 
+> Since og-session-runtime task 26 the release, the reap and the net-hook bodies this section names are og-sim-session's (`SessionNetHooks`, `SessionTickGame`; §25). The text below records them as the Unreal session's, where they were until then.
+
 og-input-latency's switch to og-net (its task P5-7, P5 design §3.4) changes what the reap, the slot and the server's
 `Handed` stamps run on. Task P5-5 gave the session four members that hold today's statements, so that the switch edits these
 bodies instead of every host and the latency member. P5-5 is refactor-only: each member holds the statements its callers ran
@@ -1932,6 +1937,8 @@ frame-locked client was the attribution arm. The sections below name the frame-l
 
 ### 18.2 The step hooks: the drain at the step's start, the send at capture
 
+> Since og-session-runtime task 26 the two step entries (`receiveForStep`, `afterCapture`) are og-sim-session's (`SessionNetHooks`, `SessionTickGame`; §25). The text below records them as the Unreal session's, where they were until then.
+
 A bound client's step reaches the session twice, on the step's thread. Both entries return at once on the authority
 (`runsPrediction()` false) and before the world session is bound (`boundImmediateClient_Step()`).
 
@@ -2098,6 +2105,8 @@ before) and touches no `UObject` but the world's driver, which it only reads.
 
 ### 19.3 og-sim-net on the runner
 
+> Since og-session-runtime task 26 the game binding's hooks and the net-hook bodies below are og-sim-session's (`SessionNetHooks`, `SessionTickGame`; §25). The text below records them as the Unreal session's, where they were until then.
+
 - **No frame points.** og-sim-net's server has no frame drain or flush (since og-session-runtime task 15); the session binds
   the runner's two lanes functions instead (`bindAuthorityRunner`: the RTT publish and the join, `UESimNetLanes-rationale.md`
   §12).
@@ -2113,7 +2122,8 @@ before) and touches no `UObject` but the world's driver, which it only reads.
     that step's start time since og-time-dilation task 2b (§19.8).
 - **The first batch reports tick 0** (the driver publishes its offset after a tick ran, P2-19 F2), and a capture reaped against
   it would be refused by the coordinator's domain gate. On the loop it cannot happen: og-net is serviced only by the runner's
-  idle, after its first batch, so no connection is attached at that batch. A `checkf` in `afterAuthorityBatch` states it.
+  idle, after its first batch, so no connection is attached at that batch. An `OG_CHECK` in og-sim-session's
+  `SessionNetHooks::afterBatch` states it (the session's `checkf` in `afterAuthorityBatch` until og-session-runtime task 26).
 - **The host off the game thread.** og-sim-net calls the server host from the runner: its `rttMs` reads the RTT table the game
   thread fills each frame, and its probe stamps go through the latency mailbox (`UESimNetLanes-rationale.md` §12; §21.5).
 - **The frame probes on the runner** (PROBE A per stepping wake; PROBE 6, deleted by og-session-runtime task 14) are §21.1 and
@@ -2173,6 +2183,8 @@ runner keeps stepping (the gate's hitch arm, which delays the hitch into steady 
 - A pawn whose `EndPlay` comes after either is unregistered host-side only.
 
 ### 19.7 The step's time on the runner's lines (og-input-latency task P5-37)
+
+> Since og-session-runtime task 26 the step's two calls below (`noteAuthorityStepTime_Step`, `releaseDelayedInputsForStep`) are og-sim-session's (`SessionNetHooks`, `SessionTickGame`; §25). The text below records them as the Unreal session's, where they were until then.
 
 A dedicated server has no log thread. A line logged on another thread is queued, and it is stamped when the game thread
 next flushes the queue, so on the loop the runner's `[AuthoritySimulation]` and `[Release]` lines carry stamps up to one
@@ -2333,6 +2345,8 @@ no authority. A client's `configureSession` runs on the game thread (`beginPlay`
 only), so they are built on the thread that later uses them.
 
 ### 22.3 `beforePump_Owner`: one hook, two roles
+
+> Since og-session-runtime task 26 the hook (`SessionTickGame::beforePump`, the clock's half, and `SessionNetHooks::beforePump`, the drain) is og-sim-session's (`SessionNetHooks`, `SessionTickGame`; §25). The text below records it as the Unreal session's, where it were until then.
 
 The tick driver calls the game binding's `beforePump(hostNowSeconds, rate)` on the scheduler's owning thread right before each
 pump (og-simulation's `TickDriverConcepts-rationale.md`), and the brawler's binding forwards both arguments to
@@ -2601,3 +2615,28 @@ Moved: `SessionThreads-rationale.md` §7.2.
 ### 24.3 What crosses
 
 Moved: `SessionThreads-rationale.md` §7.3.
+
+## §25 The tick driver's game and the per-step net hooks, og-sim-session's (og-session-runtime task 26)
+
+og-session-runtime task 26 moved the session's per-step net hooks out of this class and replaced the brawler's tick-driver
+binding with og-sim-session's tick game:
+- **The net hooks** (`idleUntil_Runner`, `beforePump_Owner`'s drain half, `releaseDelayedInputsForStep`, `afterAuthorityBatch`,
+  `correctionTickOf`, `stampCorrectionsHanded_Runner`, `boundImmediateClient_Step`, `afterClientCapture_Step`,
+  `receiveForClientStep_Step`) are og-sim-session's `SessionNetHooks` (`SessionNetHooks-rationale.md`). The session holds it
+  as `std::optional<NetHooks> m_netHooks`, emplaced beside the clock and the display in both role branches of the
+  configuration, over its port `NetPort` (the lanes, the server, the idle service, the runner requests, the client's unregister
+  requests, the presentation publish, `FPlatformTime::Seconds()` and the log routes) and `m_latencyBudgetDiagnostics`. A
+  destruction-order `static_assert` keeps the diagnostics, the storage, the net sync and the manager above it. The runner
+  requests' swap-and-run is `runRunnerRequests_Owner` (the lifecycle bridge stays here until og-session-runtime tasks 29–30).
+- **The tick driver's game** is og-sim-session's `SessionTickGame`, held by the backend over OGSimulationUnreal's
+  `UESessionTickHost` (`SessionTickGame-rationale.md`, `UESessionTickHost-rationale.md`). Its hooks call the clock, the display,
+  the net hooks and the latency stamps in the order §15, §18.2, §19 and §22.3 record; the order test transcribes them.
+  What stays here and is called through the host: the frame probe `onFrameStepsDue_Step` (PROBE A, §9.9, §21.1) and the
+  post-physics pass `onPostPhysicsStep` (the test hitch first). The session keeps its thread checks as `m_threads` for the host.
+- **Deleted:** the forwarders `afterStep_Step`, `noteAuthorityStepTime_Step` and `publishDisplaySnapshot_Step` (the tick game
+  calls the clock and the display itself), the friend line for the game's binding (the session befriends the host template
+  instead), and the traits' `TickDriverGame` alias. The four `static_assert`s on the brawler's refining concepts are
+  `SessionTickGame`'s, and `compositionContractsHold` asserts them on the backend's `TickGame`.
+- **Lines and checks.** `[ReleaseBatch]` goes through the port's `logRouted` (LogOGNet, Verbose, asserted at namespace scope
+  beside the clock's lines; the format parity test covers it); the first batch's `checkf` is `SessionNetHooks::afterBatch`'s
+  `OG_CHECK`. Each hook checks its thread first: one new row, `SessionOp::FrameProbe` (`SessionThreads-rationale.md` §3).

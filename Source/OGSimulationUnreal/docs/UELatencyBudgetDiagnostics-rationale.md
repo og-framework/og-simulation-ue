@@ -363,8 +363,9 @@ their tick?** No, on either backend, verified 2026-11-11:
   (`:129`) before `beforeSimulate` (`:133`); the replay loop there (`:221-236`) calls `onGameSimulation`, the world step and
   `onPostGameSimulation` per replayed tick and never calls a step hook. `beforePhysics` (`:150`), which reaches
   `onStepStarted` (`TickDriverStepHooks.h:151-155`) and so `stampAfterStep_Internal`
-  (`BrawlerSessionHooksUImpl.h:77`), runs once per physics step, for the prediction tick only. (Line numbers
-  re-checked 2026-11-19, og-input-latency task P5-33.)
+  (og-sim-session's `SessionTickGame::onStepStarted` since og-session-runtime task 26; the brawler binding's at the time),
+  runs once per physics step, for the prediction tick only. (Line numbers re-checked 2026-11-19, og-input-latency task
+  P5-33.)
 * **Chaos.** `OnPreSimulate_Internal` calls `stampLatencyAfterStep_Internal` only `if (!isResimulating)`
   (`ChaosTickBackendUImpl.cpp:266-267`). This bullet is the 2026-11-11 record of the former Chaos configuration, removed
   by og-session-runtime tasks 3–6; Jolt is the only backend since.
@@ -468,9 +469,9 @@ server's stamp sites are runner doors. Each door posts through the mailbox (§6'
 | `stampCorrectionHanded_Internal(lane, correctionTick, handed)` | `Handed` and `LeftProcess`, both at `handed` (State), once per new correction tick of the lane | `tick_GameThread`'s walk of the session's correction ticks at its own now, then `onPostTickFlush`'s `LeftProcess` |
 
 - **Who calls them.** The first two are the lanes' server host (`UESimNetLanes-rationale.md` §12), which og-sim-net calls on
-  the runner. The third is the session's `stampCorrectionsHanded_Runner`, after og-sim-net's `afterInlineBatch` has flushed the
-  batch's corrections; it reads each character's correction tick from og-sim-net's own channel, the runner's object, with the
-  session's `correctionTickOf`.
+  the runner. The third is og-sim-session's `SessionNetHooks::afterBatch` (the session's `stampCorrectionsHanded_Runner` until
+  og-session-runtime task 26), after og-sim-net's `afterInlineBatch` has flushed the batch's corrections; it reads each
+  character's correction tick from og-sim-net's own channel, the runner's object, with `SessionNetHooks::correctionTickOf`.
 - **`LeftProcess` is the hand-over.** The transport hands each relay and each correction to the og-net endpoint at once
   (`SimNetTransport-rationale.md` §7), as a client hands its inputs (§13), so the server's `H3` (Input) and `H3c` (State) read about
   0, and `H5` (State, `StepEnd` → `Handed`) ends at the runner's hand-over instead of the game thread's next latency

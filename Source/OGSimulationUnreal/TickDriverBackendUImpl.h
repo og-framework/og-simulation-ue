@@ -12,6 +12,7 @@
 #include "OGSimulationUnreal/UEAuthorityRunner.h"
 #include "OGSimulationUnreal/UEPresentControls.h"
 #include "OGSimulationUnreal/UERenderTargetTable.h"
+#include "OGSimulationUnreal/UESessionTickHost.h"
 #include "OGSimulationUnreal/UEStaticGeometryImporter.h"
 #include "OGSimulationUnreal/UETickDriverHost.h"
 #include "Components/CapsuleComponent.h"
@@ -55,11 +56,13 @@ public:
 	using Component   = typename GameBindingT::Component;
 	using Character   = typename GameBindingT::Character;
 	using VizState    = std::remove_cvref_t<decltype(std::declval<const Simulatable&>().getAllState())>;
+	using TickHost    = UESessionTickHost<GameBindingT>;
+	using TickGame    = UESessionTickGame<GameBindingT>;
 
 	TickDriverBackendUImpl(Session& owner, Worlds& worlds)
 		: m_owner(owner)
 		, m_worlds(worlds)
-		, m_tickDriverGame(owner)
+		, m_tickDriverGame(TickHost{ &owner })
 		, m_tickBackend(m_tickDriverGame, worlds.host, m_frameHost.engine())
 	{
 	}
@@ -111,10 +114,10 @@ private:
 	Session& m_owner;
 	Worlds&  m_worlds;
 
-	using TickBackend = SimulationTickBackend<GameBindingT, WorldHost, Simulatable, SimulationEngineUImpl>;
+	using TickBackend = SimulationTickBackend<TickGame, WorldHost, Simulatable, SimulationEngineUImpl>;
 
 	UETickDriverHost    m_frameHost;
-	GameBindingT        m_tickDriverGame;
+	TickGame            m_tickDriverGame;
 	UERenderTargetTable m_renderTargets;
 	TickBackend         m_tickBackend;
 
@@ -174,7 +177,7 @@ void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::buildW
 	config.isAuthority      = worldIsAuthority;
 	config.runInline        = false;
 	// ⛔G-06  docs/TickDriverBackendUImpl-guards.md
-	config.gravity          = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(m_owner));
+	config.gravity          = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(m_owner.m_staticData));
 	config.contactCounts    = EngineBindingT::contactCountsEnabled();
 	config.mappedCategories = EngineBindingT::mappedCategories();
 	config.log              = &EngineTraitsT::logEngineMessage;
@@ -293,7 +296,10 @@ template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT
 template <typename SlotCallF>
 decltype(auto) TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::callWithSlotRequest(AActor& owner, SlotCallF&& slotCall)
 {
-	return GameBindingT::callWithSlotRequest(m_owner, owner, slotKeyOf(&owner), slotCall);
+	const uint64 key = slotKeyOf(&owner);
+	return GameBindingT::callWithSlotRequest(owner, key, m_owner.owner().GetNetMode() != NM_Client,
+		[this, &owner, key](unsigned int storageKey) { return m_owner.physicsSlotFor(owner, key, storageKey); },
+		[this, &owner, key](uint32_t slot) { m_owner.recordAuthoritativeSlot(owner, key, slot); }, slotCall);
 }
 
 template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>

@@ -40,15 +40,21 @@ client they are different threads.
 | service og-net | `ServiceNet` |
 | the link's frame service | `LinkFrameService` |
 | the client's stopped drain at its teardown (og-session-runtime task 24) | `DrainStopped` |
+| the frame probe after the pump (og-session-runtime task 26) | `FrameProbe` |
 
 `kPredictionThreads` and `kAuthorityThreads` give each operation its thread, or none. They follow the design's table, with
-three readings taken from the code, through task 16's table (§7.1), and one row the design's table does not have:
+three readings taken from the code, through task 16's table (§7.1), and two rows the design's table does not have:
 
 - **The stopped drain** (`DrainStopped`, after `LinkFrameService`): a client's teardown drains og-sim-net's inbox once on the
   frame thread after its steps stopped (§7.1, its row), and a message in that drain reaches the session clock's receipt doors
   there; its row is the client's `Frame`, and the authority has none (it has no such drain). The session clock checks it only
   between the teardown's two markers (`SessionClock-rationale.md` §3); `DrainInbox` stays the step's (lead ruling under task 24,
   2026-11-25 02:25). A fourth `static_assert` holds the row's shape.
+- **The frame probe** (`FrameProbe`, after `DrainStopped`): `SessionTickGame::onFrameStepsDue`, PROBE A after the pump, runs
+  where the pump runs: a client's frame thread (`startFrame`), an authority's runner (each loop wake); its rows are `Frame` and
+  `Step`. The design's call order names it, but no row did: `RateDoor` is the rate door's, which runs at the same place but is
+  another operation, so the probe got its own row rather than a wider one (og-session-runtime task 26). A fifth `static_assert`
+  holds its shape.
 
 The three readings:
 
@@ -99,15 +105,15 @@ authority loop's first batch is 0, because the driver publishes its tick offset 
 
 So the runtime, and any host of it (og-session-runtime task 32's headless host included), must keep one of two things true:
 
-1. **the first batch at tick 0 runs with no connection attached.** Today's Unreal session checks exactly this
-   (`UESimulationSession.h`, `afterAuthorityBatch`, a `checkf` that `firstUpcomingSimTick` is not 0 or the server's
-   `attachedConnections` are empty): the runner services og-net only in its idle, after its first batch, so no connection
-   can attach before it; or
+1. **the first batch at tick 0 runs with no connection attached.** `SessionNetHooks::afterBatch` checks exactly this (an
+   `OG_CHECK` that `firstUpcomingSimTick` is not 0 or the server's `attachedConnections` are empty; the Unreal session's
+   `checkf` in `afterAuthorityBatch` until og-session-runtime task 26): the runner services og-net only in its idle, after its
+   first batch, so no connection can attach before it; or
 2. **the gate is armed with a real tick first**, before any connection's capture is judged.
 
-The check moves with `afterAuthorityBatch` into the runtime when the runtime takes over the tick driver's hooks (task 26),
-as an `OG_CHECK`. (Lead note under task 22,
-2026-11-24 13:23, from review_SR2_15's lead item 3.)
+The check moved with `afterAuthorityBatch` into the runtime when the runtime took over the tick driver's hooks (task 26), as
+an `OG_CHECK` (`SessionNetHooks-rationale.md` §5). (Lead note under task 22, 2026-11-24 13:23, from review_SR2_15's lead
+item 3.)
 
 ## §6 The tests
 
@@ -125,10 +131,16 @@ as an `OG_CHECK`. (Lead note under task 22,
 - `SessionThreads.TheStoppedDrainIsAClientsFrameRowAndNoStepsOrAuthoritys` (og-session-runtime task 24): `DrainStopped` passes
   on the client's frame thread and fails in a step and on both of the authority's threads, where `DrainInbox` passes in the step
   and fails on the frame.
+- `SessionThreads.TheFrameProbeIsTheClientsFrameAndTheAuthoritysRunner` (og-session-runtime task 26): `FrameProbe` passes on a
+  client's frame thread and on the authority's runner, and fails in a client's step and on the authority's frame and on a plain
+  thread.
 - **Hidden** (`[.][SessionThreadsDeath]`): `SessionThreads.DrainInboxOnTheFrameTripsTheCheck` calls `checkOp(DrainInbox)` on
   the frame thread and must never reach its `FAIL`; `SessionThreads.DrainStoppedOnTheAuthorityTripsTheCheck` (task 24) calls
-  `checkOp(DrainStopped)` on an authority's frame thread, where the row has no thread. Run them by name. (A client's step on
-  a worker is the other forbidden thread; the matrix case above covers it, because an `OG_CHECK` that fails off the test's
+  `checkOp(DrainStopped)` on an authority's frame thread, where the row has no thread;
+  `SessionThreads.FrameProbeOnAnAuthoritysFrameThreadTripsTheCheck` (task 26) configures the authority's context on a runner
+  thread, then calls `checkOp(FrameProbe)` on the frame thread, where its row is the runner's: the check trips on the owner
+  thread, not on an unconfigured context (called on the runner, it passes and the case reaches its `FAIL`). Run them by name.
+  (A client's step on a worker is the other forbidden thread; the matrix case above covers it, because an `OG_CHECK` that fails off the test's
   thread ends the runner.) In `OGSimulationTests` the failed `OG_CHECK` is reported as
   a failed case with its message (seen at task 22). It calls the check on the test's own thread.
 
@@ -158,6 +170,13 @@ below:
 - **og-net**: og-net's own I/O thread; a client's lanes use it (`simLanesIoMode`), a dedicated server's lanes do not.
 
 ### 7.1 The table (was §24.1)
+
+> Since og-session-runtime task 26 the tick driver's hooks are og-sim-session's `SessionTickGame` (each door checks the row of
+> §3 it runs on; `SessionTickGame-rationale.md` §3, §4) and the net-hook bodies are `SessionNetHooks`. The Unreal names in the
+> table and in §7.2 (`beforePump_Owner`, `receiveForClientStep_Step`, `afterClientCapture_Step`, `afterStep_Step`,
+> `publishDisplaySnapshot_Step`, `noteAuthorityStepTime_Step`, `releaseDelayedInputsForStep`, `afterAuthorityBatch`,
+> `stampCorrectionsHanded_Runner`, `idleUntil_Runner`) are those bodies' names until then; the threads and the order are
+> unchanged (the order test, `SessionTickGame-rationale.md` §6).
 
 | Operation | Client | Authority |
 |---|---|---|

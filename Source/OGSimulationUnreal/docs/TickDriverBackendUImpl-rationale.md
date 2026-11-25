@@ -47,7 +47,7 @@ two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` →
   `SimulationTickDriver` (§10). Task 15b's form had two parameters, the engine traits and the brawler's binding
   (TickDriverBackendUImpl over EngineTraitsT and BindingT, instantiated over JoltEngineTraitsUImpl and
   BrawlerJoltBindingUImpl; historical); since task 15e it has three, and the Jolt configuration instantiates it as
-  `TickDriverBackendUImpl<BrawlerTickDriverGame, JoltEngineTraitsUImpl, BrawlerJoltBindingUImpl>` (§12).
+  `TickDriverBackendUImpl<BrawlerSessionHooks, JoltEngineTraitsUImpl, BrawlerJoltBindingUImpl>` (§12).
   **Names before task 15b (historical):**
   class JoltBackendUImpl (historical name), in JoltBackendUImpl.h and JoltBackendUImpl.cpp (historical file names);
   this document JoltBackendUImpl-rationale.md and its guards JoltBackendUImpl-guards.md (historical names);
@@ -193,7 +193,8 @@ declaration (task 82 made the check read it).
   og-tickdriver task 10 deleted the other three and the lease: the world host has its own
   (`JoltTickWorldHost-rationale.md` §4). The step-driver alias named the manager and the integration executor through `BrawlerCompositionUImpl`
   (task 81), because the owner's `ManagerType` is private; since og-tickdriver task 8 the game binding
-  `BrawlerTickDriverGameUImpl` names them for the tick driver.
+  names them for the tick driver (`BrawlerSessionHooksUImpl`, BrawlerTickDriverGameUImpl until og-session-runtime task 26,
+  since when `UESessionTickHost` passes them on to the tick game).
 * **The frame host was a friend of both** (task 83 to og-tickdriver task 8): it called this class's step functions,
   its driver's occupancy door and its world-mutex and step-flag predicates, and the owner's per-frame work. Since
   og-tickdriver task 8 it calls only the tick driver, and neither class names it a friend: the owner's per-frame and
@@ -411,7 +412,8 @@ Since og-tickdriver task 8 the frame pipeline and the step hooks are og-simulati
 `TickDriverStepHooks` (`SimulationTickDriver-rationale.md`, `TickDriverStepHooks-rationale.md`). The frame host
 (OGSimulationUnreal's `UETickDriverHost`, a game-module class until og-tickdriver task 11) is their Unreal engine port
 and the two tick functions, and the brawler's game hooks are
-`BrawlerTickDriverGameUImpl`; each has its own document. Since og-tickdriver task 10 the driver's world host is
+`BrawlerSessionHooksUImpl` (the tick driver's game itself is og-sim-session's `SessionTickGame` since og-session-runtime task
+26, over `UESessionTickHost`); each has its own document. Since og-tickdriver task 10 the driver's world host is
 og-simulation-jolt's `JoltTickWorldHost`, held in `m_physicsBackendWorlds` (§1, §3). This class's part:
 
 * **Members**, of this class, last and in this order: `m_frameHost` (the engine and the tick functions;
@@ -972,7 +974,8 @@ og-simulation-jolt's statics split (and, until og-tickdriver task 15c, the file'
 `StepScope` and the world host's `configure` are instantiated there and nowhere else
 (`TickDriverThreadContext-rationale.md` §7 in og-simulation's docs).
 
-**The game binding stays a class template.** `BrawlerTickDriverGameUImpl` is a template over the session because the
+**The game binding stays a class template.** `BrawlerSessionHooksUImpl` (BrawlerTickDriverGameUImpl until og-session-runtime
+task 26) is a template over the session because the
 session's header includes this one before the session class is defined (`BrawlerSessionHooksUImpl-rationale.md`
 §1). Task 15b did not change that order: the session still holds the backend by value, so it must see the complete
 host type first.
@@ -981,7 +984,7 @@ host type first.
 what task 15e moved: every item of this list).
 * Brawler-only, in the bodies: the `AOGBrawlerUECharacter` cast and its `GetPhysicsSlot` / `SetAuthoritativePhysicsSlot`
   in `callWithSlotRequest`; the character's `GetCapsuleComponent()` (a `UCapsuleComponent`) in `onRegistered_GameThread`;
-  `BrawlerTickDriverGameUImpl` over `AOGBrawlerSimulationManager`; the owner's members (`m_staticData`'s gravity, the
+  BrawlerTickDriverGameUImpl over `AOGBrawlerSimulationManager`; the owner's members (`m_staticData`'s gravity, the
   three adapter optionals, `runsPrediction`, `GetNetMode`; `m_storage` and `m_manager` until og-tickdriver task 15d,
   read since through the game binding by the tick backend); `UOGBrawlerSimulatableComponent::getStaticData`; and, until task
   15d, `BrawlerCompositionUImpl`'s storage and render snapshot and `kMaxSimulatableSlots`, which the tick backend now
@@ -999,9 +1002,11 @@ what task 15e moved: every item of this list).
 
 Since og-tickdriver task 15d the orchestration this class wrote is og-simulation's engine-free
 `SimulationTickBackend<GameT, WorldHostT, SimulatableT, EngineT>` (`SimulationTickBackend-rationale.md` in og-simulation's
-docs, MPL-2.0 by the user's ruling of 2026-10-18). This class holds it as `m_tickBackend`, over the game binding
-(`BrawlerTickDriverGame`), the world host, the binding's `Simulatable` and `SimulationEngineUImpl`, constructed with
-the game binding, the worlds struct's `host` and the frame host's engine. Its presenter is
+docs, MPL-2.0 by the user's ruling of 2026-10-18). This class holds it as `m_tickBackend`, over the tick game
+(`TickGame`: `UESessionTickGame<GameBindingT>`, og-sim-session's `SessionTickGame` over `UESessionTickHost`, since
+og-session-runtime task 26; the game binding BrawlerTickDriverGame before), the world host, the binding's `Simulatable` and
+`SimulationEngineUImpl`, constructed with the tick game (`m_tickDriverGame`, built from `TickHost{ &owner }`), the worlds
+struct's `host` and the frame host's engine. Its presenter is
 `TickDriverPresenter<RenderSnapshot, SimulationEngineUImpl, RenderSource>` with the game binding's `RenderSnapshot`,
 the same type this class's own presenter alias named before.
 
@@ -1069,7 +1074,7 @@ and the brawler supplies its bindings and instantiates it.
 
 | parameter | what this class takes from it | the brawler's |
 |---|---|---|
-| `GameBindingT` | og-simulation's `TickDriverGame` (the manager, the storage, the render snapshot and the hooks, as before), and `Session`, `Component`, `Character`, `StaticData`, `gravity(session)` and `callWithSlotRequest(session, owner, key, slotCall)` | `BrawlerTickDriverGameUImpl<AOGBrawlerSimulationManager>`, named `BrawlerTickDriverGame` (`BrawlerSessionHooksUImpl-rationale.md` §5) |
+| `GameBindingT` | `Manager`, `Storage`, `RenderSnapshot` (for the tick game, through `UESessionTickHost`), `Session`, `Component`, `Character`, `StaticData`, `sampleInput(session)`, `gravity(staticData)` and `callWithSlotRequest(owner, key, isAuthority, physicsSlotFor, recordSlot, slotCall)`; until og-session-runtime task 26 it was og-simulation's `TickDriverGame` itself, with `gravity(session)` and `callWithSlotRequest(session, owner, key, slotCall)` | `BrawlerSessionHooksUImpl<UESimulationSession<BrawlerSessionTraitsUImpl>>`, named `BrawlerSessionHooks` (`BrawlerSessionHooksUImpl-rationale.md` §0, §5) |
 | `EngineTraitsT` | the adapter and visualization types, the world-host template, the log sink, and `Statics` and `splitStatics` (`JoltEngineTraitsUImpl-rationale.md` §5) | `JoltEngineTraitsUImpl`, in OGSimulationJoltUnreal |
 | `EngineBindingT` | `Simulatable`, `categoryChannels`, `mappedCategories`, `contactCountsEnabled`, `checkCapsuleContract`, `kParkSnap` | `BrawlerJoltBindingUImpl` (`BrawlerJoltBindingUImpl-rationale.md` §6) |
 

@@ -39,6 +39,7 @@ enum class SessionOp : uint8_t
 	ServiceNet,
 	LinkFrameService,
 	DrainStopped,
+	FrameProbe,
 	Count,
 };
 
@@ -69,6 +70,7 @@ inline constexpr SessionThreadTable kPredictionThreads{ {
 	{ SessionOp::ServiceNet,             SessionThread::NetIo },
 	{ SessionOp::LinkFrameService,       SessionThread::Frame },
 	{ SessionOp::DrainStopped,           SessionThread::Frame },
+	{ SessionOp::FrameProbe,             SessionThread::Frame },
 } };
 
 inline constexpr SessionThreadTable kAuthorityThreads{ {
@@ -88,6 +90,7 @@ inline constexpr SessionThreadTable kAuthorityThreads{ {
 	{ SessionOp::ServiceNet,             SessionThread::NetIo },
 	{ SessionOp::LinkFrameService,       SessionThread::Frame },
 	{ SessionOp::DrainStopped,           std::nullopt },
+	{ SessionOp::FrameProbe,             SessionThread::Step },
 } };
 
 namespace sessionThreadTable
@@ -126,6 +129,10 @@ static_assert(kPredictionThreads[static_cast<std::size_t>(SessionOp::DrainStoppe
 		&& !kAuthorityThreads[static_cast<std::size_t>(SessionOp::DrainStopped)].thread.has_value(),
 	"kPredictionThreads, kAuthorityThreads: the stopped drain is a client's, once, on the frame thread at its teardown, after "
 	"its steps have stopped; an authority has no such drain (og-session-runtime task 24)");
+static_assert(kPredictionThreads[static_cast<std::size_t>(SessionOp::FrameProbe)].thread == SessionThread::Frame
+		&& kAuthorityThreads[static_cast<std::size_t>(SessionOp::FrameProbe)].thread == SessionThread::Step,
+	"kPredictionThreads, kAuthorityThreads: the frame probe runs where the pump does, after it: a client's frame thread "
+	"(startFrame), an authority's runner (each loop wake); it is not the step's work (og-session-runtime task 26)");
 
 class SessionThreadChecks
 {

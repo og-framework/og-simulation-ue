@@ -59,8 +59,8 @@ authority a display snapshot.
 
 ## §3 The client's publish: after the step batch, on the thread that ran it
 
-The tick-driver game binding's `publishForDisplay()` calls the Unreal session's `publishDisplaySnapshot_Step`, which forwards to
-`publishAfterBatch`. og-simulation's driver calls it once after each client batch, on the thread that ran the batch, under the
+The tick game's `publishForDisplay()` calls `publishAfterBatch` (og-sim-session's `SessionTickGame` since og-session-runtime
+task 26; the brawler binding called the Unreal session's `publishDisplaySnapshot_Step`, which forwarded, until then). og-simulation's driver calls it once after each client batch, on the thread that ran the batch, under the
 world lock and inside a step scope (`SimulationTickDriver.h`, `publishAfterBatch`; `TickDriverConcepts-rationale.md` §11), and
 never on an authority. Nothing steps there, so the fill (`fillSimulationDisplaySnapshot`) reads the storage, the input
 resolution, the reconciliation and the clock as the batch left them. og-sim-net drains on the same thread, so the relay stores,

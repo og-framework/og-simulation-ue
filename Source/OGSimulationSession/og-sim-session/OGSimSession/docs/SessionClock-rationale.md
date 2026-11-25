@@ -28,9 +28,9 @@ The task moved them in two steps (TeamDescription W6):
 
 What stayed in the Unreal session: the wire-sample note and the test callback at the head of `onTimingInfoReceived`
 (`UESimulationSession-rationale.md` §9.6), `getClientEffectiveInputDelayTicks` and the public accessor of the tier consumer
-(forwarded), `beforePump_Owner` (task 26's: the tick driver's hook, which calls one of the two rate doors), the lanes and the
-SimClock server, and the brawler binding's two step calls (`noteAuthorityStepTime_Step`, `afterStep_Step`), now one-line
-forwarders.
+(forwarded), the lanes and the SimClock server. The tick driver's hook that calls one of the two rate doors
+(`beforePump_Owner`) and the brawler binding's two step calls (`noteAuthorityStepTime_Step`, `afterStep_Step`) stayed until
+task 26, when og-sim-session's `SessionTickGame` took them over (`SessionTickGame-rationale.md` §3).
 
 ## §2 The class, its ports and its doors
 
@@ -59,11 +59,11 @@ whose `nowSeconds` is const, and `SessionLogSink`). Each concept has a reference
 | `onClockSample(sample, link)` | `onSimClockSample` | the same | step | — | the same, through the lanes host's `onClockSample` |
 | `onConnectionTier(old, new)` | `onConnectionTierReceived` | the same | step | — | the same, through `onConnectionTier` |
 | `onRelayFloor(floor)` | `onRelayDelayFloorReceived` | the same | step | — | the same, through `onRelayFloor` |
-| `beforePredictionPump(host, rate)` | `runClockDilation_GameThread` | `RateDoor` | frame | — | `beforePump_Owner` on a predicting manager |
-| `noteAuthorityRateDoor(host, rate)` | `noteAuthorityRateDoor_Owner` | `RateDoor` | — | runner | `beforePump_Owner` otherwise |
-| `noteAuthorityStepStart()` | `noteAuthorityStepTime_Step` | `Step` | — | runner | the binding's `releaseInputsForAuthorityTick` |
-| `takeReleaseStepSeconds()` | the first statement of `releaseDelayedInputsForStep` | `Step` | — | runner | `releaseDelayedInputsForStep` |
-| `publishServerTick(server)` | `afterStep_Step` | `Publish` | step (returns) | runner | the binding's `onStepEnded`, both roles |
+| `beforePredictionPump(host, rate)` | `runClockDilation_GameThread` | `RateDoor` | frame | — | `SessionTickGame::beforePump` on a predicting manager (`beforePump_Owner` until task 26) |
+| `noteAuthorityRateDoor(host, rate)` | `noteAuthorityRateDoor_Owner` | `RateDoor` | — | runner | `SessionTickGame::beforePump` otherwise |
+| `noteAuthorityStepStart()` | `noteAuthorityStepTime_Step` | `Step` | — | runner | `SessionTickGame::releaseInputsForAuthorityTick` (the binding's until task 26) |
+| `takeReleaseStepSeconds()` | the first statement of `releaseDelayedInputsForStep` | `Step` | — | runner | `SessionTickGame::releaseInputsForAuthorityTick` (`releaseDelayedInputsForStep` until task 26) |
+| `publishServerTick(server)` | `afterStep_Step` | `Publish` | step (returns) | runner | `SessionTickGame::onStepEnded`, both roles (the binding's until task 26) |
 
 Not doors, with no check: `beginTierConsumer` and `logRelayDelayFloorAdvisory` run at start-up (a client's on the frame, an
 authority's on the runner that configures the session) and the advisory again inside `onRelayFloor`; `endTierConsumer` runs in
@@ -247,10 +247,11 @@ pong (og-sim-net's `SimNetClock-rationale.md` §5). The publish passes the time 
 from it:
 
 - **Which tick, which time.** On Jolt the authority steps one tick per `SimulationStepDriver::runAuthorityTick`, also inside a
-  batch. Its `beforeTick` releases the inputs for the upcoming tick T through the brawler's binding, which first calls the
-  Unreal session's `noteAuthorityStepTime_Step` → `noteAuthorityStepStart`; the step then advances the server clock to T and
-  prints `[AuthoritySimulation] tick=T stepSeconds=<s>`; its `afterTick` reaches `afterStep_Step` → `publishServerTick` through
-  the binding's `onStepEnded`, where `getServerClock().getTick()` is T. So the publish carries T, and the time that belongs to T
+  batch. Its `beforeTick` releases the inputs for the upcoming tick T through the tick game, which first calls
+  `noteAuthorityStepStart` (through the brawler's binding and the Unreal session's `noteAuthorityStepTime_Step` until
+  og-session-runtime task 26); the step then advances the server clock to T and
+  prints `[AuthoritySimulation] tick=T stepSeconds=<s>`; its `afterTick` reaches `publishServerTick` through
+  the tick game's `onStepEnded` (the binding's and `afterStep_Step` until task 26), where `getServerClock().getTick()` is T. So the publish carries T, and the time that belongs to T
   is the stamp of T's own `beforeTick`. Each tick of a batch has its own stamp.
 - **The kept stamp.** `noteAuthorityStepStart` keeps the stamp twice, in `m_releaseStepSeconds` (the input release takes and
   clears it, `takeReleaseStepSeconds`) and in `m_clockTickStartSeconds` (`publishServerTick` takes and clears it on every call,

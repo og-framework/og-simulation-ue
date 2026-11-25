@@ -53,7 +53,7 @@ design §3.3's last row, each returning `void`:
 | hook | today | negative in `sessionGameHooksSelfCheck` |
 |---|---|---|
 | `Game` is a `SessionGame` | — | `HooksOfNoGame` (over `MissingInstallGameLoggers`) |
-| `sampleInput()` | `BrawlerTickDriverGameUImpl::sampleInput` | `SampleReturnsBool` |
+| `sampleInput()` | `BrawlerSessionHooksUImpl::sampleInput` (a static over the session since og-session-runtime task 26) | `SampleReturnsBool` |
 | `afterBodiesCreated(Simulatable&, EntityKey, uint32_t id, bool isAuthority)` | `BrawlerSessionGameUImpl::afterBodiesCreated`, which takes the engine's character; the runtime passes the opaque key | `BodiesCreatedWithoutEntityKey` |
 | `afterRegistered(uint32_t, bool)` | `BrawlerSessionGameUImpl::afterRegistered` | `MissingAfterRegistered` |
 | `onUnregistered(uint32_t)` | `BrawlerSessionGameUImpl::onUnregistered` | `MissingOnUnregistered` |
