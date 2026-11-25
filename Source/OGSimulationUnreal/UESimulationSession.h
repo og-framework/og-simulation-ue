@@ -188,10 +188,14 @@ constexpr bool ueSessionLifecycleLineKeepsItsRoute(const char* line, ELogVerbosi
 
 static_assert(ueSessionLifecycleLineKeepsItsRoute(ogsession::sessionLifecycleLines::kQueuedRegistrationDidNotHold,
 		ELogVerbosity::Error)
-	&& ueSessionLifecycleLineKeepsItsRoute(ogsession::sessionLifecycleLines::kRegistered, ELogVerbosity::Log),
-	"Each prediction lifecycle line (ogsession::sessionLifecycleLines) reaches LogOGMgmt at the level its UE_LOG had: Error "
-	"for the queued registration that did not hold, Log for tryRegister: registered. Was each line's UE_LOG(LogOGMgmt, "
-	"<Level>, ...) in finishQueuedRegistration (og-session-runtime task 29)");
+	&& ueSessionLifecycleLineKeepsItsRoute(ogsession::sessionLifecycleLines::kRegistered, ELogVerbosity::Log)
+	&& ueSessionLifecycleLineKeepsItsRoute(ogsession::sessionLifecycleLines::kRunnerRegisterRefused, ELogVerbosity::Error)
+	&& ueSessionLifecycleLineKeepsItsRoute(ogsession::sessionLifecycleLines::kRosterVerdictMismatch, ELogVerbosity::Error),
+	"Each lifecycle line (ogsession::sessionLifecycleLines) reaches LogOGMgmt at the level its UE_LOG had: Error for the "
+	"queued registration that did not hold and for the runner registration the og-sim-net server refused, Log for "
+	"tryRegister: registered (both roles). Was each line's UE_LOG(LogOGMgmt, <Level>, ...) in finishQueuedRegistration "
+	"(og-session-runtime task 29) and tryRegisterOnRunner (task 30). The roster-verdict mismatch line is new (task 30): Error, "
+	"before the check that stops on it, with the id and the with/without the check's old message printed");
 
 namespace ueSimulationSessionHookNames
 {
@@ -321,7 +325,7 @@ private:
 		Lanes*  lanes() const { return session->m_simNetLanes; }
 		Server* server() { return session->m_simNetServer.has_value() ? &*session->m_simNetServer : nullptr; }
 		Idle*   idle() { return session->m_simNetIdle.has_value() ? &*session->m_simNetIdle : nullptr; }
-		void    runRunnerRequests() { session->runRunnerRequests_Owner(); }
+		void    runRunnerRequests() { session->m_authorityLifecycle->applyRequests(); }
 		void    applyUnregisterRequests(typename Lanes::Client& client) { session->m_lifecycle->applyRequests(client); }
 		void    publishPresentation() { session->publishAuthorityPresentation_Runner(); }
 		double  nowSeconds() const { return FPlatformTime::Seconds(); }
@@ -379,6 +383,97 @@ private:
 	};
 
 	using Lifecycle = ogsession::SessionLifecycle<LifecyclePort>;
+
+	struct AuthorityLifecyclePort
+	{
+		using Bodies      = PhysicsBackend;
+		using Server      = SimNetServer;
+		using Channel     = SimChannel;
+		using Simulatable = typename TraitsT::Simulatable;
+
+		UESimulationSession* session = nullptr;
+
+		Server* server() { return session->m_simNetServer.has_value() ? &*session->m_simNetServer : nullptr; }
+		Bodies& bodies() { return session->m_physicsBackend; }
+
+		bool bodiesResolvable(const Simulatable& simulatable) const
+		{
+			if (!session->m_physAdapter->isBodyResolvable(Game::rootBodyId(simulatable)))
+				return false;
+			bool allResolvable = true;
+			simulatable.getPhysicsComposite().forEach([&](const auto& decl)
+			{
+				if (!session->m_physAdapter->isBodyResolvable(decl.bindings.ownBodyId))
+					allResolvable = false;
+			});
+			return allResolvable;
+		}
+
+		uint64_t bodyKeyOf(ogsession::EntityKey key) const
+		{
+			const typename TraitsT::Component* const owner = reinterpret_cast<const typename TraitsT::Component*>(key.value);
+			return PhysicsBackend::slotKeyFor(owner != nullptr ? owner->GetOwner() : nullptr);
+		}
+
+		bool runnerStopped() const { return session->m_runnerStopped; }
+		void notifyRegistered(uint32_t id) { session->m_manager->notifyCharacterRegistered(id); }
+		void notifyUnregistered(uint32_t id) { session->m_manager->notifyCharacterUnregistered(id); }
+		bool inStorage(uint32_t id) const { return session->m_storage.template has<Simulatable>(id); }
+		void logRouted(const char* line) { RouteOGLevelLine(line); }
+	};
+
+	using AuthorityLifecycle = ogsession::SessionAuthorityLifecycle<AuthorityLifecyclePort>;
+
+	static_assert(ogsession::SessionBodies<PhysicsBackend>,
+		"UESimulationSession: the tick backend's wrapper (TickDriverBackendUImpl) is the authority lifecycle's bodies "
+		"provider, og-sim-session's SessionBodies (makeRequest, create, slotOf, onRegistered, release). Were "
+		"makeBodyRequest_GameThread, createBodies_Runner, onRegistered_Runner and releaseBodies_Runner, called from the "
+		"session's runner closures (og-session-runtime task 30)");
+
+	struct AuthorityRegisterHooks
+	{
+		UESimulationSession*            session = nullptr;
+		typename TraitsT::Component*    owner   = nullptr;
+		unsigned int                    id      = 0u;
+
+		void bodiesRequested()
+		{
+			session->m_componentsHeldForRunner[id] = TStrongObjectPtr<typename TraitsT::Component>(owner);
+		}
+
+		void bodiesCreated(Simulatable& simulatable)
+		{
+			typename TraitsT::Character* const character = Cast<typename TraitsT::Character>(owner->GetOwner());
+			checkf(character != nullptr,
+				TEXT("UESimulationSession::tryRegister: the component must be attached to a TraitsT::Character — the ")
+				TEXT("first-call body pass reads that class's own root capsule"));
+#if DO_CHECK
+			const unsigned int checkedId = id;
+			simulatable.getPhysicsComposite().forEach([&](const auto& decl)
+			{
+				checkf(decl.bindings.ownBodyId.value != 0,
+					TEXT("PhysicsDeclaration bindings.ownBodyId not populated by fold (id=%u)"), checkedId);
+				checkf(decl.bindings.parentBodyId.value != 0,
+					TEXT("PhysicsDeclaration bindings.parentBodyId not populated by fold (id=%u)"), checkedId);
+			});
+#endif
+			session->m_game.afterBodiesCreated(simulatable, *character, id, /*isAuthority=*/true, session->m_owner.GetNetMode());
+		}
+	};
+
+	static ogsession::RegisterRequest authorityRequestFor(unsigned int id, typename TraitsT::Component& owner)
+	{
+		AActor* const pawn = owner.GetOwner();
+		const UOGNetConnection* const ownerConnection = Cast<UOGNetConnection>(GetRootNetConnection(pawn));
+		const FTCHARToUTF8 debugName(pawn != nullptr ? *pawn->GetName() : TEXT("none"));
+		ogsession::RegisterRequest request;
+		request.simId           = id;
+		request.entityKey       = entityKeyOf(owner);
+		request.debugName       = std::string(debugName.Get());
+		request.ownerConnection = ownerConnection != nullptr ? ownerConnection->OGNetId : kInvalidSimConnection;
+		request.localIndex      = GetPlayerSlotForActor(pawn);
+		return request;
+	}
 
 	static ogsession::EntityKey entityKeyOf(const typename TraitsT::Component& owner)
 	{
@@ -557,8 +652,6 @@ private:
 
 	void beginServerSimNet(UWorld& world);
 
-	void runRunnerRequests_Owner();
-
 	void publishAuthorityPresentation_Runner()
 	{
 		static_assert(requires(const SystemsExec& systems, const UESimulationSession& session, unsigned int id,
@@ -586,17 +679,9 @@ private:
 		});
 	}
 
-	void postRunnerRequest(TUniqueFunction<void()> request);
-
-	TryRegisterStatus tryRegisterOnRunner(unsigned int id, typename TraitsT::Component& owner);
-
-	bool bodiesResolvable_Runner(const Simulatable& simulatable) const;
-
-	void onRunnerRegisterApplied_Runner(unsigned int id, uint64 key, SimChannel* channel);
+	TryRegisterStatus tryRegisterOnRunner(unsigned int id, Simulatable&& simulatable, typename TraitsT::Component& owner);
 
 	void requestRunnerUnregister_GameThread(unsigned int id, typename TraitsT::Component* owner);
-
-	void releaseOnRunner_Runner(unsigned int id, uint64 key);
 
 	void onAuthorityRunnerJoined_GameThread();
 
@@ -620,13 +705,15 @@ private:
 
 	void onPredictionOutcome_GameThread(const ogsession::LifecycleOutcome& outcome);
 
+	void onAuthorityOutcome_GameThread(const ogsession::LifecycleOutcome& outcome);
+
 	void teardownImmediateClient_GameThread();
 
 	void onSimNetLanesStopping(bool isServer);
 
 	void detachFromSimNetLanes();
 
-	void forgetSimNetCharacter(unsigned int id, const AActor* pawn);
+	void forgetSimNetCharacter(unsigned int id);
 
 	void onFrameStepsDue_Step(int32 firstUpcomingSimTick, int32 numSteps);
 
@@ -694,6 +781,7 @@ private:
 	std::optional<Display> m_display;
 	std::optional<NetHooks> m_netHooks;
 	std::optional<Lifecycle> m_lifecycle;
+	std::optional<AuthorityLifecycle> m_authorityLifecycle;
 
 	SimNetLanes* m_simNetLanes = nullptr;
 	std::optional<SimNetServerHost> m_simNetServerHost;
@@ -704,7 +792,6 @@ private:
 	const char* m_noSessionReason = "no-session";
 	bool m_noSessionRegisterRaisesMessage = false;
 	bool m_runnerStopped = false;
-	std::unordered_map<unsigned int, uint64> m_runnerBodyKeysById;
 	uint64 m_authorityWakes_Runner = 0u;
 
 	using AuthorityPresentationSlice = typename Game::AuthorityPresentationSlice;
@@ -713,7 +800,6 @@ private:
 
 	std::unordered_map<unsigned int, TWeakObjectPtr<typename TraitsT::Component>>
 		m_registeredComponentsById;
-	std::unordered_map<const AActor*, uint32> m_authoritativeSlotsByActor;
 	std::unordered_set<unsigned int> m_simUnregisteredIds;
 
 	std::function<void(uint32_t, double)> m_onTimingInfoReceivedCallback;
@@ -732,46 +818,10 @@ private:
 		std::optional<Simulatable> simulatable;
 		bool bodiesCreated = false;
 		InputProvider inputProvider;
-		bool isAuthority = false;
 		bool queued = false;
-		bool applied = false;
-		bool refused = false;
-		bool onRunner = false;
-		bool runnerBusy = false;
-		bool bodiesBound = false;
-		bool registerPosted = false;
-		uint32 boundSlot = 0u;
-		uint64 bodyKey = 0u;
-		std::shared_ptr<Simulatable> runnerSimulatable;
 	};
 	std::unordered_map<unsigned int, PendingRegistration> m_pendingRegistrations;
 
-	enum class LifecycleOutcomeKind : uint8
-	{
-		RegisterApplied,
-		RegisterRefused,
-		BodiesBound,
-		BodiesPending,
-		BodiesUnresolvable
-	};
-
-	struct LifecycleOutcome
-	{
-		unsigned int         id = 0u;
-		LifecycleOutcomeKind kind = LifecycleOutcomeKind::RegisterApplied;
-		uint32               slot = 0u;
-	};
-
-	void postLifecycleOutcome(unsigned int id, LifecycleOutcomeKind kind, uint32 slot = 0u)
-	{
-		const std::scoped_lock lock(m_lifecycleBridgeMutex);
-		m_lifecycleOutcomes.push_back(LifecycleOutcome{ id, kind, slot });
-	}
-
-	std::mutex m_lifecycleBridgeMutex;
-	std::vector<LifecycleOutcome> m_lifecycleOutcomes;
-	std::vector<TUniqueFunction<void()>> m_runnerRequests;
-	std::unordered_set<unsigned int> m_systemsNotified_Step;
 	std::unordered_map<unsigned int, TStrongObjectPtr<typename TraitsT::Component>> m_pendingUnregisters;
 	std::unordered_map<unsigned int, TStrongObjectPtr<typename TraitsT::Component>> m_componentsHeldForRunner;
 
@@ -1160,9 +1210,108 @@ void UESimulationSession<TraitsT>::onAuthorityRunnerJoined_GameThread()
 	m_runnerStopped = true;
 }
 
-#define OGSIM_SESSION_LIFECYCLE_UE_AUTHORITY_DEFINITIONS
-#include "OGSimSession/SessionLifecycle.h"
-#undef OGSIM_SESSION_LIFECYCLE_UE_AUTHORITY_DEFINITIONS
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::onSimNetLifecycleUnregistering(uint8_t simId)
+{
+	checkf(m_authorityLifecycle.has_value(),
+		TEXT("UESimulationSession::onSimNetLifecycleUnregistering: the authority builds its lifecycle on the runner before the "
+			 "runner's first drain, and only that drain applies og-sim-net's queued unregistrations"));
+	m_authorityLifecycle->onUnregistering(simId);
+}
+
+template <typename TraitsT>
+std::optional<uint32> UESimulationSession<TraitsT>::physicsSlotFor(AActor& owner, uint64 key, unsigned int storageKey) const
+{
+	checkf(m_manager.has_value(), TEXT("UESimulationSession::physicsSlotFor before beginPlay built the manager"));
+	if (!m_manager->runsPrediction())
+		return m_authorityLifecycle.has_value() ? m_authorityLifecycle->authoritativeSlotFor(key) : std::nullopt;
+	if (storageKey == 0u)
+		return std::nullopt;
+	checkf(storageKey <= 0xFFu,
+		TEXT("UESimulationSession::physicsSlotFor: a client's slot comes from the roster, which keys characters by their sim "
+			 "id (1..255); storage key %u is not one"), storageKey);
+	SimNetLanes* const lanes = m_simNetLanes;
+	if (lanes == nullptr || lanes->client() == nullptr)
+		return std::nullopt;
+	const ogsimnet::BindVerdict entry = lanes->bindings().verdict(static_cast<uint8_t>(storageKey), /*engineSaysLocal=*/false);
+	if (entry.step == ogsimnet::BindStep::Wait || entry.physicsSlot == ogsimnet::kRosterNoSlot)
+		return std::nullopt;
+	return static_cast<uint32>(entry.physicsSlot);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::recordAuthoritativeSlot([[maybe_unused]] AActor& owner, uint64 key, uint32 slot)
+{
+	checkf(m_authorityLifecycle.has_value(),
+		TEXT("UESimulationSession::recordAuthoritativeSlot on a peer without the og-sim-net server: only the authority "
+			 "chooses a slot, and a client binds the slot its roster entry carries. Was SetAuthoritativePhysicsSlot's "
+			 "authority checkf"));
+	m_authorityLifecycle->recordAuthoritativeSlot(key, slot);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::forgetSimNetCharacter(unsigned int id)
+{
+	m_registeredComponentsById.erase(id);
+	if (id == 0u || id > 0xFFu)
+		return;
+	if (m_simNetLanes != nullptr)
+		m_simNetLanes->editBindings().markUnregistered(static_cast<uint8_t>(id));
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::collectLifecycleOutcomes_GameThread()
+{
+	if (m_lifecycle.has_value())
+	{
+		m_lifecycle->pollOutcomes([this](const ogsession::LifecycleOutcome& outcome) { onPredictionOutcome_GameThread(outcome); });
+		return;
+	}
+	if (m_authorityLifecycle.has_value())
+		m_authorityLifecycle->pollOutcomes([this](const ogsession::LifecycleOutcome& outcome) { onAuthorityOutcome_GameThread(outcome); });
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::onAuthorityOutcome_GameThread(const ogsession::LifecycleOutcome& outcome)
+{
+	if (const auto* const bound = std::get_if<ogsession::lifecycleOutcome::BodiesBound>(&outcome))
+		m_componentsHeldForRunner.erase(bound->simId);
+	else if (const auto* const pending = std::get_if<ogsession::lifecycleOutcome::BodiesPending>(&outcome))
+		m_componentsHeldForRunner.erase(pending->simId);
+}
+
+template <typename TraitsT>
+TryRegisterStatus UESimulationSession<TraitsT>::tryRegisterOnRunner(unsigned int id, Simulatable&& simulatable,
+	typename TraitsT::Component& owner)
+{
+	collectLifecycleOutcomes_GameThread();
+	if (!m_authorityLifecycle.has_value())
+		return TryRegisterStatus::Pending;
+	AuthorityRegisterHooks hooks{ this, &owner, id };
+	const ogsession::RegisterStatus status =
+		m_authorityLifecycle->tryRegister(authorityRequestFor(id, owner), std::move(simulatable), hooks);
+	if (status == ogsession::RegisterStatus::Pending)
+		return TryRegisterStatus::Pending;
+	if (status == ogsession::RegisterStatus::Refused)
+		return TryRegisterStatus::Refused;
+	m_registeredComponentsById[id] = &owner;
+	m_game.afterRegistered(id, /*isAuthority=*/true);
+	m_physicsBackend.onRegisteredHost_GameThread(owner, id);
+	return TryRegisterStatus::Ready;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::requestRunnerUnregister_GameThread(unsigned int id, typename TraitsT::Component* owner)
+{
+	const bool registered = m_authorityLifecycle.has_value()
+		&& m_authorityLifecycle->requestUnregister(id, owner != nullptr ? entityKeyOf(*owner) : ogsession::EntityKey{});
+	m_registeredComponentsById.erase(id);
+	m_game.onUnregistered(id);
+	m_latencyBudgetDiagnostics.forgetCharacter(id);
+	if (registered)
+		m_physicsBackend.onUnregisteredHost_GameThread(id);
+	UE_LOG(LogOGMgmt, Log, TEXT("NewFramework: unregistered simulatable id=%u"), id);
+}
 
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::onSimNetClientLifecycleUnregistering(uint8_t simId)
@@ -1442,6 +1591,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 			m_clock.emplace(m_clockEngine, *m_manager, m_inputResolution, clockThreads);
 			m_display.emplace(clockThreads, *m_manager, m_storage, m_inputResolution, m_reconciliation, m_clock->displayTier());
 			m_netHooks.emplace(clockThreads, NetPort{ this }, *m_manager, m_netSync, m_storage, m_latencyBudgetDiagnostics);
+			m_authorityLifecycle.emplace(clockThreads, AuthorityLifecyclePort{ this });
 			m_reconciliation.setLogger(std::function<void(const char*)>(pctmloggerServer));
 			m_inputResolution.setLogger(std::function<void(const char*)>(pctmloggerServer));
 			m_netSync.setLogger(std::function<void(const char*)>(pctmloggerServer));
@@ -1551,7 +1701,8 @@ void UESimulationSession<TraitsT>::endPlay()
 	m_simNetServer.reset();
 	m_simNetServerHost.reset();
 	m_registeredComponentsById.clear();
-	m_authoritativeSlotsByActor.clear();
+	if (m_authorityLifecycle.has_value())
+		m_authorityLifecycle->forgetRegistered();
 	m_simUnregisteredIds.clear();
 	m_pendingUnregisters.clear();
 	m_componentsHeldForRunner.clear();
@@ -1628,13 +1779,15 @@ TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
         return TryRegisterStatus::Refused;
     }
 
+    if (isAuthority)
+        return tryRegisterOnRunner(id, std::move(simulatable), owner);
+
     auto it = m_pendingRegistrations.find(id);
     if (it == m_pendingRegistrations.end())
     {
         PendingRegistration record;
         record.simulatable.emplace(std::move(simulatable));
         record.inputProvider = std::move(inputProvider);
-        record.isAuthority   = isAuthority;
         auto inserted = m_pendingRegistrations.emplace(id, std::move(record));
         it = inserted.first;
     }
@@ -1660,9 +1813,6 @@ TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
         return TryRegisterStatus::Ready;
     }
 
-    if (record.isAuthority)
-        return tryRegisterOnRunner(id, owner);
-
     if (!record.bodiesCreated)
     {
         typename TraitsT::Character* character = Cast<typename TraitsT::Character>(owner.GetOwner());
@@ -1682,7 +1832,7 @@ TryRegisterStatus UESimulationSession<TraitsT>::tryRegister(
         });
 #endif
 
-        m_game.afterBodiesCreated(*record.simulatable, *character, id, record.isAuthority, m_owner.GetNetMode());
+        m_game.afterBodiesCreated(*record.simulatable, *character, id, /*isAuthority=*/false, m_owner.GetNetMode());
 
         record.bodiesCreated = true;
         return TryRegisterStatus::Pending;
@@ -1749,7 +1899,7 @@ template <typename TraitsT>
 void UESimulationSession<TraitsT>::unregisterCharacterHostOnly(unsigned int id, typename TraitsT::Component* owner,
     bool releaseBodiesNow)
 {
-    forgetSimNetCharacter(id, owner != nullptr ? owner->GetOwner() : nullptr);
+    forgetSimNetCharacter(id);
     m_game.onUnregistered(id);
     m_latencyBudgetDiagnostics.forgetCharacter(id);
     if (releaseBodiesNow && owner != nullptr)

@@ -54,17 +54,21 @@ says the entity is locally controlled (`engineSaysLocal`, which the client compa
 ## §6 `LifecycleOutcome`
 
 What the owner thread posts and the frame thread collects, one alternative per kind (design §3.4, the lifecycle queue):
-`Registered{simId, slot}`, `Refused{simId, reason}`, `Unregistered{simId}`, `RosterRemoved{simId}` and
-`BodiesReleasable{entityKey}`. A `std::variant` rather than today's kind enum with shared fields: each kind carries exactly its
+`Registered{simId, slot}`, `Refused{simId, reason}`, `Unregistered{simId}`, `RosterRemoved{simId}`,
+`BodiesReleasable{entityKey}`, and since og-session-runtime task 30 the authority runner's answers to a body request,
+`BodiesBound{simId, slot}`, `BodiesPending{simId}` and `BodiesUnresolvable{simId}` (`SessionLifecycle-rationale.md` §10.6). A `std::variant` rather than today's kind enum with shared fields: each kind carries exactly its
 own fields, so a reader cannot take a slot from an outcome that has none.
 
 - **`RegisterRefusal` has one reason, `SimNetRefused`:** the only refusal posted as an outcome is og-sim-net's drain
   refusing a queued registration, which it reports to the `applied` hook as a null channel for two reasons it does not
   pass on: no channel for the sim id, or the id already registered (`SimNetClient::applyRegister`; its
   `[SimNet.Lifecycle] … refused=noChannel|registered` line names which). The prediction lifecycle posts it
-  (`SessionLifecycle::onRegisterApplied`, `SessionLifecycle-rationale.md` §4). The other refusals (no session, a roster
+  (`SessionLifecycle::onRegisterApplied`, `SessionLifecycle-rationale.md` §4). Since og-session-runtime task 30 the authority
+  posts it too, for og-sim-net's server refusing a registration in its drain (`SimNetServer::applyRegister`: the sim id or its
+  physics slot already live, the roster full or the owner slot taken; its `[Roster.Refused]` line names which;
+  `SessionAuthorityLifecycle::onRegisterApplied`, `SessionLifecycle-rationale.md` §10.2). The other refusals (no session, a roster
   disagreement) are decided on the frame thread and returned by `tryRegister` directly. A reason is added when a refusal
   of another kind moves here. Its name was NoChannel until og-session-runtime task 29, which found the second reason.
-- **Two `static_assert`s.** The variant has five alternatives, one per kind the frame thread handles; adding a kind fails
+- **Two `static_assert`s.** The variant has eight alternatives, one per kind the frame thread handles; adding a kind fails
   the build until this list and its collector are revisited. And an outcome is trivially copyable, so posting and
   collecting it copies bytes, with no allocation on the owner thread.

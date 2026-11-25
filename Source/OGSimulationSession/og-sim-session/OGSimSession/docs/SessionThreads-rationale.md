@@ -190,8 +190,10 @@ below:
 
 A body is created where its role registers it: a client creates it on the frame (`createBodies_GameThread`, the frame-thread
 door, design Q12) and queues the registration, which og-sim-net applies in the next drain on the step
-(`onQueuedRegisterApplied_Step`; `SessionLifecycle::onRegisterApplied` since og-session-runtime task 29); an authority builds a body request on the frame (`makeBodyRequest_GameThread`) and posts it
-(`postRunnerRequest`), and the runner creates the bodies and registers (`createBodies_Runner`, `onRunnerRegisterApplied_Runner`).
+(`onQueuedRegisterApplied_Step`; `SessionLifecycle::onRegisterApplied` since og-session-runtime task 29); an authority builds a body request on the frame and posts it, and the runner creates the bodies and registers
+(`makeBodyRequest_GameThread`, `postRunnerRequest`, `createBodies_Runner`, `onRunnerRegisterApplied_Runner` until og-session-runtime
+task 30; since then `SessionAuthorityLifecycle`'s `tryRegister`, its `CreateBodies` and `Register` requests and `onRegisterApplied`,
+over the bodies' `makeRequest` and `create`, `SessionLifecycle-rationale.md` §10.2).
 Each posts an outcome that the frame collects.
 
 ### 7.2 The per-step order (was §24.2)
@@ -224,7 +226,7 @@ The session's shared state between these threads, each with its own synchronizat
 
 | Crossing | Writer → reader | Shape |
 |---|---|---|
-| the lifecycle bridge (`m_runnerRequests`, `m_lifecycleOutcomes`, under `m_lifecycleBridgeMutex`), and og-sim-net's own lifecycle queue under it | frame → runner (the requests); runner or step → frame (the outcomes); a client's registrations go through og-sim-net's queue to the step | a mutex around the vectors (design L9 makes it one queue) |
+| the lifecycle queue: since og-session-runtime task 30 the role's lifecycle class's one request vector and one outcome vector under its mutex (`SessionLifecycle`, `SessionAuthorityLifecycle`; the Unreal session's bridge, `m_runnerRequests` and `m_lifecycleOutcomes` under `m_lifecycleBridgeMutex`, until then), and og-sim-net's own lifecycle queue under it | frame → runner (the requests); runner or step → frame (the outcomes); a client's registrations go through og-sim-net's queue to the step | a mutex around the vectors (design L9 makes it one queue) |
 | each character's input sample (`Mailbox.h`'s `TripleBuffer`) | frame → step | triple buffer, one writer, one reader |
 | the display snapshot (`SimulationDisplayPublisher`, `SessionDisplay`'s since og-session-runtime task 25) | step → frame | snapshot channel (`ThreadingCrossings.md`, the display snapshot's crossings) |
 | the tier reading (`m_displayTier`) | step → step while the session steps; the frame writes it only while no step runs | triple buffer |

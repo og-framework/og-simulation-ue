@@ -155,7 +155,7 @@ m_owner&, m_game& → m_latencyBudgetDiagnostics → m_physicsBackendWorlds → 
     → m_clockEngine → m_clock (og-sim-session's SessionClock, which holds the tier consumer since og-session-runtime task 24)
     → m_simNetLanes, m_simNetServerHost, m_simNetServer
     → m_frameHealthProbe
-    → m_registeredComponentsById, m_authoritativeSlotsByActor, m_simUnregisteredIds
+    → m_registeredComponentsById, m_simUnregisteredIds
     → m_onTimingInfoReceivedCallback
     → m_pendingRegistrations
 ```
@@ -323,9 +323,10 @@ test, had no caller left in code after og-session-runtime task 3 deleted that ho
 deleted it. og-input-latency task P5-9 deleted the two `Replayed`
 overrides, so three listener overrides remain (`onConnectionTierReceived`, `onRelayDelayFloorReceived`,
 `onTimingInfoReceived`), and task P5-26 deleted `getSyncedTimingBuffer`. The og-sim-net hosts also call
-`onSimClockSample` (og-input-latency task P3-10, §20) and `onSimNetLifecycleUnregistering` (`⛔G-41`; since og-session-runtime
-task 29 the server's host only, a client's link session calling `onSimNetClientLifecycleUnregistering`, which forwards to
-og-sim-session's `SessionLifecycle`). The owner keeps its own
+`onSimClockSample` (og-input-latency task P3-10, §20) and `onSimNetLifecycleUnregistering` (since og-session-runtime task 29
+the server's host only, a client's link session calling `onSimNetClientLifecycleUnregistering`, which forwards to
+og-sim-session's `SessionLifecycle`; since task 30 it forwards to og-sim-session's `SessionAuthorityLifecycle::onUnregistering`,
+`SessionLifecycle-guards.md` G-08, this file's `⛔G-41` until then). The owner keeps its own
 `getLatencyBudgetDiagnostics()` / `editLatencyBudgetDiagnostics()`, which forward here, so its latency lookups (`instanceFor`)
 are unchanged. *R0, task 28:* the mutable one keeps one caller, the latency member's own `instanceFor`
 (`UELatencyBudgetDiagnostics.h`), which reaches it through `TraitsT::SessionOwner::instanceFor`; the const one has no caller
@@ -1423,8 +1424,9 @@ executor". Both notifies are unconditional, on both roles: the manager forwards 
 role, and the executor calls a system only where its role affinity fires (`SimulationSystemsExecutor`'s `firesOnRole`).
 The brawler's hit-routing and hit-detection systems fire on every role; its ring-out score system on the authority only.
 What the authority-only score system relies on, and why the notify must precede `Ready`, was G-25 (retired by
-og-session-runtime task 14); on the remaining paths it is `⛔G-36` (the runner) and, for a client, og-sim-session's `SessionLifecycle-guards.md` G-02
-(this file's `⛔G-32` until og-session-runtime task 29).
+og-session-runtime task 14); on the remaining paths it is og-sim-session's `SessionLifecycle-guards.md` G-06 (the runner; this
+file's `⛔G-36` until og-session-runtime task 30) and, for a client, `SessionLifecycle-guards.md` G-02 (this file's `⛔G-32`
+until og-session-runtime task 29).
 
 ### 12.5 The four registration hooks, their inline checks, and the name-clash row
 
@@ -1729,8 +1731,9 @@ datagram's receive time, which the latency member's masks now include (`kServerN
 
 ### 16.4 Registration
 
-**Server.** The slot door `recordAuthoritativeSlot` stores the slot the backend chose in `m_authoritativeSlotsByActor`, keyed by
-the pawn actor (the tick-driver host's slot key is that actor's address, and a slot is requested before the pawn has a sim id:
+**Server.** The slot door `recordAuthoritativeSlot` stores the slot the backend chose (in `m_authoritativeSlotsByActor` keyed by
+the pawn actor until og-session-runtime task 30; since then in og-sim-session's `SessionAuthorityLifecycle`, keyed by the bodies'
+key, the same address, `SessionLifecycle-rationale.md` §10.5) (the tick-driver host's slot key is that actor's address, and a slot is requested before the pawn has a sim id:
 the visualization volume's request comes from the registration's first loop), and `physicsSlotFor` reads it back; the character's replicated slot property is no longer written (P5-8
 deletes it). Each `checkf` of the property's setter (authority only, a slot of the physics world, once per character) moved
 into the door, and its message says so. At the `Ready` step the in-frame server (until og-session-runtime task 14; the runner's
@@ -2120,32 +2123,37 @@ before) and touches no `UObject` but the world's driver, which it only reads.
 
 The tick backend refuses binds, releases and registrations off the runner in `FreeRunning`, and the Jolt world checks its caller,
 so an authority's character registration crosses to the runner. The game thread keeps every `UObject` read and the game's
-hooks; the runner does every simulation and world write. Requests travel in `m_runnerRequests` (closures under
-`m_lifecycleBridgeMutex`), drained at the top of `beforePump`'s authority path (§22.3); outcomes come back as `LifecycleOutcome`s, collected on the game
-thread in `onPostPhysicsStep` and at each `tryRegister` call.
+hooks; the runner does every simulation and world write. Since og-session-runtime task 30 the path is og-sim-session's
+`SessionAuthorityLifecycle` (`SessionLifecycle-rationale.md` §10): requests travel as data (`AuthorityRequest`, the closures
+`m_runnerRequests` held under `m_lifecycleBridgeMutex` until then), run at the top of `beforePump`'s authority path (§22.3);
+outcomes come back as `LifecycleOutcome`s, collected on the game thread in `onPostPhysicsStep` and at each `tryRegister` call.
+The session keeps the component maps, the strong references, the game's hooks, the render target and the host work; the steps
+below are the lifecycle's, with the session's part named.
 
 `tryRegisterOnRunner`, one step per call (the component calls `tryRegister` each frame until it is not `Pending`):
 1. **Bodies.** The simulatable moves into a shared pointer (the runner's requests hold it, so a pawn that leaves cannot free it
-   under them). `makeBodyRequest_GameThread` captures the slot request; the runner's request binds the bodies
-   (`createBodies_Runner`) and answers `BodiesBound` with the slot, or `BodiesPending` (no slot yet: the game thread asks again).
+   under them). The bodies' `makeRequest` (the tick backend's wrapper, a `SessionBodies`) captures the slot request; the runner's
+   request binds the bodies (`create`, `slotOf`) and answers `BodiesBound` with the slot, or `BodiesPending` (no slot yet: the game
+   thread asks again).
    The component's static data is read by pointer, and the component is held by `m_componentsHeldForRunner` until that answer
    arrives (the static data is not copyable).
 2. **After the bodies,** on the game thread: the slot is recorded (`recordAuthoritativeSlot`), the fold check runs, and the game's
    `afterBodiesCreated`.
 3. **Register.** The game thread reads the roster facts from the pawn (owner connection, local index, name); the runner's request
-   checks that the bodies resolve (`bodiesResolvable_Runner`; `BodiesUnresolvable` makes the game thread ask again) and enqueues
+   checks that the bodies resolve (the port's `bodiesResolvable`; `BodiesUnresolvable` makes the game thread ask again) and enqueues
    `SimNetServer::registerCharacter`, which the server's drain right after applies (`addCharacter`, then the facade with the
-   channel as both owners). Its `applied` callback (`onRunnerRegisterApplied_Runner`) notifies the executor and records the id
-   (G-36), and the tick backend's `onRegistered` (the occupancy push and the presenter's ring); on a refusal it releases the bodies.
+   channel as both owners). Its `applied` callback (the lifecycle's `onRegisterApplied`) notifies the executor and records the id
+   (`SessionLifecycle-guards.md` G-06), and the bodies' `onRegistered` (the occupancy push and the presenter's ring); on a refusal
+   it releases the bodies.
 4. **Finish,** on the game thread at the next call after `RegisterApplied`: the component map, the `tryRegister: registered` line,
    the game's `afterRegistered`, the render target. A refusal logs an `Error` naming the id and returns `Refused`.
 
 `requestRunnerUnregister_GameThread` (the pawn's `EndPlay`, and the lanes' stop for every registered character): the game thread
 does the host's half at once (the maps, the game's `onUnregistered`, the latency forget, the render target, the
 `NewFramework: unregistered` line); when bodies may be held it posts a runner request that unregisters through og-sim-net's queue
-once a registration was posted (G-37) and releases the bodies in its `applied` callback. og-sim-net calls the host's
-`onLifecycleUnregistering` before the facade, which the session answers with the executor's notify while the character is in
-storage (`⛔G-41`; a client's roster Removes get the same answer from og-sim-session's `SessionLifecycle::onUnregistering`,
+once a registration was posted (`SessionLifecycle-guards.md` G-07) and releases the bodies in its `applied` callback. og-sim-net
+calls the host's `onLifecycleUnregistering` before the facade, which the lifecycle answers with the executor's notify while the
+character is in storage (`SessionLifecycle-guards.md` G-08; a client's roster Removes get the same answer from og-sim-session's `SessionLifecycle::onUnregistering`,
 `SessionLifecycle-guards.md` G-05, og-input-latency P5-17's F1). After the runner has
 stopped nothing is posted: the simulation and its world are destroyed whole.
 
@@ -2615,7 +2623,8 @@ binding with og-sim-session's tick game:
   configuration, over its port `NetPort` (the lanes, the server, the idle service, the runner requests, the client's unregister
   requests, the presentation publish, `FPlatformTime::Seconds()` and the log routes) and `m_latencyBudgetDiagnostics`. A
   destruction-order `static_assert` keeps the diagnostics, the storage, the net sync and the manager above it. The runner
-  requests' swap-and-run is `runRunnerRequests_Owner` (the lifecycle bridge stays here until og-session-runtime tasks 29–30).
+  requests' swap-and-run was `runRunnerRequests_Owner` until og-session-runtime task 30; it is og-sim-session's
+  `SessionAuthorityLifecycle::applyRequests` (the port's `runRunnerRequests`).
 - **The tick driver's game** is og-sim-session's `SessionTickGame`, held by the backend over OGSimulationUnreal's
   `UESessionTickHost` (`SessionTickGame-rationale.md`, `UESessionTickHost-rationale.md`). Its hooks call the clock, the display,
   the net hooks and the latency stamps in the order §15, §18.2, §19 and §22.3 record; the order test transcribes them.

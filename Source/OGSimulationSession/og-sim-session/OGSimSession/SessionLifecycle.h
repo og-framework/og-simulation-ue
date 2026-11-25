@@ -1,22 +1,27 @@
-#ifndef OGSIM_SESSION_LIFECYCLE_H
+#pragma once
 // SPDX-License-Identifier: MPL-2.0
 // docs/SessionLifecycle-rationale.md · docs/SessionLifecycle-guards.md
-#define OGSIM_SESSION_LIFECYCLE_H
 
 #include <atomic>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "OGSimulation/BodySlotOccupancy.h"
 #include "OGSimulation/OGAssert.h"
 #include "OGSimNet/SimNetBindings.h"
+#include "OGSimNet/SimNetRoster.h"
 #include "OGSimSession/SessionThreads.h"
 #include "OGSimSession/SessionTypes.h"
 
@@ -30,10 +35,18 @@ inline constexpr char kQueuedRegistrationDidNotHold[] =
 inline constexpr char kRosterRemovedIt[]        = "the roster removed it";
 inline constexpr char kLifecycleLineNamesWhy[]  = "its [SimNet.Lifecycle] line names why";
 inline constexpr char kRegistered[]             = "tryRegister: registered simulatable id=%u isAuthority=%d";
+inline constexpr char kRunnerRegisterRefused[]  =
+	"[Error]tryRegister: id=%u refused by the og-sim-net server (its [Roster.Refused] line names why); the character stays "
+	"unsimulated";
+inline constexpr char kRosterVerdictMismatch[]  =
+	"[Error]tryRegister: id=%u registers %s an input provider, and its roster entry says the other";
+inline constexpr char kWith[]                   = "with";
+inline constexpr char kWithout[]                = "without";
 inline constexpr std::size_t kLineBytes         = 256u;
 
 static_assert(sizeof(kQueuedRegistrationDidNotHold) + sizeof(kLifecycleLineNamesWhy) + 10u <= kLineBytes
-		&& sizeof(kRegistered) + 10u + 11u <= kLineBytes,
+		&& sizeof(kRegistered) + 10u + 11u <= kLineBytes && sizeof(kRunnerRegisterRefused) + 10u <= kLineBytes
+		&& sizeof(kRosterVerdictMismatch) + sizeof(kWithout) + 10u <= kLineBytes,
 	"sessionLifecycleLines::kLineBytes holds each lifecycle line with its longest reason and a 10-digit id");
 } // namespace sessionLifecycleLines
 
@@ -312,6 +325,13 @@ public:
 		const ogsimnet::BindVerdict verdict = m_port.bindings()->markRegisteredIfReady(simId, hasProvider);
 		if (verdict.step == ogsimnet::BindStep::Wait)
 			return RegisterStatus::Pending;
+		if (verdict.step != ogsimnet::BindStep::Ready)
+		{
+			char line[sessionLifecycleLines::kLineBytes];
+			std::snprintf(line, sizeof(line), sessionLifecycleLines::kRosterVerdictMismatch, static_cast<unsigned>(id),
+				hasProvider ? sessionLifecycleLines::kWith : sessionLifecycleLines::kWithout);
+			m_port.logRouted(line);
+		}
 		OG_CHECK(verdict.step == ogsimnet::BindStep::Ready,
 			"SessionLifecycle::tryRegister: the character registers with or without an input provider and its roster entry "
 			"says the other: the provider is built for the engine's locally controlled entity, which the adapter's bind step "
@@ -567,313 +587,994 @@ private:
 	std::unordered_set<uint32_t>  m_systemsNotified;
 	std::unordered_set<uint32_t>  m_unregisterRequested;
 };
-} // namespace ogsession
-#endif
 
-#if defined(OGSIM_SESSION_LIFECYCLE_UE_AUTHORITY_DEFINITIONS)
-
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::postRunnerRequest(TUniqueFunction<void()> request)
+template <typename B>
+concept SessionBodies = requires(B& bodies, const RegisterRequest& request, const typename B::Request& bodyRequest,
+	typename B::Simulatable& simulatable, uint32_t id, uint64_t key)
 {
-	const std::scoped_lock lock(m_lifecycleBridgeMutex);
-	m_runnerRequests.push_back(MoveTemp(request));
+	typename B::Request;
+	typename B::Simulatable;
+	{ bodyRequest.key }                             -> std::convertible_to<uint64_t>;
+	{ bodies.makeRequest(request) }                 -> std::same_as<typename B::Request>;
+	{ bodies.create(bodyRequest, simulatable, id) } -> std::same_as<bool>;
+	{ bodies.slotOf(key) }                          -> std::same_as<std::optional<uint32_t>>;
+	{ bodies.onRegistered(key, id) }                -> std::same_as<void>;
+	{ bodies.release(key, id) }                     -> std::same_as<void>;
+};
+
+namespace sessionBodiesSelfCheck
+{
+struct Simulatable
+{
+};
+
+struct Request
+{
+	uint64_t key = 0u;
+};
+
+struct RequestWithoutKey
+{
+};
+
+struct ConformingBodies
+{
+	using Request     = sessionBodiesSelfCheck::Request;
+	using Simulatable = sessionBodiesSelfCheck::Simulatable;
+
+	Request                 makeRequest(const RegisterRequest&);
+	bool                    create(const Request&, Simulatable&, uint32_t);
+	std::optional<uint32_t> slotOf(uint64_t);
+	void                    onRegistered(uint64_t, uint32_t);
+	void                    release(uint64_t, uint32_t);
+};
+
+struct BodiesWithoutRequestType
+{
+	using Simulatable = sessionBodiesSelfCheck::Simulatable;
+
+	Request                 makeRequest(const RegisterRequest&);
+	bool                    create(const Request&, Simulatable&, uint32_t);
+	std::optional<uint32_t> slotOf(uint64_t);
+	void                    onRegistered(uint64_t, uint32_t);
+	void                    release(uint64_t, uint32_t);
+};
+
+struct BodiesWithoutSimulatableType
+{
+	using Request = sessionBodiesSelfCheck::Request;
+
+	Request                 makeRequest(const RegisterRequest&);
+	bool                    create(const Request&, Simulatable&, uint32_t);
+	std::optional<uint32_t> slotOf(uint64_t);
+	void                    onRegistered(uint64_t, uint32_t);
+	void                    release(uint64_t, uint32_t);
+};
+
+struct BodiesRequestWithoutKey : ConformingBodies
+{
+	using Request = RequestWithoutKey;
+
+	Request makeRequest(const RegisterRequest&);
+	bool    create(const Request&, Simulatable&, uint32_t);
+};
+
+struct BodiesWithoutMakeRequest
+{
+	using Request     = sessionBodiesSelfCheck::Request;
+	using Simulatable = sessionBodiesSelfCheck::Simulatable;
+
+	bool                    create(const Request&, Simulatable&, uint32_t);
+	std::optional<uint32_t> slotOf(uint64_t);
+	void                    onRegistered(uint64_t, uint32_t);
+	void                    release(uint64_t, uint32_t);
+};
+
+struct BodiesWithoutCreate
+{
+	using Request     = sessionBodiesSelfCheck::Request;
+	using Simulatable = sessionBodiesSelfCheck::Simulatable;
+
+	Request                 makeRequest(const RegisterRequest&);
+	std::optional<uint32_t> slotOf(uint64_t);
+	void                    onRegistered(uint64_t, uint32_t);
+	void                    release(uint64_t, uint32_t);
+};
+
+struct BodiesWithoutSlotOf
+{
+	using Request     = sessionBodiesSelfCheck::Request;
+	using Simulatable = sessionBodiesSelfCheck::Simulatable;
+
+	Request makeRequest(const RegisterRequest&);
+	bool    create(const Request&, Simulatable&, uint32_t);
+	void    onRegistered(uint64_t, uint32_t);
+	void    release(uint64_t, uint32_t);
+};
+
+struct BodiesWithoutOnRegistered
+{
+	using Request     = sessionBodiesSelfCheck::Request;
+	using Simulatable = sessionBodiesSelfCheck::Simulatable;
+
+	Request                 makeRequest(const RegisterRequest&);
+	bool                    create(const Request&, Simulatable&, uint32_t);
+	std::optional<uint32_t> slotOf(uint64_t);
+	void                    release(uint64_t, uint32_t);
+};
+
+struct BodiesWithoutRelease
+{
+	using Request     = sessionBodiesSelfCheck::Request;
+	using Simulatable = sessionBodiesSelfCheck::Simulatable;
+
+	Request                 makeRequest(const RegisterRequest&);
+	bool                    create(const Request&, Simulatable&, uint32_t);
+	std::optional<uint32_t> slotOf(uint64_t);
+	void                    onRegistered(uint64_t, uint32_t);
+};
+
+struct BodiesCreateReturnsSlot : ConformingBodies
+{
+	std::optional<uint32_t> create(const Request&, Simulatable&, uint32_t);
+};
+
+struct BodiesSlotOfReturnsBool : ConformingBodies
+{
+	bool slotOf(uint64_t);
+};
+
+static_assert(SessionBodies<ConformingBodies>, "SessionBodies self-check: the reference shape must satisfy the concept");
+static_assert(!SessionBodies<BodiesWithoutRequestType>,
+	"SessionBodies self-check: the provider names its request type, Request, made on the frame thread and carried to the "
+	"runner as data");
+static_assert(!SessionBodies<BodiesWithoutSimulatableType>,
+	"SessionBodies self-check: the provider names the Simulatable whose bodies it creates");
+static_assert(!SessionBodies<BodiesRequestWithoutKey>,
+	"SessionBodies self-check: a request carries its bodies' key, the key create, slotOf, onRegistered and release take");
+static_assert(!SessionBodies<BodiesWithoutMakeRequest>,
+	"SessionBodies self-check: makeRequest(registerRequest) makes the request on the frame thread");
+static_assert(!SessionBodies<BodiesWithoutCreate>,
+	"SessionBodies self-check: create(request, simulatable, id) creates and binds the bodies on the runner");
+static_assert(!SessionBodies<BodiesWithoutSlotOf>, "SessionBodies self-check: slotOf(key) reads the slot the bodies were bound to");
+static_assert(!SessionBodies<BodiesWithoutOnRegistered>,
+	"SessionBodies self-check: onRegistered(key, id) tells the bodies their character is registered");
+static_assert(!SessionBodies<BodiesWithoutRelease>, "SessionBodies self-check: release(key, id) frees the bodies and their slot");
+static_assert(!SessionBodies<BodiesCreateReturnsSlot>,
+	"SessionBodies self-check: create returns whether the bodies were bound; the slot is slotOf's");
+static_assert(!SessionBodies<BodiesSlotOfReturnsBool>,
+	"SessionBodies self-check: slotOf returns the slot, std::nullopt when the key holds none");
+} // namespace sessionBodiesSelfCheck
+
+namespace authorityRequest
+{
+template <typename BodyRequestT, typename SimulatableT>
+struct CreateBodies
+{
+	uint32_t                      simId = 0u;
+	BodyRequestT                  bodies;
+	std::shared_ptr<SimulatableT> simulatable;
+};
+
+template <typename SimulatableT>
+struct Register
+{
+	uint32_t                      simId           = 0u;
+	uint64_t                      key             = 0u;
+	uint8_t                       physicsSlot     = 0u;
+	SimConnectionId               ownerConnection = kInvalidSimConnection;
+	uint8_t                       localIndex      = 0u;
+	std::string                   debugName;
+	std::shared_ptr<SimulatableT> simulatable;
+};
+
+struct Unregister
+{
+	uint32_t simId          = 0u;
+	uint64_t key            = 0u;
+	bool     registerPosted = false;
+};
+
+struct NamesCallOperator
+{
+	void operator()() const;
+};
+
+template <typename T>
+struct CallOperatorProbe : T, NamesCallOperator
+{
+};
+
+template <typename T>
+concept NamesNoCallOperator = requires { &CallOperatorProbe<T>::operator(); };
+
+template <typename T>
+consteval bool isCallable()
+{
+	if constexpr (std::is_function_v<T> || std::is_function_v<std::remove_pointer_t<T>> || std::is_member_pointer_v<T>)
+		return true;
+	else if constexpr (std::is_union_v<T> || (std::is_class_v<T> && std::is_final_v<T>))
+		return true;
+	else if constexpr (std::is_class_v<T>)
+		return std::is_invocable_v<T> || !NamesNoCallOperator<T>;
+	else
+		return false;
 }
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::runRunnerRequests_Owner()
+template <typename T>
+inline constexpr bool kIsCallable = isCallable<std::remove_cvref_t<T>>();
+
+struct AnyField
 {
-	std::vector<TUniqueFunction<void()>> requests;
+	template <typename U>
+	operator U() const;
+};
+
+template <typename T, typename IndicesT>
+struct BraceInitializableWith;
+
+template <typename T, std::size_t... IndexVs>
+struct BraceInitializableWith<T, std::index_sequence<IndexVs...>>
+	: std::bool_constant<requires { T{ (static_cast<void>(IndexVs), AnyField{})... }; }>
+{
+};
+
+inline constexpr std::size_t kMaxFields = 8u;
+
+template <typename T, std::size_t CountV = kMaxFields>
+consteval std::size_t fieldCount()
+{
+	if constexpr (CountV == 0u || BraceInitializableWith<T, std::make_index_sequence<CountV>>::value)
+		return CountV;
+	else
+		return fieldCount<T, CountV - 1u>();
+}
+
+template <typename T>
+consteval bool holdsNoCallable();
+
+template <typename... FieldTs>
+consteval bool noFieldIsCallable()
+{
+	return (holdsNoCallable<std::remove_cvref_t<FieldTs>>() && ...);
+}
+
+template <std::size_t CountV, typename T>
+auto fieldsHoldNoCallable(const T& request)
+{
+	if constexpr (CountV == 0u)
 	{
-		const std::scoped_lock lock(m_lifecycleBridgeMutex);
-		requests.swap(m_runnerRequests);
+		static_assert(std::is_empty_v<T>,
+			"authorityRequest: a request's fields could not be counted, so they cannot be checked: a field does not take "
+			"AnyField (clang: a reference to a function)");
+		return std::true_type{};
 	}
-	for (TUniqueFunction<void()>& request : requests)
-		request();
+	else if constexpr (CountV == 1u)
+	{
+		const auto& [f0] = request;
+		return std::bool_constant<noFieldIsCallable<decltype(f0)>()>{};
+	}
+	else if constexpr (CountV == 2u)
+	{
+		const auto& [f0, f1] = request;
+		return std::bool_constant<noFieldIsCallable<decltype(f0), decltype(f1)>()>{};
+	}
+	else if constexpr (CountV == 3u)
+	{
+		const auto& [f0, f1, f2] = request;
+		return std::bool_constant<noFieldIsCallable<decltype(f0), decltype(f1), decltype(f2)>()>{};
+	}
+	else if constexpr (CountV == 4u)
+	{
+		const auto& [f0, f1, f2, f3] = request;
+		return std::bool_constant<noFieldIsCallable<decltype(f0), decltype(f1), decltype(f2), decltype(f3)>()>{};
+	}
+	else if constexpr (CountV == 5u)
+	{
+		const auto& [f0, f1, f2, f3, f4] = request;
+		return std::bool_constant<noFieldIsCallable<decltype(f0), decltype(f1), decltype(f2), decltype(f3),
+			decltype(f4)>()>{};
+	}
+	else if constexpr (CountV == 6u)
+	{
+		const auto& [f0, f1, f2, f3, f4, f5] = request;
+		return std::bool_constant<noFieldIsCallable<decltype(f0), decltype(f1), decltype(f2), decltype(f3), decltype(f4),
+			decltype(f5)>()>{};
+	}
+	else if constexpr (CountV == 7u)
+	{
+		const auto& [f0, f1, f2, f3, f4, f5, f6] = request;
+		return std::bool_constant<noFieldIsCallable<decltype(f0), decltype(f1), decltype(f2), decltype(f3), decltype(f4),
+			decltype(f5), decltype(f6)>()>{};
+	}
+	else
+	{
+		static_assert(CountV == kMaxFields, "authorityRequest: fieldsHoldNoCallable destructures up to kMaxFields fields");
+		const auto& [f0, f1, f2, f3, f4, f5, f6, f7] = request;
+		return std::bool_constant<noFieldIsCallable<decltype(f0), decltype(f1), decltype(f2), decltype(f3), decltype(f4),
+			decltype(f5), decltype(f6), decltype(f7)>()>{};
+	}
 }
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::onSimNetLifecycleUnregistering(uint8_t simId)
+template <typename T>
+consteval bool holdsNoCallable()
 {
-	const unsigned int id = simId;
-	// ⛔G-41  docs/UESimulationSession-guards.md
-	if (m_systemsNotified_Step.erase(id) != 0u && m_storage.template has<Simulatable>(id))
-		m_manager->notifyCharacterUnregistered(id);
+	if constexpr (kIsCallable<T>)
+		return false;
+	else if constexpr (std::is_class_v<T> && std::is_aggregate_v<T>)
+	{
+		static_assert(!BraceInitializableWith<T, std::make_index_sequence<kMaxFields + 1u>>::value,
+			"authorityRequest: a request holds at most kMaxFields fields; add a binding to fieldsHoldNoCallable and raise it");
+		return decltype(fieldsHoldNoCallable<fieldCount<T>()>(std::declval<const T&>()))::value;
+	}
+	else
+		return true;
 }
 
-template <typename TraitsT>
-std::optional<uint32> UESimulationSession<TraitsT>::physicsSlotFor(AActor& owner, [[maybe_unused]] uint64 key,
-    unsigned int storageKey) const
+template <typename RequestT>
+inline constexpr bool kHoldsNoCallable = holdsNoCallable<std::remove_cvref_t<RequestT>>();
+
+template <typename VariantT>
+struct AlternativesHoldNoCallable;
+
+template <typename... AlternativeTs>
+struct AlternativesHoldNoCallable<std::variant<AlternativeTs...>>
+	: std::bool_constant<((std::is_aggregate_v<AlternativeTs> && kHoldsNoCallable<AlternativeTs>) && ...)>
 {
-    checkf(m_manager.has_value(), TEXT("UESimulationSession::physicsSlotFor before beginPlay built the manager"));
-    if (!m_manager->runsPrediction())
-    {
-        const auto found = m_authoritativeSlotsByActor.find(&owner);
-        return found != m_authoritativeSlotsByActor.end() ? std::optional<uint32>(found->second) : std::nullopt;
-    }
-    if (storageKey == 0u)
-        return std::nullopt;
-    checkf(storageKey <= 0xFFu,
-        TEXT("UESimulationSession::physicsSlotFor: a client's slot comes from the roster, which keys characters by their sim "
-             "id (1..255); storage key %u is not one"), storageKey);
-    SimNetLanes* const lanes = m_simNetLanes;
-    if (lanes == nullptr || lanes->client() == nullptr)
-        return std::nullopt;
-    const ogsimnet::BindVerdict entry = lanes->bindings().verdict(static_cast<uint8_t>(storageKey), /*engineSaysLocal=*/false);
-    if (entry.step == ogsimnet::BindStep::Wait || entry.physicsSlot == ogsimnet::kRosterNoSlot)
-        return std::nullopt;
-    return static_cast<uint32>(entry.physicsSlot);
-}
+};
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::recordAuthoritativeSlot(AActor& owner, [[maybe_unused]] uint64 key, uint32 slot)
+template <typename VariantT>
+inline constexpr bool kAlternativesHoldNoCallable = AlternativesHoldNoCallable<VariantT>::value;
+} // namespace authorityRequest
+
+template <typename BodyRequestT, typename SimulatableT>
+using AuthorityRequest = std::variant<authorityRequest::CreateBodies<BodyRequestT, SimulatableT>,
+	authorityRequest::Register<SimulatableT>, authorityRequest::Unregister>;
+
+namespace authorityRequestSelfCheck
 {
-    checkf(m_simNetServer.has_value(),
-        TEXT("UESimulationSession::recordAuthoritativeSlot on a peer without the og-sim-net server: only the authority "
-             "chooses a slot, and a client binds the slot its roster entry carries. Was SetAuthoritativePhysicsSlot's "
-             "authority checkf"));
-    checkf(slot < kMaxSimulatableSlots,
-        TEXT("UESimulationSession::recordAuthoritativeSlot: slot %u is not a slot of the physics world (kMaxSimulatableSlots "
-             "= %u). Was SetAuthoritativePhysicsSlot's range checkf"), slot, static_cast<uint32>(kMaxSimulatableSlots));
-    checkf(m_authoritativeSlotsByActor.find(&owner) == m_authoritativeSlotsByActor.end(),
-        TEXT("UESimulationSession::recordAuthoritativeSlot: '%s' already holds slot %u and was handed slot %u; a character "
-             "takes one slot for its lifetime. Was SetAuthoritativePhysicsSlot's once-only checkf"),
-        *owner.GetName(), m_authoritativeSlotsByActor.count(&owner) != 0u ? m_authoritativeSlotsByActor.at(&owner) : 0u, slot);
-    m_authoritativeSlotsByActor[&owner] = slot;
-}
+using authorityRequest::kAlternativesHoldNoCallable;
+using authorityRequest::kHoldsNoCallable;
+using authorityRequest::kIsCallable;
+using Simulatable = sessionBodiesSelfCheck::Simulatable;
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::forgetSimNetCharacter(unsigned int id, const AActor* pawn)
+struct UnaryCall
 {
-    m_registeredComponentsById.erase(id);
-    m_authoritativeSlotsByActor.erase(pawn);
-    if (id == 0u || id > 0xFFu)
-        return;
-    if (m_simNetLanes != nullptr)
-        m_simNetLanes->editBindings().markUnregistered(static_cast<uint8_t>(id));
-}
+	void operator()(Simulatable*) const;
+};
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::collectLifecycleOutcomes_GameThread()
+struct GenericCall
 {
-    if (m_lifecycle.has_value())
-    {
-        m_lifecycle->pollOutcomes([this](const ogsession::LifecycleOutcome& outcome) { onPredictionOutcome_GameThread(outcome); });
-        return;
-    }
-    std::vector<LifecycleOutcome> outcomes;
-    {
-        const std::scoped_lock lock(m_lifecycleBridgeMutex);
-        outcomes.swap(m_lifecycleOutcomes);
-    }
-    for (const LifecycleOutcome& outcome : outcomes)
-    {
-        switch (outcome.kind)
-        {
-        case LifecycleOutcomeKind::RegisterApplied:
-        case LifecycleOutcomeKind::RegisterRefused:
-        {
-            const auto pending = m_pendingRegistrations.find(outcome.id);
-            if (pending == m_pendingRegistrations.end() || !(pending->second.queued || pending->second.onRunner))
-                break;
-            pending->second.runnerBusy = false;
-            if (outcome.kind == LifecycleOutcomeKind::RegisterApplied)
-                pending->second.applied = true;
-            else
-                pending->second.refused = true;
-            break;
-        }
-        case LifecycleOutcomeKind::BodiesBound:
-        case LifecycleOutcomeKind::BodiesPending:
-        case LifecycleOutcomeKind::BodiesUnresolvable:
-        {
-            if (outcome.kind != LifecycleOutcomeKind::BodiesUnresolvable)
-                m_componentsHeldForRunner.erase(outcome.id);
-            const auto pending = m_pendingRegistrations.find(outcome.id);
-            if (pending == m_pendingRegistrations.end() || !pending->second.onRunner)
-                break;
-            pending->second.runnerBusy = false;
-            if (outcome.kind == LifecycleOutcomeKind::BodiesBound)
-            {
-                pending->second.bodiesBound = true;
-                pending->second.boundSlot = outcome.slot;
-            }
-            break;
-        }
-        }
-    }
-}
+	template <typename T>
+	void operator()(T) const;
+};
 
-template <typename TraitsT>
-TryRegisterStatus UESimulationSession<TraitsT>::tryRegisterOnRunner(unsigned int id, typename TraitsT::Component& owner)
+class PrivateCall
 {
-    collectLifecycleOutcomes_GameThread();
-    const auto it = m_pendingRegistrations.find(id);
-    checkf(it != m_pendingRegistrations.end(), TEXT("UESimulationSession::tryRegisterOnRunner: tryRegister made the record"));
-    PendingRegistration& record = it->second;
-    record.onRunner = true;
-    if (record.refused)
-    {
-        UE_LOG(LogOGMgmt, Error,
-            TEXT("tryRegister: id=%u refused by the og-sim-net server (its [Roster.Refused] line names why); the character "
-                 "stays unsimulated"), id);
-        m_pendingRegistrations.erase(it);
-        return TryRegisterStatus::Refused;
-    }
-    if (record.applied)
-    {
-        m_registeredComponentsById[id] = &owner;
-        m_runnerBodyKeysById[id] = record.bodyKey;
-        UE_LOG(LogOGMgmt, Log, TEXT("tryRegister: registered simulatable id=%u isAuthority=%d"), id, 1);
-        m_game.afterRegistered(id, /*isAuthority=*/true);
-        m_physicsBackend.onRegisteredHost_GameThread(owner, id);
-        m_pendingRegistrations.erase(it);
-        return TryRegisterStatus::Ready;
-    }
-    if (record.runnerBusy || m_runnerStopped)
-        return TryRegisterStatus::Pending;
+	void operator()(uint32_t) const;
+};
 
-    typename TraitsT::Character* const character = Cast<typename TraitsT::Character>(owner.GetOwner());
-    checkf(character != nullptr,
-           TEXT("UESimulationSession::tryRegister: the component must be attached to a TraitsT::Character — the ")
-           TEXT("first-call body pass reads that class's own root capsule"));
-    if (!record.runnerSimulatable)
-    {
-        record.runnerSimulatable = std::make_shared<Simulatable>(std::move(*record.simulatable));
-        record.simulatable.reset();
-    }
-
-    if (!record.bodiesCreated)
-    {
-        if (!record.bodiesBound)
-        {
-            typename PhysicsBackend::BodyRequest request = m_physicsBackend.makeBodyRequest_GameThread(owner, *character, id);
-            record.bodyKey = request.key;
-            record.runnerBusy = true;
-            m_componentsHeldForRunner[id] = TStrongObjectPtr<typename TraitsT::Component>(&owner);
-            postRunnerRequest([this, id, request = MoveTemp(request), simulatable = record.runnerSimulatable,
-                staticData = &owner.getStaticData()]()
-            {
-                const std::optional<uint32_t> slot = m_physicsBackend.createBodies_Runner(request, *simulatable, *staticData, id);
-                postLifecycleOutcome(id, slot.has_value() ? LifecycleOutcomeKind::BodiesBound : LifecycleOutcomeKind::BodiesPending,
-                    slot.value_or(0u));
-            });
-            return TryRegisterStatus::Pending;
-        }
-        recordAuthoritativeSlot(*owner.GetOwner(), record.bodyKey, record.boundSlot);
-#if DO_CHECK
-        record.runnerSimulatable->getPhysicsComposite().forEach([&](const auto& decl)
-        {
-            checkf(decl.bindings.ownBodyId.value != 0,
-                   TEXT("PhysicsDeclaration bindings.ownBodyId not populated by fold (id=%u)"), id);
-            checkf(decl.bindings.parentBodyId.value != 0,
-                   TEXT("PhysicsDeclaration bindings.parentBodyId not populated by fold (id=%u)"), id);
-        });
-#endif
-        m_game.afterBodiesCreated(*record.runnerSimulatable, *character, id, /*isAuthority=*/true, m_owner.GetNetMode());
-        record.bodiesCreated = true;
-        return TryRegisterStatus::Pending;
-    }
-
-    checkf(id != 0u && id <= 0xFFu,
-        TEXT("UESimulationSession::tryRegister: og-sim-net's roster keys a character by its sim id (1..255); id %u is not one"), id);
-    AActor* const pawn = owner.GetOwner();
-    const UOGNetConnection* const ownerConnection = Cast<UOGNetConnection>(GetRootNetConnection(pawn));
-    const SimConnectionId ownerConn = ownerConnection != nullptr ? ownerConnection->OGNetId : kInvalidSimConnection;
-    const uint8_t localIndex = GetPlayerSlotForActor(pawn);
-    const FTCHARToUTF8 debugName(pawn != nullptr ? *pawn->GetName() : TEXT("none"));
-    record.runnerBusy = true;
-    record.registerPosted = true;
-    postRunnerRequest([this, id, key = record.bodyKey, physicsSlot = static_cast<uint8_t>(record.boundSlot), ownerConn, localIndex,
-        name = std::string(debugName.Get()), simulatable = record.runnerSimulatable]() mutable
-    {
-        if (!bodiesResolvable_Runner(*simulatable))
-        {
-            postLifecycleOutcome(id, LifecycleOutcomeKind::BodiesUnresolvable);
-            return;
-        }
-        m_simNetServer->template registerCharacter<Simulatable>(static_cast<uint8_t>(id), physicsSlot, ownerConn, localIndex,
-            std::move(name), std::move(*simulatable),
-            [this, id, key](SimChannel* channel) { onRunnerRegisterApplied_Runner(id, key, channel); });
-    });
-    return TryRegisterStatus::Pending;
-}
-
-template <typename TraitsT>
-bool UESimulationSession<TraitsT>::bodiesResolvable_Runner(const Simulatable& simulatable) const
+struct InheritedCall : UnaryCall
 {
-    if (!m_physAdapter->isBodyResolvable(Game::rootBodyId(simulatable)))
-        return false;
-    bool allResolvable = true;
-    simulatable.getPhysicsComposite().forEach([&](const auto& decl)
-    {
-        if (!m_physAdapter->isBodyResolvable(decl.bindings.ownBodyId))
-            allResolvable = false;
-    });
-    return allResolvable;
-}
+};
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::onRunnerRegisterApplied_Runner(unsigned int id, uint64 key, SimChannel* channel)
+struct FinalData final
 {
-    if (channel == nullptr)
-    {
-        m_physicsBackend.releaseBodies_Runner(key, id);
-        postLifecycleOutcome(id, LifecycleOutcomeKind::RegisterRefused);
-        return;
-    }
-    // ⛔G-36  docs/UESimulationSession-guards.md
-    m_manager->notifyCharacterRegistered(id);
-    m_systemsNotified_Step.insert(id);
-    m_physicsBackend.onRegistered_Runner(key, id);
-    postLifecycleOutcome(id, LifecycleOutcomeKind::RegisterApplied);
-}
+	uint64_t key = 0u;
+};
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::requestRunnerUnregister_GameThread(unsigned int id, typename TraitsT::Component* owner)
+union UnionData
 {
-    AActor* const pawn = owner != nullptr ? owner->GetOwner() : nullptr;
-    const bool registered = m_registeredComponentsById.find(id) != m_registeredComponentsById.end();
-    const auto pending = m_pendingRegistrations.find(id);
-    const bool pendingOnRunner = pending != m_pendingRegistrations.end() && pending->second.onRunner;
-    const bool registerPosted = registered || (pendingOnRunner && pending->second.registerPosted);
-    const bool bodiesHeld = registered || (pendingOnRunner && (pending->second.bodiesBound || pending->second.runnerBusy));
-    const auto knownKey = m_runnerBodyKeysById.find(id);
-    const uint64 key = knownKey != m_runnerBodyKeysById.end() ? knownKey->second
-        : pendingOnRunner ? pending->second.bodyKey : PhysicsBackend::slotKeyFor(pawn);
-    if (pending != m_pendingRegistrations.end())
-        m_pendingRegistrations.erase(pending);
-    if (knownKey != m_runnerBodyKeysById.end())
-        m_runnerBodyKeysById.erase(knownKey);
+	uint64_t key;
+	uint32_t simId;
+};
 
-    if (!m_runnerStopped && bodiesHeld)
-    {
-        postRunnerRequest([this, id, key, registerPosted]()
-        {
-            // ⛔G-37  docs/UESimulationSession-guards.md
-            if (!registerPosted)
-            {
-                releaseOnRunner_Runner(id, key);
-                return;
-            }
-            m_simNetServer->template unregisterCharacter<Simulatable>(static_cast<uint8_t>(id), ogsimnet::RosterRemoveReason::Left,
-                [this, id, key](SimChannel*) { releaseOnRunner_Runner(id, key); });
-        });
-    }
-
-    m_registeredComponentsById.erase(id);
-    m_authoritativeSlotsByActor.erase(pawn);
-    m_game.onUnregistered(id);
-    m_latencyBudgetDiagnostics.forgetCharacter(id);
-    if (registered)
-        m_physicsBackend.onUnregisteredHost_GameThread(id);
-    UE_LOG(LogOGMgmt, Log, TEXT("NewFramework: unregistered simulatable id=%u"), id);
-}
-
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::releaseOnRunner_Runner(unsigned int id, uint64 key)
+struct DataRequest
 {
-    m_systemsNotified_Step.erase(id);
-    m_physicsBackend.releaseBodies_Runner(key, id);
-}
+	uint64_t                     key = 0u;
+	std::string                  name;
+	bool                         isAuthority = false;
+	std::optional<uint32_t>      replicatedSlot;
+	const Simulatable*           staticData = nullptr;
+	std::shared_ptr<Simulatable> simulatable;
+};
 
-#endif
+struct RequestWithCallField
+{
+	uint64_t  key = 0u;
+	UnaryCall applied;
+};
+
+struct RequestWithNestedCallField
+{
+	uint64_t             key = 0u;
+	RequestWithCallField inner;
+};
+
+struct RequestWithFunctionPointer
+{
+	uint64_t key = 0u;
+	void (*applied)(Simulatable*) = nullptr;
+};
+
+struct RegisterWithCallField
+{
+	uint32_t                     simId           = 0u;
+	uint64_t                     key             = 0u;
+	uint8_t                      physicsSlot     = 0u;
+	SimConnectionId              ownerConnection = kInvalidSimConnection;
+	uint8_t                      localIndex      = 0u;
+	std::string                  debugName;
+	std::shared_ptr<Simulatable> simulatable;
+	UnaryCall                    applied;
+};
+
+struct RequestNotAggregate
+{
+	RequestNotAggregate() {}
+	uint64_t key = 0u;
+};
+
+static_assert(!kIsCallable<uint64_t> && !kIsCallable<std::string> && !kIsCallable<std::optional<uint32_t>>
+		&& !kIsCallable<std::shared_ptr<Simulatable>> && !kIsCallable<const Simulatable*> && !kIsCallable<DataRequest>,
+	"authorityRequest self-check: data is not callable");
+static_assert(kIsCallable<UnaryCall> && kIsCallable<GenericCall> && kIsCallable<PrivateCall> && kIsCallable<InheritedCall>,
+	"authorityRequest self-check: a class that names an operator() is callable, whatever its arity, template, access or base");
+static_assert(kIsCallable<void (*)(Simulatable*)> && kIsCallable<void (&)(Simulatable*)> && kIsCallable<void(Simulatable*)>,
+	"authorityRequest self-check: a function, a pointer to one and a reference to one are callable");
+static_assert(kIsCallable<void (UnaryCall::*)(Simulatable*) const> && kIsCallable<uint64_t DataRequest::*>,
+	"authorityRequest self-check: a member pointer is callable");
+static_assert(kIsCallable<FinalData> && kIsCallable<UnionData>,
+	"authorityRequest self-check: a final class or a union cannot be probed for an operator(), so it is refused");
+static_assert(kHoldsNoCallable<DataRequest>, "authorityRequest self-check: a request of data holds no callable");
+static_assert(!kHoldsNoCallable<RequestWithCallField> && !kHoldsNoCallable<RequestWithNestedCallField>
+		&& !kHoldsNoCallable<RequestWithFunctionPointer>,
+	"authorityRequest self-check: a callable field, also inside an aggregate field, is found");
+static_assert(kAlternativesHoldNoCallable<AuthorityRequest<DataRequest, Simulatable>>,
+	"authorityRequest self-check: the requests hold no callable with a bodies' request of data");
+static_assert(!kAlternativesHoldNoCallable<AuthorityRequest<RequestWithCallField, Simulatable>>,
+	"authorityRequest self-check: a callable field in the bodies' request is found through CreateBodies");
+static_assert(!kAlternativesHoldNoCallable<std::variant<authorityRequest::Unregister, RegisterWithCallField>>,
+	"authorityRequest self-check: a callable field added to a request is found");
+static_assert(!kAlternativesHoldNoCallable<std::variant<authorityRequest::Unregister, RequestNotAggregate>>,
+	"authorityRequest self-check: a request that is not an aggregate cannot be walked field by field, so it is refused");
+} // namespace authorityRequestSelfCheck
+
+template <typename S, typename SimulatableT, typename ChannelT>
+concept SessionAuthorityServer = requires(S& server, uint8_t simId, uint8_t physicsSlot, SimConnectionId ownerConnection,
+	uint8_t localIndex, std::string debugName, SimulatableT&& simulatable, void (*applied)(ChannelT*))
+{
+	server.template registerCharacter<SimulatableT>(simId, physicsSlot, ownerConnection, localIndex, std::move(debugName),
+		std::move(simulatable), applied);
+	server.template unregisterCharacter<SimulatableT>(simId, ogsimnet::RosterRemoveReason::Left, applied);
+};
+
+template <typename P>
+concept SessionAuthorityLifecyclePort = SessionBodies<typename P::Bodies>
+	&& std::same_as<typename P::Simulatable, typename P::Bodies::Simulatable>
+	&& SessionAuthorityServer<typename P::Server, typename P::Simulatable, typename P::Channel>
+	&& requires(P& p, const P& cp, const typename P::Simulatable& simulatable, uint32_t id, EntityKey entityKey,
+		const char* line)
+{
+	{ p.server() }                         -> std::same_as<typename P::Server*>;
+	{ p.bodies() }                         -> std::same_as<typename P::Bodies&>;
+	{ cp.bodiesResolvable(simulatable) }   -> std::same_as<bool>;
+	{ cp.bodyKeyOf(entityKey) }            -> std::same_as<uint64_t>;
+	{ cp.runnerStopped() }                 -> std::same_as<bool>;
+	{ p.notifyRegistered(id) }             -> std::same_as<void>;
+	{ p.notifyUnregistered(id) }           -> std::same_as<void>;
+	{ cp.inStorage(id) }                   -> std::same_as<bool>;
+	{ p.logRouted(line) }                  -> std::same_as<void>;
+};
+
+template <typename H, typename SimulatableT>
+concept SessionAuthorityRegisterHooks = requires(H& hooks, SimulatableT& simulatable)
+{
+	{ hooks.bodiesRequested() }            -> std::same_as<void>;
+	{ hooks.bodiesCreated(simulatable) }   -> std::same_as<void>;
+};
+
+namespace sessionAuthorityLifecycleSelfCheck
+{
+using Bodies      = sessionBodiesSelfCheck::ConformingBodies;
+using Simulatable = sessionBodiesSelfCheck::Simulatable;
+
+struct Channel
+{
+};
+
+struct ConformingServer
+{
+	template <typename SimT, typename AppliedT>
+	void registerCharacter(uint8_t, uint8_t, SimConnectionId, uint8_t, std::string, SimT&&, AppliedT);
+	template <typename SimT, typename AppliedT>
+	void unregisterCharacter(uint8_t, ogsimnet::RosterRemoveReason, AppliedT);
+};
+
+struct ServerWithoutRegister
+{
+	template <typename SimT, typename AppliedT>
+	void unregisterCharacter(uint8_t, ogsimnet::RosterRemoveReason, AppliedT);
+};
+
+struct ServerWithoutUnregister
+{
+	template <typename SimT, typename AppliedT>
+	void registerCharacter(uint8_t, uint8_t, SimConnectionId, uint8_t, std::string, SimT&&, AppliedT);
+};
+
+struct ConformingPort
+{
+	using Bodies      = sessionAuthorityLifecycleSelfCheck::Bodies;
+	using Server      = ConformingServer;
+	using Channel     = sessionAuthorityLifecycleSelfCheck::Channel;
+	using Simulatable = sessionAuthorityLifecycleSelfCheck::Simulatable;
+
+	Server*  server();
+	Bodies&  bodies();
+	bool     bodiesResolvable(const Simulatable&) const;
+	uint64_t bodyKeyOf(EntityKey) const;
+	bool     runnerStopped() const;
+	void     notifyRegistered(uint32_t);
+	void     notifyUnregistered(uint32_t);
+	bool     inStorage(uint32_t) const;
+	void     logRouted(const char*);
+};
+
+struct PortWithoutBodies : ConformingPort
+{
+	using Bodies = sessionBodiesSelfCheck::BodiesWithoutRelease;
+	Bodies& bodies();
+};
+
+struct PortWithAnotherSimulatable : ConformingPort
+{
+	struct Simulatable
+	{
+	};
+	bool bodiesResolvable(const Simulatable&) const;
+};
+
+struct PortWithoutServerRegister : ConformingPort
+{
+	using Server = ServerWithoutRegister;
+	Server* server();
+};
+
+struct PortWithoutServerUnregister : ConformingPort
+{
+	using Server = ServerWithoutUnregister;
+	Server* server();
+};
+
+struct PortServerByReference : ConformingPort
+{
+	Server& server();
+};
+
+struct PortBodiesByValue : ConformingPort
+{
+	Bodies bodies();
+};
+
+struct PortResolvableOnlyWhenMutable : ConformingPort
+{
+	bool bodiesResolvable(const Simulatable&);
+};
+
+struct PortKeyOfReturnsEntityKey : ConformingPort
+{
+	EntityKey bodyKeyOf(EntityKey) const;
+};
+
+struct PortStoppedOnlyWhenMutable : ConformingPort
+{
+	bool runnerStopped();
+};
+
+struct PortNotifyRegisteredReturnsBool : ConformingPort
+{
+	bool notifyRegistered(uint32_t);
+};
+
+struct PortNotifyUnregisteredReturnsBool : ConformingPort
+{
+	bool notifyUnregistered(uint32_t);
+};
+
+struct PortStorageOnlyWhenMutable : ConformingPort
+{
+	bool inStorage(uint32_t);
+};
+
+struct PortLogReturnsBool : ConformingPort
+{
+	bool logRouted(const char*);
+};
+
+struct ConformingHooks
+{
+	void bodiesRequested();
+	void bodiesCreated(Simulatable&);
+};
+
+struct HooksWithoutRequested
+{
+	void bodiesCreated(Simulatable&);
+};
+
+struct HooksWithoutCreated
+{
+	void bodiesRequested();
+};
+
+static_assert(SessionAuthorityLifecyclePort<ConformingPort>,
+	"SessionAuthorityLifecyclePort self-check: the reference shape must satisfy the concept");
+static_assert(!SessionAuthorityLifecyclePort<PortWithoutBodies>,
+	"SessionAuthorityLifecyclePort self-check: the port's bodies model SessionBodies");
+static_assert(!SessionAuthorityLifecyclePort<PortWithAnotherSimulatable>,
+	"SessionAuthorityLifecyclePort self-check: the port's Simulatable is the one its bodies are created for");
+static_assert(!SessionAuthorityLifecyclePort<PortWithoutServerRegister>,
+	"SessionAuthorityLifecyclePort self-check: the server queues a registration, registerCharacter<Simulatable>(simId, "
+	"physicsSlot, ownerConnection, localIndex, debugName, simulatable, applied)");
+static_assert(!SessionAuthorityLifecyclePort<PortWithoutServerUnregister>,
+	"SessionAuthorityLifecyclePort self-check: the server queues an unregistration, unregisterCharacter<Simulatable>(simId, "
+	"reason, applied)");
+static_assert(!SessionAuthorityLifecyclePort<PortServerByReference>,
+	"SessionAuthorityLifecyclePort self-check: server() returns a pointer, null while the world has no og-sim-net server");
+static_assert(!SessionAuthorityLifecyclePort<PortBodiesByValue>,
+	"SessionAuthorityLifecyclePort self-check: bodies() returns the one provider by reference");
+static_assert(!SessionAuthorityLifecyclePort<PortResolvableOnlyWhenMutable>,
+	"SessionAuthorityLifecyclePort self-check: bodiesResolvable(simulatable) must be callable on a const port");
+static_assert(!SessionAuthorityLifecyclePort<PortKeyOfReturnsEntityKey>,
+	"SessionAuthorityLifecyclePort self-check: bodyKeyOf(entityKey) returns the bodies' key, a uint64_t");
+static_assert(!SessionAuthorityLifecyclePort<PortStoppedOnlyWhenMutable>,
+	"SessionAuthorityLifecyclePort self-check: runnerStopped() must be callable on a const port");
+static_assert(!SessionAuthorityLifecyclePort<PortNotifyRegisteredReturnsBool>,
+	"SessionAuthorityLifecyclePort self-check: notifyRegistered(id) returns void");
+static_assert(!SessionAuthorityLifecyclePort<PortNotifyUnregisteredReturnsBool>,
+	"SessionAuthorityLifecyclePort self-check: notifyUnregistered(id) returns void");
+static_assert(!SessionAuthorityLifecyclePort<PortStorageOnlyWhenMutable>,
+	"SessionAuthorityLifecyclePort self-check: inStorage(id) must be callable on a const port");
+static_assert(!SessionAuthorityLifecyclePort<PortLogReturnsBool>,
+	"SessionAuthorityLifecyclePort self-check: logRouted(line) returns void");
+static_assert(SessionAuthorityRegisterHooks<ConformingHooks, Simulatable>,
+	"SessionAuthorityRegisterHooks self-check: the reference shape must satisfy the concept");
+static_assert(!SessionAuthorityRegisterHooks<HooksWithoutRequested, Simulatable>,
+	"SessionAuthorityRegisterHooks self-check: bodiesRequested() runs when the body request is posted");
+static_assert(!SessionAuthorityRegisterHooks<HooksWithoutCreated, Simulatable>,
+	"SessionAuthorityRegisterHooks self-check: bodiesCreated(simulatable) runs once the bodies are bound");
+} // namespace sessionAuthorityLifecycleSelfCheck
+
+template <SessionAuthorityLifecyclePort PortT>
+class SessionAuthorityLifecycle
+{
+public:
+	using Bodies      = typename PortT::Bodies;
+	using BodyRequest = typename Bodies::Request;
+	using Server      = typename PortT::Server;
+	using Channel     = typename PortT::Channel;
+	using Simulatable = typename PortT::Simulatable;
+	using Request     = AuthorityRequest<BodyRequest, Simulatable>;
+
+	static_assert(std::is_aggregate_v<BodyRequest> && authorityRequest::kAlternativesHoldNoCallable<Request>,
+		"SessionAuthorityLifecycle: a request is data. Every alternative of AuthorityRequest and the bodies' request are "
+		"aggregates; every field of each, and of each aggregate field within, is found by structured binding and is not a "
+		"function, a pointer or reference to one, a member pointer, a union, a final class or a class that names an "
+		"operator() (any arity, a template, private or inherited). Was TUniqueFunction<void()> closures capturing the "
+		"session, a shared simulatable and a static-data pointer (og-session-runtime task 30)");
+
+	SessionAuthorityLifecycle(const SessionThreadChecks& threads, PortT port)
+		: m_threads(threads)
+		, m_port(port)
+	{
+		OG_CHECK(threads.role() == SessionRole::Authority,
+			"SessionAuthorityLifecycle: this is the authority's path; a client registers through SessionLifecycle "
+			"(og-session-runtime task 29)");
+	}
+
+	SessionAuthorityLifecycle(const SessionAuthorityLifecycle&) = delete;
+	SessionAuthorityLifecycle& operator=(const SessionAuthorityLifecycle&) = delete;
+
+	template <SessionAuthorityRegisterHooks<Simulatable> HooksT>
+	RegisterStatus tryRegister(const RegisterRequest& request, Simulatable&& simulatable, HooksT& hooks)
+	{
+		m_threads.checkOp(SessionOp::TryRegister);
+		const uint32_t id = request.simId;
+		auto it = m_pending.find(id);
+		if (it == m_pending.end())
+			it = m_pending.emplace(id, Registration{ std::make_shared<Simulatable>(std::move(simulatable)) }).first;
+		Registration& record = it->second;
+		if (record.refused)
+		{
+			char line[sessionLifecycleLines::kLineBytes];
+			std::snprintf(line, sizeof(line), sessionLifecycleLines::kRunnerRegisterRefused, static_cast<unsigned>(id));
+			m_port.logRouted(line);
+			m_pending.erase(it);
+			return RegisterStatus::Refused;
+		}
+		if (record.applied)
+		{
+			m_bodyKeysById[id] = record.bodyKey;
+			char line[sessionLifecycleLines::kLineBytes];
+			std::snprintf(line, sizeof(line), sessionLifecycleLines::kRegistered, static_cast<unsigned>(id), 1);
+			m_port.logRouted(line);
+			m_pending.erase(it);
+			return RegisterStatus::Ready;
+		}
+		if (record.runnerBusy || m_port.runnerStopped())
+			return RegisterStatus::Pending;
+
+		if (!record.bodiesCreated)
+		{
+			if (!record.bodiesBound)
+			{
+				BodyRequest bodyRequest = m_port.bodies().makeRequest(request);
+				record.bodyKey = bodyRequest.key;
+				record.runnerBusy = true;
+				hooks.bodiesRequested();
+				push(authorityRequest::CreateBodies<BodyRequest, Simulatable>{ id, std::move(bodyRequest), record.simulatable });
+				return RegisterStatus::Pending;
+			}
+			recordSlot(record.bodyKey, record.boundSlot);
+			hooks.bodiesCreated(*record.simulatable);
+			record.bodiesCreated = true;
+			return RegisterStatus::Pending;
+		}
+
+		OG_CHECK(id != 0u && id <= 0xFFu,
+			"SessionAuthorityLifecycle::tryRegister: og-sim-net's roster keys a character by its sim id (1..255)");
+		record.runnerBusy = true;
+		record.registerPosted = true;
+		push(authorityRequest::Register<Simulatable>{ id, record.bodyKey, static_cast<uint8_t>(record.boundSlot),
+			request.ownerConnection, request.localIndex, request.debugName, record.simulatable });
+		return RegisterStatus::Pending;
+	}
+
+	bool requestUnregister(uint32_t simId, EntityKey entityKey)
+	{
+		m_threads.checkOp(SessionOp::RequestUnregister);
+		const auto knownKey = m_bodyKeysById.find(simId);
+		const bool registered = knownKey != m_bodyKeysById.end();
+		const auto pending = m_pending.find(simId);
+		const bool pendingOnRunner = pending != m_pending.end();
+		const bool registerPosted = registered || (pendingOnRunner && pending->second.registerPosted);
+		const bool bodiesHeld = registered || (pendingOnRunner && (pending->second.bodiesBound || pending->second.runnerBusy));
+		const uint64_t entityBodyKey = m_port.bodyKeyOf(entityKey);
+		const uint64_t key = registered ? knownKey->second : pendingOnRunner ? pending->second.bodyKey : entityBodyKey;
+		if (pendingOnRunner)
+			m_pending.erase(pending);
+		if (registered)
+			m_bodyKeysById.erase(knownKey);
+
+		if (!m_port.runnerStopped() && bodiesHeld)
+			push(authorityRequest::Unregister{ simId, key, registerPosted });
+
+		m_slotsByKey.erase(entityBodyKey);
+		return registered;
+	}
+
+	void applyRequests()
+	{
+		m_threads.checkOp(SessionOp::ApplyLifecycleRequests);
+		std::vector<Request> requests;
+		{
+			const std::scoped_lock lock(m_mutex);
+			requests.swap(m_requests);
+		}
+		for (Request& request : requests)
+			std::visit([this](auto& alternative) { run(alternative); }, request);
+	}
+
+	template <typename OutcomeFn>
+	void pollOutcomes(OutcomeFn&& onOutcome)
+	{
+		m_threads.checkOp(SessionOp::PollOutcomes);
+		std::vector<LifecycleOutcome> outcomes;
+		{
+			const std::scoped_lock lock(m_mutex);
+			outcomes.swap(m_outcomes);
+		}
+		for (const LifecycleOutcome& outcome : outcomes)
+		{
+			onOutcome(outcome);
+			if (const auto* registered = std::get_if<lifecycleOutcome::Registered>(&outcome))
+			{
+				if (Registration* const record = pendingRecord(registered->simId))
+				{
+					record->runnerBusy = false;
+					record->applied = true;
+				}
+			}
+			else if (const auto* refused = std::get_if<lifecycleOutcome::Refused>(&outcome))
+			{
+				if (Registration* const record = pendingRecord(refused->simId))
+				{
+					record->runnerBusy = false;
+					record->refused = true;
+				}
+			}
+			else if (const auto* bound = std::get_if<lifecycleOutcome::BodiesBound>(&outcome))
+			{
+				if (Registration* const record = pendingRecord(bound->simId))
+				{
+					record->runnerBusy = false;
+					record->bodiesBound = true;
+					record->boundSlot = bound->slot;
+				}
+			}
+			else if (const auto* bodiesPending = std::get_if<lifecycleOutcome::BodiesPending>(&outcome))
+			{
+				if (Registration* const record = pendingRecord(bodiesPending->simId))
+					record->runnerBusy = false;
+			}
+			else if (const auto* unresolvable = std::get_if<lifecycleOutcome::BodiesUnresolvable>(&outcome))
+			{
+				if (Registration* const record = pendingRecord(unresolvable->simId))
+					record->runnerBusy = false;
+			}
+		}
+	}
+
+	void onUnregistering(uint8_t simId)
+	{
+		m_threads.checkOp(SessionOp::DrainInbox);
+		const uint32_t id = simId;
+		// ⛔G-08  docs/SessionLifecycle-guards.md
+		if (m_systemsNotified.erase(id) != 0u && m_port.inStorage(id))
+			m_port.notifyUnregistered(id);
+	}
+
+	std::optional<uint32_t> authoritativeSlotFor(uint64_t bodyKey) const
+	{
+		m_threads.checkOp(SessionOp::TryRegister);
+		const auto found = m_slotsByKey.find(bodyKey);
+		return found != m_slotsByKey.end() ? std::optional<uint32_t>(found->second) : std::nullopt;
+	}
+
+	void recordAuthoritativeSlot(uint64_t bodyKey, uint32_t slot)
+	{
+		m_threads.checkOp(SessionOp::TryRegister);
+		recordSlot(bodyKey, slot);
+	}
+
+	void forgetRegistered()
+	{
+		m_threads.checkOp(SessionOp::RequestUnregister);
+		m_bodyKeysById.clear();
+		m_slotsByKey.clear();
+	}
+
+private:
+	struct Registration
+	{
+		std::shared_ptr<Simulatable> simulatable;
+		bool                         applied        = false;
+		bool                         refused        = false;
+		bool                         runnerBusy     = false;
+		bool                         bodiesBound    = false;
+		bool                         bodiesCreated  = false;
+		bool                         registerPosted = false;
+		uint32_t                     boundSlot      = 0u;
+		uint64_t                     bodyKey        = 0u;
+	};
+
+	Registration* pendingRecord(uint32_t simId)
+	{
+		const auto found = m_pending.find(simId);
+		return found != m_pending.end() ? &found->second : nullptr;
+	}
+
+	void recordSlot(uint64_t bodyKey, uint32_t slot)
+	{
+		OG_CHECK(m_port.server() != nullptr,
+			"SessionAuthorityLifecycle::recordAuthoritativeSlot on a peer without the og-sim-net server: only the authority "
+			"chooses a slot, and a client binds the slot its roster entry carries. Was SetAuthoritativePhysicsSlot's "
+			"authority checkf");
+		OG_CHECK(slot < kMaxSimulatableSlots,
+			"SessionAuthorityLifecycle::recordAuthoritativeSlot: the slot is not a slot of the physics world "
+			"(kMaxSimulatableSlots). Was SetAuthoritativePhysicsSlot's range checkf");
+		OG_CHECK(m_slotsByKey.find(bodyKey) == m_slotsByKey.end(),
+			"SessionAuthorityLifecycle::recordAuthoritativeSlot: this character already holds a slot; a character takes one "
+			"slot for its lifetime. Was SetAuthoritativePhysicsSlot's once-only checkf");
+		m_slotsByKey[bodyKey] = slot;
+	}
+
+	void push(Request&& request)
+	{
+		const std::scoped_lock lock(m_mutex);
+		m_requests.push_back(std::move(request));
+	}
+
+	void post(const LifecycleOutcome& outcome)
+	{
+		const std::scoped_lock lock(m_mutex);
+		m_outcomes.push_back(outcome);
+	}
+
+	Server& server()
+	{
+		Server* const server = m_port.server();
+		OG_CHECK(server != nullptr,
+			"SessionAuthorityLifecycle: the runner runs the lifecycle's requests while the og-sim-net server exists; the "
+			"server host's stop resets it only after the runner joined");
+		return *server;
+	}
+
+	void run(authorityRequest::CreateBodies<BodyRequest, Simulatable>& request)
+	{
+		const uint32_t id = request.simId;
+		const std::optional<uint32_t> slot = m_port.bodies().create(request.bodies, *request.simulatable, id)
+			? m_port.bodies().slotOf(request.bodies.key)
+			: std::nullopt;
+		if (slot.has_value())
+			post(lifecycleOutcome::BodiesBound{ id, *slot });
+		else
+			post(lifecycleOutcome::BodiesPending{ id });
+	}
+
+	void run(authorityRequest::Register<Simulatable>& request)
+	{
+		const uint32_t id = request.simId;
+		const uint64_t key = request.key;
+		if (!m_port.bodiesResolvable(*request.simulatable))
+		{
+			post(lifecycleOutcome::BodiesUnresolvable{ id });
+			return;
+		}
+		server().template registerCharacter<Simulatable>(static_cast<uint8_t>(id), request.physicsSlot, request.ownerConnection,
+			request.localIndex, std::move(request.debugName), std::move(*request.simulatable),
+			[this, id, key](Channel* channel) { onRegisterApplied(id, key, channel); });
+	}
+
+	void run(authorityRequest::Unregister& request)
+	{
+		const uint32_t id = request.simId;
+		const uint64_t key = request.key;
+		// ⛔G-07  docs/SessionLifecycle-guards.md
+		if (!request.registerPosted)
+		{
+			release(id, key);
+			return;
+		}
+		server().template unregisterCharacter<Simulatable>(static_cast<uint8_t>(id), ogsimnet::RosterRemoveReason::Left,
+			[this, id, key](Channel*)
+			{
+				m_threads.checkOp(SessionOp::DrainInbox);
+				release(id, key);
+			});
+	}
+
+	void onRegisterApplied(uint32_t id, uint64_t key, Channel* channel)
+	{
+		m_threads.checkOp(SessionOp::DrainInbox);
+		if (channel == nullptr)
+		{
+			m_port.bodies().release(key, id);
+			post(lifecycleOutcome::Refused{ id, RegisterRefusal::SimNetRefused });
+			return;
+		}
+		// ⛔G-06  docs/SessionLifecycle-guards.md
+		m_port.notifyRegistered(id);
+		m_systemsNotified.insert(id);
+		m_port.bodies().onRegistered(key, id);
+		post(lifecycleOutcome::Registered{ id, 0u });
+	}
+
+	void release(uint32_t id, uint64_t key)
+	{
+		m_systemsNotified.erase(id);
+		m_port.bodies().release(key, id);
+	}
+
+	SessionThreadChecks                          m_threads;
+	PortT                                        m_port;
+	std::mutex                                   m_mutex;
+	std::vector<Request>                         m_requests;
+	std::vector<LifecycleOutcome>                m_outcomes;
+	std::unordered_map<uint32_t, Registration>   m_pending;
+	std::unordered_map<uint32_t, uint64_t>       m_bodyKeysById;
+	std::unordered_map<uint64_t, uint32_t>       m_slotsByKey;
+	std::unordered_set<uint32_t>                 m_systemsNotified;
+};
+} // namespace ogsession

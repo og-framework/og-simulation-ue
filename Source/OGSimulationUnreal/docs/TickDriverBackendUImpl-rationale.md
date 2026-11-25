@@ -1194,14 +1194,21 @@ and `releaseSlot` off the runner (its `OG_CHECK`s), so the session reaches them 
 
 | member | thread | what it does |
 |---|---|---|
-| `makeBodyRequest_GameThread(owner, character, id)` | game | the capsule check, then `callWithSlotRequest` captured into a `BodyRequest` (key, name, role, replicated slot), not called |
-| `createBodies_Runner(request, simulatable, staticData, id)` | runner | `acquireAndBind` with the request; the slot is read back with the world host's `slotOf` |
-| `onRegistered_Runner(key, id)` | runner | the tick backend's `onRegistered` (the occupancy push, and the presenter registration through its ring J9) |
+| `makeRequest(registerRequest)` | game | the component from the request's entity key, the character check, the capsule check, then `callWithSlotRequest` captured into a `Request` (key, name, role, replicated slot, the component's static data), not called |
+| `create(request, simulatable, id)` | runner | `acquireAndBind` with the request |
+| `slotOf(key)` | runner | the world host's `slotOf` |
+| `onRegistered(key, id)` | runner | the tick backend's `onRegistered` (the occupancy push, and the presenter registration through its ring J9) |
 | `onRegisteredHost_GameThread(owner, id)` | game | the render target, the half of `onRegistered_GameThread` that is the game thread's |
-| `releaseBodies_Runner(key, id)` | runner | `forgetPresenterTarget` then `releaseSlot`, as `onUnregistered_GameThread` orders them |
+| `release(key, id)` | runner | `forgetPresenterTarget` then `releaseSlot`, as `onUnregistered_GameThread` orders them |
 | `onUnregisteredHost_GameThread(id)` | game | the render target's removal |
 
 `slotKeyFor(actor)` exposes the slot key so the session can name a body set after its actor is gone.
+
+Since og-session-runtime task 30 the five runner-side members are og-sim-session's `SessionBodies` (`makeRequest`, `create`,
+`slotOf`, `onRegistered`, `release`; were `makeBodyRequest_GameThread`, `createBodies_Runner` with the slot read inside it,
+`onRegistered_Runner` and `releaseBodies_Runner`), which this class models and the session's `static_assert`s: og-sim-session's
+`SessionAuthorityLifecycle` calls them (`SessionLifecycle-rationale.md` §10.4). The request carries the component's static data
+by pointer, as the session's runner closure did; the component is held strongly until the bodies answer.
 
 **No game-thread viz world.** A free-running authority has none (`viz=none`), and the tick backend refuses `registerVizVolume`,
 `editVizQuery`, `getVizReader` and `overlayRenderPoses` (its `OG_CHECK`s). This class forwards all four unchanged: nothing on a

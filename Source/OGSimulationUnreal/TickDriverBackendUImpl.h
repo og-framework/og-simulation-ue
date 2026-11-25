@@ -15,6 +15,7 @@
 #include "OGSimulationUnreal/UESessionTickHost.h"
 #include "OGSimulationUnreal/UEStaticGeometryImporter.h"
 #include "OGSimulationUnreal/UETickDriverHost.h"
+#include "OGSimSession/SessionTypes.h"
 #include "Components/CapsuleComponent.h"
 #include "Templates/Casts.h"
 
@@ -87,19 +88,20 @@ public:
 	void onRegistered_GameThread(Component& owner, unsigned int id);
 	void onUnregistered_GameThread(Component& owner, unsigned int id);
 
-	struct BodyRequest
+	struct Request
 	{
-		uint64                  key = 0u;
-		std::string             name;
-		bool                    isAuthority = false;
-		std::optional<uint32_t> replicatedSlot;
+		uint64_t                                 key = 0u;
+		std::string                              name;
+		bool                                     isAuthority = false;
+		std::optional<uint32_t>                  replicatedSlot;
+		const typename GameBindingT::StaticData* staticData = nullptr;
 	};
-	BodyRequest makeBodyRequest_GameThread(Component& owner, Character& character, unsigned int id);
-	std::optional<uint32_t> createBodies_Runner(const BodyRequest& request, Simulatable& simulatable,
-		const typename GameBindingT::StaticData& staticData, unsigned int id);
-	void onRegistered_Runner(uint64 key, unsigned int id);
+	Request makeRequest(const ogsession::RegisterRequest& request);
+	bool create(const Request& request, Simulatable& simulatable, uint32_t id);
+	std::optional<uint32_t> slotOf(uint64_t key);
+	void onRegistered(uint64_t key, uint32_t id);
+	void release(uint64_t key, uint32_t id);
 	void onRegisteredHost_GameThread(Component& owner, unsigned int id);
-	void releaseBodies_Runner(uint64 key, unsigned int id);
 	void onUnregisteredHost_GameThread(unsigned int id);
 	static uint64 slotKeyFor(const AActor* owner) { return slotKeyOf(owner); }
 
@@ -352,33 +354,42 @@ void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::onUnre
 
 template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
 	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-auto TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::makeBodyRequest_GameThread(Component& owner,
-	Character& character, unsigned int id) -> BodyRequest
+auto TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::makeRequest(const ogsession::RegisterRequest& request)
+	-> Request
 {
-	EngineBindingT::checkCapsuleContract(character, id);
-	return callWithSlotRequest(*owner.GetOwner(), [](uint64_t key, const char* name, bool isAuthority,
+	Component& owner = *reinterpret_cast<Component*>(request.entityKey.value);
+	Character* const character = Cast<Character>(owner.GetOwner());
+	checkf(character != nullptr,
+		TEXT("UESimulationSession::tryRegister: the component must be attached to a TraitsT::Character — the ")
+		TEXT("first-call body pass reads that class's own root capsule"));
+	EngineBindingT::checkCapsuleContract(*character, request.simId);
+	const typename GameBindingT::StaticData* const staticData = &owner.getStaticData();
+	return callWithSlotRequest(*owner.GetOwner(), [staticData](uint64_t key, const char* name, bool isAuthority,
 		std::optional<uint32_t> replicatedSlot, auto&&)
 	{
-		return BodyRequest{ key, std::string(name), isAuthority, replicatedSlot };
+		return Request{ key, std::string(name), isAuthority, replicatedSlot, staticData };
 	});
 }
 
 template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
 	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-std::optional<uint32_t> TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::createBodies_Runner(
-	const BodyRequest& request, Simulatable& simulatable, const typename GameBindingT::StaticData& staticData, unsigned int id)
+bool TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::create(const Request& request,
+	Simulatable& simulatable, uint32_t id)
 {
-	if (!m_tickBackend.acquireAndBind(request.key, request.name.c_str(), request.isAuthority, request.replicatedSlot,
-			[](uint32_t) {}, id, simulatable, staticData))
-	{
-		return std::nullopt;
-	}
-	return m_worlds.host.slotOf(request.key);
+	return m_tickBackend.acquireAndBind(request.key, request.name.c_str(), request.isAuthority, request.replicatedSlot,
+		[](uint32_t) {}, id, simulatable, *request.staticData);
 }
 
 template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
 	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::onRegistered_Runner(uint64 key, unsigned int id)
+std::optional<uint32_t> TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::slotOf(uint64_t key)
+{
+	return m_worlds.host.slotOf(key);
+}
+
+template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
+	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
+void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::onRegistered(uint64_t key, uint32_t id)
 {
 	m_tickBackend.onRegistered(id, key);
 }
@@ -394,7 +405,7 @@ void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::onRegi
 
 template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
 	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::releaseBodies_Runner(uint64 key, unsigned int id)
+void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::release(uint64_t key, uint32_t id)
 {
 	m_tickBackend.forgetPresenterTarget(id, key);
 	m_tickBackend.releaseSlot(key, id);

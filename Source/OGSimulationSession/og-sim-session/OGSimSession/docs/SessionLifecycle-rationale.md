@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # `SessionLifecycle.h` — rationale
 
-Companion to og-sim-session's `OGSimSession/SessionLifecycle.h` (og-session-runtime task 29). Its prohibitions are in
+Companion to og-sim-session's `OGSimSession/SessionLifecycle.h` (og-session-runtime tasks 29 and 30). Its prohibitions are in
 `SessionLifecycle-guards.md`.
 
 **If this file and the header disagree, the header is authoritative and this file is stale.**
@@ -12,8 +12,9 @@ Companion to og-sim-session's `OGSimSession/SessionLifecycle.h` (og-session-runt
 
 `ogsession::SessionLifecycle<PortT>` is the prediction role's registration and unregistration of characters: requests in from the
 frame thread, applied on the step thread at the start of its drain, outcomes back to the frame thread (design §3.4, the
-lifecycle queue). The authority's path (the runner's body creation and registration) is task 30's and is still in the Unreal
-session; the constructor `OG_CHECK`s the prediction role.
+lifecycle queue). The authority's path (the runner's body creation and registration) is the second class of the header,
+`SessionAuthorityLifecycle<PortT>` (§10, og-session-runtime task 30): a role-split pair, one class per role, each constructor
+`OG_CHECK`ing its role.
 
 Its bodies are the Unreal session's (`Source/OGSimulationUnreal/UESimulationSession.h`), moved by og-session-runtime task 29:
 step (a) cut `onSimNetRegisteredRemoved`, `applyUnregisterRequests_Step`, `enqueueQueuedUnregister_Step`,
@@ -58,7 +59,8 @@ row was added: every door's thread was already in the table.
 
 As in the Unreal session (`m_lifecycleBridgeMutex` over `m_unregisterRequests` and `m_lifecycleOutcomes`): the frame thread pushes
 unregistration requests, the step swaps them out; the step pushes outcomes, the frame swaps them out. The authority's runner
-requests and its outcomes stay on the Unreal session's own mutex and vectors until task 30.
+requests and its outcomes are `SessionAuthorityLifecycle`'s own vectors and mutex since task 30 (§10.2): a session has one role,
+so it has one request vector and one outcome vector, of that role's class.
 
 The outcomes are `SessionTypes.h`'s `LifecycleOutcome` variant (`SessionTypes-rationale.md` §6): `Registered{simId, 0}`,
 `Refused{simId, SimNetRefused}`, `Unregistered{simId}`, `RosterRemoved{simId}`. `pollOutcomes` consumes the first two itself
@@ -182,8 +184,8 @@ and clear on a channel, `stopSteps()`, `drainWhileStopped()`, `logRouted(line)`.
 (`markRegisteredIfReady`, `markUnregistered`).
 
 **The entity key.** On the client the Unreal adapter's key is the simulatable component's address: the latency wrapper needs the
-component, and the key is opaque to this class (`SessionTypes-rationale.md` §3). The authority's key (the pawn's address in the
-design) is task 30's choice.
+component, and the key is opaque to this class (`SessionTypes-rationale.md` §3). The authority's key is the same component's
+address (§10.4).
 
 ---
 
@@ -207,3 +209,153 @@ task 29 (a) (each function with its file:line at `6d424ec`) and compares the eve
 
 Two hidden cases (`[SessionLifecycleDeath]`) show the thread checks fire: `applyRequests` on the frame thread, and the
 roster-removed hook outside a drain. A hidden survey (`[SessionLifecycleSurvey]`) prints the totals.
+
+---
+
+## §10 The authority's path: `SessionAuthorityLifecycle`
+
+### §10.1 Where it came from
+
+og-session-runtime task 30 moved the authority's registration and unregistration out of the Unreal session. Step (a) cut
+`postRunnerRequest`, `runRunnerRequests_Owner`, `onSimNetLifecycleUnregistering` (its authority half, after task 29's split),
+`physicsSlotFor`, `recordAuthoritativeSlot`, `forgetSimNetCharacter`, `collectLifecycleOutcomes_GameThread`,
+`tryRegisterOnRunner`, `bodiesResolvable_Runner`, `onRunnerRegisterApplied_Runner`, `requestRunnerUnregister_GameThread` and
+`releaseOnRunner_Runner` into this header unchanged (OGSimulation `221b701`); step (b) made the engine-free half of them this
+class, with the members `m_runnerRequests`, `m_lifecycleBridgeMutex`, the runner fields of `m_pendingRegistrations`,
+`m_runnerBodyKeysById`, `m_authoritativeSlotsByActor` and the authority's use of `m_systemsNotified_Step`.
+
+### §10.2 The sequence, its doors and their threads
+
+The order is the Unreal session's (design §3.4, the authority's lifecycle queue), unchanged:
+
+1. **Frame, `tryRegister(request, simulatable, hooks)`** (`TryRegister`): the first call keeps the simulatable in a shared record;
+   with the runner free, it asks the bodies for a request (`makeRequest`, `SessionBodies`), tells the adapter (`hooks.bodiesRequested()`:
+   the Unreal adapter holds the component strongly until the bodies answer) and posts a `CreateBodies` request; `Pending`.
+2. **Runner, `applyRequests()`** (`ApplyLifecycleRequests`, the authority's Step row: the runner), the first thing of every wake
+   (`SessionNetHooks::beforePump`, before og-sim-net's drain): `create` and `slotOf` → the outcome `BodiesBound{slot}`, or
+   `BodiesPending` when the bodies could not be bound.
+3. **Frame, `pollOutcomes(fn)`** (`PollOutcomes`): the adapter sees every outcome (it lets go of the component on `BodiesBound` and
+   `BodiesPending`), then the record takes it. On the next `tryRegister` with the bodies bound: the slot is recorded (§10.5) and the
+   adapter runs the game's `afterBodiesCreated` (`hooks.bodiesCreated(simulatable)`); `Pending`. The next call confirms: it posts a
+   `Register` request with the engine's facts (`RegisterRequest`'s owner connection, local index and name, read by the adapter in
+   that call) and the bound slot.
+4. **Runner**: the bodies resolvable? (the port's `bodiesResolvable`; else `BodiesUnresolvable`, and the frame posts the
+   `Register` again) → `SimNetServer::registerCharacter`, applied in the same wake's drain: on a channel the executor is told
+   (`⛔G-06`), the bodies' `onRegistered`, the outcome `Registered`; on none (a roster refusal) the bodies are released and the
+   outcome is `Refused`.
+5. **Frame**: `tryRegister` logs `tryRegister: registered … isAuthority=1` and answers `Ready` (the adapter then runs
+   `afterRegistered` and the render target), or logs the refusal (`[Error]`) and answers `Refused`.
+
+Unregistration: **frame, `requestUnregister(simId, entityKey)`** (`RequestUnregister`) answers whether the id was registered (the
+adapter's host work needs it), forgets the record, the bodies' key and the recorded slot, and posts an `Unregister` request when
+the runner holds bodies for it and still runs; **runner**: through og-sim-net's queue once a registration was posted (`⛔G-07`),
+else a direct release; og-sim-net's unregistering hook (`onUnregistering`, `DrainInbox`, `⛔G-08`) tells the executor before the
+facade; the `applied` callback releases the bodies. The `applied` hooks check `DrainInbox` too.
+
+**No `SessionOp` row was added.** Every door's thread is in task 22's table: the frame doors use the frame rows, the runner doors
+the authority's Step row (the runner is its owner thread). Two hidden cases (`[SessionLifecycleDeath]`) show the checks fire:
+`applyRequests` and `onUnregistering` on the frame thread.
+
+### §10.3 Requests are data
+
+The queue's element is `AuthorityRequest<BodyRequest, Simulatable>`, a `std::variant` of three structs:
+`CreateBodies{simId, bodies, simulatable}`, `Register{simId, key, physicsSlot, ownerConnection, localIndex, debugName,
+simulatable}` and `Unregister{simId, key, registerPosted}`. Before task 30 the queue held `TUniqueFunction<void()>` closures that
+captured the session (`this`), a shared simulatable and a pointer to the component's static data; the runner ran them. Now the
+class itself runs each request (`run(…)`), so nothing it needs is captured:
+
+- the session's state is the class's own, and its engine calls go through the port and the bodies;
+- the static-data pointer is a field of the bodies' own request (the Unreal model's `Request::staticData`), made on the frame
+  thread by `makeRequest` with the component held strongly until the bodies answer, as before;
+- the simulatable is a `std::shared_ptr` field. It is shared on purpose, as before: the frame thread and the runner hand it back
+  and forth across three steps (the runner binds its bodies, the frame runs `afterBodiesCreated` on it, the runner moves it into
+  og-sim-net), and an unregistration can drop the frame's record while a request still holds it.
+
+A `static_assert` in the class checks that the element holds no callable field. Exactly what it checks:
+
+- **The walk.** Every alternative of `AuthorityRequest` must be an aggregate, and so must the bodies' request. No field list
+  exists: a request's fields are counted by brace-initializing it from `AnyField` values (the largest count that compiles, up
+  to `kMaxFields` = 8; a ninth field fails a `static_assert`), then bound with that many structured bindings. Each field is
+  checked, and a field that is itself an aggregate class is walked the same way: the bodies' request inside `CreateBodies`,
+  and an aggregate inside it. A field added to a request is found by the count, with nothing to update.
+- **A miscount does not pass.** Too many names or too few break the binding; a count of zero on a request that is not empty
+  fails a `static_assert`. An array field is counted element by element and breaks the binding (clang-cl and MSVC); a
+  reference to a function cannot be counted on clang-cl (the `static_assert`) and is found as callable on MSVC.
+- **Callable** (`authorityRequest::kIsCallable`, after removing references and cv-qualifiers): a function, a pointer to a
+  function, a member pointer (to a function or to data); a class that names an `operator()` of any arity, a template (a generic
+  lambda), private or inherited, found because a probe deriving from the class and from a base that declares `operator()`
+  makes the name ambiguous; a class callable with no argument (`std::is_invocable`); and a union or a final class, refused
+  because the probe cannot derive from it. So a `std::function` of any signature, a lambda of any arity and a member such as
+  `std::function<void(Channel*)> applied` are each refused.
+- **Not checked:** what a pointer or a smart pointer points to, and the members of a field whose class is not an aggregate
+  (`std::string`, `std::shared_ptr`, `std::optional` are checked as types only). A
+  `std::optional<std::function<…>>` or `std::shared_ptr<std::function<…>>` field passes.
+
+The namespace `authorityRequestSelfCheck` holds the check's own cases (data passes; a unary, generic, private and inherited
+`operator()`, pointers to functions and members, a final class, a union, a callable field, one inside an aggregate field, one
+in the bodies' request and a request that is not an aggregate are each refused).
+
+### §10.4 The bodies: `SessionBodies`
+
+The runtime calls the bodies through the concept `SessionBodies` (`makeRequest`, `create`, `slotOf`, `onRegistered`, `release`,
+a `Request` type that carries its bodies' `key`, and the `Simulatable`), with a reference shape and one negative per requirement
+in `sessionBodiesSelfCheck`. The tick backend's wrapper, `TickDriverBackendUImpl`, models it: its `makeBodyRequest_GameThread`,
+`createBodies_Runner`, `onRegistered_Runner` and `releaseBodies_Runner` became `makeRequest`, `create` (with `slotOf` beside it),
+`onRegistered` and `release`. `create` answers whether the bodies were bound and `slotOf` the slot; the class composes them as the
+old `createBodies_Runner` did (`create ? slotOf(key) : nullopt`).
+
+**The entity key** is the simulatable component's address on the authority too, as on the client (§8): `makeRequest` needs the
+component (its static data, its character's capsule), and the key is opaque to this class. The bodies' key is the pawn's address
+(the Unreal model's `slotKeyOf`), carried in the bodies' request; the port's `bodyKeyOf(entityKey)` gives it for an
+unregistration with no record.
+
+### §10.5 The authority's slots
+
+`authoritativeSlotFor(bodyKey)` and `recordAuthoritativeSlot(bodyKey, slot)` (frame, `TryRegister`) are the old session's
+`physicsSlotFor` (its authority arm) and `recordAuthoritativeSlot`, which the tick backend calls through the game's
+`callWithSlotRequest`. The map is keyed by the bodies' key, the pawn's address the callers already pass, where the old map was
+keyed by the pawn itself (`const AActor*`): the same value, with no engine type. `requestUnregister` forgets the slot, and
+`forgetRegistered()` (the adapter's `endPlay`) clears the slots and the registered ids.
+
+### §10.6 The outcomes
+
+The authority's three body outcomes are `LifecycleOutcome` alternatives (`BodiesBound{simId, slot}`, `BodiesPending{simId}`,
+`BodiesUnresolvable{simId}`, `SessionTypes-rationale.md` §6), with `Registered` and `Refused`. `pollOutcomes` hands every outcome
+to the adapter first and then updates its record, as the old switch erased the held component before it updated the record.
+An outcome for an id with no record is dropped, as before: the old switch dropped it unless the record was on the runner, and
+every authority record is.
+
+### §10.7 What the adapter keeps, and the port
+
+The Unreal adapter keeps the component maps and strong references (`m_registeredComponentsById`, `m_componentsHeldForRunner`),
+the game's `afterBodiesCreated` / `afterRegistered` / `onUnregistered`, the render target (`onRegisteredHost_GameThread`,
+`onUnregisteredHost_GameThread`), the latency forget and the `NewFramework: unregistered` line (the host work, as on the client),
+and the engine facts it reads into each `RegisterRequest`. `SessionAuthorityLifecyclePort` (one negative per requirement in
+`sessionAuthorityLifecycleSelfCheck`): `server()` (a pointer, null with no server), `bodies()`, `bodiesResolvable(simulatable)`,
+`bodyKeyOf(entityKey)`, `runnerStopped()` (the adapter's: set when the runner joined), the executor's two notifies,
+`inStorage(id)`, `logRouted(line)`. The server models `SessionAuthorityServer` (og-sim-net's `registerCharacter` /
+`unregisterCharacter`), the hooks `SessionAuthorityRegisterHooks` (`bodiesRequested`, `bodiesCreated`).
+
+### §10.8 Behaviour, against the old path
+
+The same calls in the same order on every path the old code took. The differences:
+- the registration's log line now precedes the adapter's map insert (both on the frame thread, no reader between; as task 29's
+  B9);
+- the `checkf`s of the old `recordAuthoritativeSlot` are `OG_CHECK`s without the name and the slots in their messages;
+- the old `tryRegisterOnRunner`'s character `checkf` before the register post is gone (the same component was checked at its body
+  request and at `afterBodiesCreated`);
+- `forgetRegistered()` at `endPlay` also forgets the bodies' keys, which the old `endPlay` left: a later unregistration of such an id
+  found its key there, but posts nothing once the runner has stopped, so the key was never used.
+
+### §10.9 Tests
+
+`tests/SessionLifecycleAuthorityTest.cpp` drives the class on a real runner thread: a `std::thread` that configures the
+authority's thread context as its owner (free-running, as `SimulationTickDriver::runAuthorityLoop` does on the Unreal runner) and
+runs each wake through og-sim-session's real `SessionNetHooks::beforePump`. A fake bodies provider (a slot table keyed by the
+bodies' key, as `TickDriverBackendUImpl` over `JoltTickWorldHost`) and a fake og-sim-net server (its lifecycle queue and drain,
+over og-sim-net's real `RosterAuthority`) record what they are asked. Every case runs the same script against a test-local
+transcription of the Unreal code at task 30 (a) (each function with its file:line at `221b701`) and compares the event lists:
+the full register sequence; a roster refusal releases the bodies (og-input-latency P5-23's capacity and duplicate-owner-slot
+cases: a later registration with the same bodies' key finds no slot taken); an unregistration before the register was posted;
+an unregistration after the runner stopped; three registrations in one wake keep their order (the requests, then the drain);
+and 500 seeded scripts.

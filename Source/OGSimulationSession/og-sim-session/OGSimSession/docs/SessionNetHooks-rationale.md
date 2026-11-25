@@ -50,8 +50,10 @@ members were (they are built and reset over the session's life).
 
 The lifecycle halves are the runtime's lifecycle component's: the client's unregister requests are
 `SessionLifecycle::applyRequests` since og-session-runtime task 29 (`applyUnregisterRequests_Step` before), which the port's
-`applyUnregisterRequests` calls before the drain (`SessionLifecycle-rationale.md` §2); the runner requests
-(`runRunnerRequests_Owner`, the bridge's swap-and-run that `beforePump_Owner` held) stay with the Unreal session until task 30.
+`applyUnregisterRequests` calls before the drain (`SessionLifecycle-rationale.md` §2); the runner requests are
+`SessionAuthorityLifecycle::applyRequests` since og-session-runtime task 30 (`runRunnerRequests_Owner` before, the Unreal session's
+bridge swap-and-run that `beforePump_Owner` held), which the port's `runRunnerRequests` calls before the server's drain
+(`SessionLifecycle-rationale.md` §10.2).
 
 ## §3 The doors
 

@@ -87,14 +87,31 @@ struct BodiesReleasable
 {
 	EntityKey entityKey;
 };
+
+struct BodiesBound
+{
+	uint32_t simId = 0u;
+	uint32_t slot  = 0u;
+};
+
+struct BodiesPending
+{
+	uint32_t simId = 0u;
+};
+
+struct BodiesUnresolvable
+{
+	uint32_t simId = 0u;
+};
 } // namespace lifecycleOutcome
 
 using LifecycleOutcome = std::variant<lifecycleOutcome::Registered, lifecycleOutcome::Refused, lifecycleOutcome::Unregistered,
-	lifecycleOutcome::RosterRemoved, lifecycleOutcome::BodiesReleasable>;
+	lifecycleOutcome::RosterRemoved, lifecycleOutcome::BodiesReleasable, lifecycleOutcome::BodiesBound,
+	lifecycleOutcome::BodiesPending, lifecycleOutcome::BodiesUnresolvable>;
 
-static_assert(std::variant_size_v<LifecycleOutcome> == 5u,
+static_assert(std::variant_size_v<LifecycleOutcome> == 8u,
 	"LifecycleOutcome: one alternative per outcome kind the frame thread collects (Registered, Refused, Unregistered, "
-	"RosterRemoved, BodiesReleasable)");
+	"RosterRemoved, BodiesReleasable, and the authority's BodiesBound, BodiesPending, BodiesUnresolvable)");
 static_assert(std::is_trivially_copyable_v<LifecycleOutcome>,
 	"LifecycleOutcome: an outcome is plain data, posted by the owner thread and copied out by the frame thread");
 } // namespace ogsession

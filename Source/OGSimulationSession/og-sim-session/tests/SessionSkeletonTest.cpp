@@ -31,6 +31,9 @@ const char* kindName(const ogsession::LifecycleOutcome& outcome)
 		const char* operator()(const ogsession::lifecycleOutcome::Unregistered&) const { return "Unregistered"; }
 		const char* operator()(const ogsession::lifecycleOutcome::RosterRemoved&) const { return "RosterRemoved"; }
 		const char* operator()(const ogsession::lifecycleOutcome::BodiesReleasable&) const { return "BodiesReleasable"; }
+		const char* operator()(const ogsession::lifecycleOutcome::BodiesBound&) const { return "BodiesBound"; }
+		const char* operator()(const ogsession::lifecycleOutcome::BodiesPending&) const { return "BodiesPending"; }
+		const char* operator()(const ogsession::lifecycleOutcome::BodiesUnresolvable&) const { return "BodiesUnresolvable"; }
 	};
 	return std::visit(Name{}, outcome);
 }
@@ -162,15 +165,18 @@ TEST_CASE("SessionSkeleton.ALifecycleOutcomeHoldsEachKind", "[Session]")
 {
 	using namespace ogsession::lifecycleOutcome;
 	const std::vector<ogsession::LifecycleOutcome> outcomes{ Registered{ 3u, 1u }, Refused{ 4u, ogsession::RegisterRefusal::SimNetRefused },
-		Unregistered{ 5u }, RosterRemoved{ 6u }, BodiesReleasable{ ogsession::EntityKey{ 77u } } };
+		Unregistered{ 5u }, RosterRemoved{ 6u }, BodiesReleasable{ ogsession::EntityKey{ 77u } }, BodiesBound{ 7u, 2u },
+		BodiesPending{ 8u }, BodiesUnresolvable{ 9u } };
 
 	std::vector<std::string> names;
 	for (const ogsession::LifecycleOutcome& outcome : outcomes)
 		names.emplace_back(kindName(outcome));
-	const std::vector<std::string> expected{ "Registered", "Refused", "Unregistered", "RosterRemoved", "BodiesReleasable" };
+	const std::vector<std::string> expected{ "Registered", "Refused", "Unregistered", "RosterRemoved", "BodiesReleasable",
+		"BodiesBound", "BodiesPending", "BodiesUnresolvable" };
 	CHECK(names == expected);
 
 	CHECK(std::get<Registered>(outcomes[0]).slot == 1u);
 	CHECK(std::get<Refused>(outcomes[1]).reason == ogsession::RegisterRefusal::SimNetRefused);
 	CHECK(std::get<BodiesReleasable>(outcomes[4]).entityKey == ogsession::EntityKey{ 77u });
+	CHECK(std::get<BodiesBound>(outcomes[5]).slot == 2u);
 }
