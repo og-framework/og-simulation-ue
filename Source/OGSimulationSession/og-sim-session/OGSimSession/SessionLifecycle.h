@@ -1,6 +1,7 @@
-#pragma once
+#ifndef OGSIM_SESSION_LIFECYCLE_H
 // SPDX-License-Identifier: MPL-2.0
 // docs/SessionLifecycle-rationale.md · docs/SessionLifecycle-guards.md
+#define OGSIM_SESSION_LIFECYCLE_H
 
 #include <atomic>
 #include <concepts>
@@ -567,3 +568,312 @@ private:
 	std::unordered_set<uint32_t>  m_unregisterRequested;
 };
 } // namespace ogsession
+#endif
+
+#if defined(OGSIM_SESSION_LIFECYCLE_UE_AUTHORITY_DEFINITIONS)
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::postRunnerRequest(TUniqueFunction<void()> request)
+{
+	const std::scoped_lock lock(m_lifecycleBridgeMutex);
+	m_runnerRequests.push_back(MoveTemp(request));
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::runRunnerRequests_Owner()
+{
+	std::vector<TUniqueFunction<void()>> requests;
+	{
+		const std::scoped_lock lock(m_lifecycleBridgeMutex);
+		requests.swap(m_runnerRequests);
+	}
+	for (TUniqueFunction<void()>& request : requests)
+		request();
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::onSimNetLifecycleUnregistering(uint8_t simId)
+{
+	const unsigned int id = simId;
+	// ⛔G-41  docs/UESimulationSession-guards.md
+	if (m_systemsNotified_Step.erase(id) != 0u && m_storage.template has<Simulatable>(id))
+		m_manager->notifyCharacterUnregistered(id);
+}
+
+template <typename TraitsT>
+std::optional<uint32> UESimulationSession<TraitsT>::physicsSlotFor(AActor& owner, [[maybe_unused]] uint64 key,
+    unsigned int storageKey) const
+{
+    checkf(m_manager.has_value(), TEXT("UESimulationSession::physicsSlotFor before beginPlay built the manager"));
+    if (!m_manager->runsPrediction())
+    {
+        const auto found = m_authoritativeSlotsByActor.find(&owner);
+        return found != m_authoritativeSlotsByActor.end() ? std::optional<uint32>(found->second) : std::nullopt;
+    }
+    if (storageKey == 0u)
+        return std::nullopt;
+    checkf(storageKey <= 0xFFu,
+        TEXT("UESimulationSession::physicsSlotFor: a client's slot comes from the roster, which keys characters by their sim "
+             "id (1..255); storage key %u is not one"), storageKey);
+    SimNetLanes* const lanes = m_simNetLanes;
+    if (lanes == nullptr || lanes->client() == nullptr)
+        return std::nullopt;
+    const ogsimnet::BindVerdict entry = lanes->bindings().verdict(static_cast<uint8_t>(storageKey), /*engineSaysLocal=*/false);
+    if (entry.step == ogsimnet::BindStep::Wait || entry.physicsSlot == ogsimnet::kRosterNoSlot)
+        return std::nullopt;
+    return static_cast<uint32>(entry.physicsSlot);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::recordAuthoritativeSlot(AActor& owner, [[maybe_unused]] uint64 key, uint32 slot)
+{
+    checkf(m_simNetServer.has_value(),
+        TEXT("UESimulationSession::recordAuthoritativeSlot on a peer without the og-sim-net server: only the authority "
+             "chooses a slot, and a client binds the slot its roster entry carries. Was SetAuthoritativePhysicsSlot's "
+             "authority checkf"));
+    checkf(slot < kMaxSimulatableSlots,
+        TEXT("UESimulationSession::recordAuthoritativeSlot: slot %u is not a slot of the physics world (kMaxSimulatableSlots "
+             "= %u). Was SetAuthoritativePhysicsSlot's range checkf"), slot, static_cast<uint32>(kMaxSimulatableSlots));
+    checkf(m_authoritativeSlotsByActor.find(&owner) == m_authoritativeSlotsByActor.end(),
+        TEXT("UESimulationSession::recordAuthoritativeSlot: '%s' already holds slot %u and was handed slot %u; a character "
+             "takes one slot for its lifetime. Was SetAuthoritativePhysicsSlot's once-only checkf"),
+        *owner.GetName(), m_authoritativeSlotsByActor.count(&owner) != 0u ? m_authoritativeSlotsByActor.at(&owner) : 0u, slot);
+    m_authoritativeSlotsByActor[&owner] = slot;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::forgetSimNetCharacter(unsigned int id, const AActor* pawn)
+{
+    m_registeredComponentsById.erase(id);
+    m_authoritativeSlotsByActor.erase(pawn);
+    if (id == 0u || id > 0xFFu)
+        return;
+    if (m_simNetLanes != nullptr)
+        m_simNetLanes->editBindings().markUnregistered(static_cast<uint8_t>(id));
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::collectLifecycleOutcomes_GameThread()
+{
+    if (m_lifecycle.has_value())
+    {
+        m_lifecycle->pollOutcomes([this](const ogsession::LifecycleOutcome& outcome) { onPredictionOutcome_GameThread(outcome); });
+        return;
+    }
+    std::vector<LifecycleOutcome> outcomes;
+    {
+        const std::scoped_lock lock(m_lifecycleBridgeMutex);
+        outcomes.swap(m_lifecycleOutcomes);
+    }
+    for (const LifecycleOutcome& outcome : outcomes)
+    {
+        switch (outcome.kind)
+        {
+        case LifecycleOutcomeKind::RegisterApplied:
+        case LifecycleOutcomeKind::RegisterRefused:
+        {
+            const auto pending = m_pendingRegistrations.find(outcome.id);
+            if (pending == m_pendingRegistrations.end() || !(pending->second.queued || pending->second.onRunner))
+                break;
+            pending->second.runnerBusy = false;
+            if (outcome.kind == LifecycleOutcomeKind::RegisterApplied)
+                pending->second.applied = true;
+            else
+                pending->second.refused = true;
+            break;
+        }
+        case LifecycleOutcomeKind::BodiesBound:
+        case LifecycleOutcomeKind::BodiesPending:
+        case LifecycleOutcomeKind::BodiesUnresolvable:
+        {
+            if (outcome.kind != LifecycleOutcomeKind::BodiesUnresolvable)
+                m_componentsHeldForRunner.erase(outcome.id);
+            const auto pending = m_pendingRegistrations.find(outcome.id);
+            if (pending == m_pendingRegistrations.end() || !pending->second.onRunner)
+                break;
+            pending->second.runnerBusy = false;
+            if (outcome.kind == LifecycleOutcomeKind::BodiesBound)
+            {
+                pending->second.bodiesBound = true;
+                pending->second.boundSlot = outcome.slot;
+            }
+            break;
+        }
+        }
+    }
+}
+
+template <typename TraitsT>
+TryRegisterStatus UESimulationSession<TraitsT>::tryRegisterOnRunner(unsigned int id, typename TraitsT::Component& owner)
+{
+    collectLifecycleOutcomes_GameThread();
+    const auto it = m_pendingRegistrations.find(id);
+    checkf(it != m_pendingRegistrations.end(), TEXT("UESimulationSession::tryRegisterOnRunner: tryRegister made the record"));
+    PendingRegistration& record = it->second;
+    record.onRunner = true;
+    if (record.refused)
+    {
+        UE_LOG(LogOGMgmt, Error,
+            TEXT("tryRegister: id=%u refused by the og-sim-net server (its [Roster.Refused] line names why); the character "
+                 "stays unsimulated"), id);
+        m_pendingRegistrations.erase(it);
+        return TryRegisterStatus::Refused;
+    }
+    if (record.applied)
+    {
+        m_registeredComponentsById[id] = &owner;
+        m_runnerBodyKeysById[id] = record.bodyKey;
+        UE_LOG(LogOGMgmt, Log, TEXT("tryRegister: registered simulatable id=%u isAuthority=%d"), id, 1);
+        m_game.afterRegistered(id, /*isAuthority=*/true);
+        m_physicsBackend.onRegisteredHost_GameThread(owner, id);
+        m_pendingRegistrations.erase(it);
+        return TryRegisterStatus::Ready;
+    }
+    if (record.runnerBusy || m_runnerStopped)
+        return TryRegisterStatus::Pending;
+
+    typename TraitsT::Character* const character = Cast<typename TraitsT::Character>(owner.GetOwner());
+    checkf(character != nullptr,
+           TEXT("UESimulationSession::tryRegister: the component must be attached to a TraitsT::Character — the ")
+           TEXT("first-call body pass reads that class's own root capsule"));
+    if (!record.runnerSimulatable)
+    {
+        record.runnerSimulatable = std::make_shared<Simulatable>(std::move(*record.simulatable));
+        record.simulatable.reset();
+    }
+
+    if (!record.bodiesCreated)
+    {
+        if (!record.bodiesBound)
+        {
+            typename PhysicsBackend::BodyRequest request = m_physicsBackend.makeBodyRequest_GameThread(owner, *character, id);
+            record.bodyKey = request.key;
+            record.runnerBusy = true;
+            m_componentsHeldForRunner[id] = TStrongObjectPtr<typename TraitsT::Component>(&owner);
+            postRunnerRequest([this, id, request = MoveTemp(request), simulatable = record.runnerSimulatable,
+                staticData = &owner.getStaticData()]()
+            {
+                const std::optional<uint32_t> slot = m_physicsBackend.createBodies_Runner(request, *simulatable, *staticData, id);
+                postLifecycleOutcome(id, slot.has_value() ? LifecycleOutcomeKind::BodiesBound : LifecycleOutcomeKind::BodiesPending,
+                    slot.value_or(0u));
+            });
+            return TryRegisterStatus::Pending;
+        }
+        recordAuthoritativeSlot(*owner.GetOwner(), record.bodyKey, record.boundSlot);
+#if DO_CHECK
+        record.runnerSimulatable->getPhysicsComposite().forEach([&](const auto& decl)
+        {
+            checkf(decl.bindings.ownBodyId.value != 0,
+                   TEXT("PhysicsDeclaration bindings.ownBodyId not populated by fold (id=%u)"), id);
+            checkf(decl.bindings.parentBodyId.value != 0,
+                   TEXT("PhysicsDeclaration bindings.parentBodyId not populated by fold (id=%u)"), id);
+        });
+#endif
+        m_game.afterBodiesCreated(*record.runnerSimulatable, *character, id, /*isAuthority=*/true, m_owner.GetNetMode());
+        record.bodiesCreated = true;
+        return TryRegisterStatus::Pending;
+    }
+
+    checkf(id != 0u && id <= 0xFFu,
+        TEXT("UESimulationSession::tryRegister: og-sim-net's roster keys a character by its sim id (1..255); id %u is not one"), id);
+    AActor* const pawn = owner.GetOwner();
+    const UOGNetConnection* const ownerConnection = Cast<UOGNetConnection>(GetRootNetConnection(pawn));
+    const SimConnectionId ownerConn = ownerConnection != nullptr ? ownerConnection->OGNetId : kInvalidSimConnection;
+    const uint8_t localIndex = GetPlayerSlotForActor(pawn);
+    const FTCHARToUTF8 debugName(pawn != nullptr ? *pawn->GetName() : TEXT("none"));
+    record.runnerBusy = true;
+    record.registerPosted = true;
+    postRunnerRequest([this, id, key = record.bodyKey, physicsSlot = static_cast<uint8_t>(record.boundSlot), ownerConn, localIndex,
+        name = std::string(debugName.Get()), simulatable = record.runnerSimulatable]() mutable
+    {
+        if (!bodiesResolvable_Runner(*simulatable))
+        {
+            postLifecycleOutcome(id, LifecycleOutcomeKind::BodiesUnresolvable);
+            return;
+        }
+        m_simNetServer->template registerCharacter<Simulatable>(static_cast<uint8_t>(id), physicsSlot, ownerConn, localIndex,
+            std::move(name), std::move(*simulatable),
+            [this, id, key](SimChannel* channel) { onRunnerRegisterApplied_Runner(id, key, channel); });
+    });
+    return TryRegisterStatus::Pending;
+}
+
+template <typename TraitsT>
+bool UESimulationSession<TraitsT>::bodiesResolvable_Runner(const Simulatable& simulatable) const
+{
+    if (!m_physAdapter->isBodyResolvable(Game::rootBodyId(simulatable)))
+        return false;
+    bool allResolvable = true;
+    simulatable.getPhysicsComposite().forEach([&](const auto& decl)
+    {
+        if (!m_physAdapter->isBodyResolvable(decl.bindings.ownBodyId))
+            allResolvable = false;
+    });
+    return allResolvable;
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::onRunnerRegisterApplied_Runner(unsigned int id, uint64 key, SimChannel* channel)
+{
+    if (channel == nullptr)
+    {
+        m_physicsBackend.releaseBodies_Runner(key, id);
+        postLifecycleOutcome(id, LifecycleOutcomeKind::RegisterRefused);
+        return;
+    }
+    // ⛔G-36  docs/UESimulationSession-guards.md
+    m_manager->notifyCharacterRegistered(id);
+    m_systemsNotified_Step.insert(id);
+    m_physicsBackend.onRegistered_Runner(key, id);
+    postLifecycleOutcome(id, LifecycleOutcomeKind::RegisterApplied);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::requestRunnerUnregister_GameThread(unsigned int id, typename TraitsT::Component* owner)
+{
+    AActor* const pawn = owner != nullptr ? owner->GetOwner() : nullptr;
+    const bool registered = m_registeredComponentsById.find(id) != m_registeredComponentsById.end();
+    const auto pending = m_pendingRegistrations.find(id);
+    const bool pendingOnRunner = pending != m_pendingRegistrations.end() && pending->second.onRunner;
+    const bool registerPosted = registered || (pendingOnRunner && pending->second.registerPosted);
+    const bool bodiesHeld = registered || (pendingOnRunner && (pending->second.bodiesBound || pending->second.runnerBusy));
+    const auto knownKey = m_runnerBodyKeysById.find(id);
+    const uint64 key = knownKey != m_runnerBodyKeysById.end() ? knownKey->second
+        : pendingOnRunner ? pending->second.bodyKey : PhysicsBackend::slotKeyFor(pawn);
+    if (pending != m_pendingRegistrations.end())
+        m_pendingRegistrations.erase(pending);
+    if (knownKey != m_runnerBodyKeysById.end())
+        m_runnerBodyKeysById.erase(knownKey);
+
+    if (!m_runnerStopped && bodiesHeld)
+    {
+        postRunnerRequest([this, id, key, registerPosted]()
+        {
+            // ⛔G-37  docs/UESimulationSession-guards.md
+            if (!registerPosted)
+            {
+                releaseOnRunner_Runner(id, key);
+                return;
+            }
+            m_simNetServer->template unregisterCharacter<Simulatable>(static_cast<uint8_t>(id), ogsimnet::RosterRemoveReason::Left,
+                [this, id, key](SimChannel*) { releaseOnRunner_Runner(id, key); });
+        });
+    }
+
+    m_registeredComponentsById.erase(id);
+    m_authoritativeSlotsByActor.erase(pawn);
+    m_game.onUnregistered(id);
+    m_latencyBudgetDiagnostics.forgetCharacter(id);
+    if (registered)
+        m_physicsBackend.onUnregisteredHost_GameThread(id);
+    UE_LOG(LogOGMgmt, Log, TEXT("NewFramework: unregistered simulatable id=%u"), id);
+}
+
+template <typename TraitsT>
+void UESimulationSession<TraitsT>::releaseOnRunner_Runner(unsigned int id, uint64 key)
+{
+    m_systemsNotified_Step.erase(id);
+    m_physicsBackend.releaseBodies_Runner(key, id);
+}
+
+#endif
