@@ -78,7 +78,7 @@ og-session-runtime tasks 3–6 removed the former Chaos configuration, this clas
   did when it lived in the owner. Since
   og-tickdriver task 15e they read only the three adapters (`m_physAdapter`, `m_physReaderAdapter`, `m_queryAdapter`),
   `runsPrediction` and the `m_physicsBackendWorlds` < `m_physicsBackend` row; the game binding reads the rest (the gravity in
-  `m_staticData`, `m_storage`, `m_manager` and the net mode; `BrawlerTickDriverGameUImpl-rationale.md`). The bodies
+  `m_staticData`, `m_storage`, `m_manager` and the net mode; `BrawlerSessionHooksUImpl-rationale.md`). The bodies
   read `m_staticData` until task 15e, and `m_storage` and `m_manager` until task 15d.
 * **Not copyable.** The copy constructor and assignment are deleted; it is a member of its owner and nothing else.
 * **The owner calls it through the seam,** the fixed set of entry points in `OGBrawlerSimulationManager-rationale.md`
@@ -220,7 +220,7 @@ Chaos; this class keeps that path (`startStepping` with `FrameWait::EarlierFrame
 | the scheduler, the world-delta time base, the catch-up cap of 60, the batch, the wait rule and the window | og-simulation's tick driver | `SimulationTickDriver-rationale.md` |
 | which thread steps: a client one task per frame chained after the previous frame's, block mode 0; the authority its runner (§15) | the tick driver, by this class's stepping mode | `SimulationTickDriver-rationale.md` §4; §3 |
 | one step: the world mutex, then the step driver's `runTick` and the four hooks | the tick driver's per-step body, through the world host's lock; og-simulation's step hooks | §4; `TickDriverStepHooks-rationale.md` |
-| the per-frame input work before the steps (PROBE A), the reap after the authority's batch, the input release per authority step | the tick driver and its hooks, through the game binding, and the session (the owner's per-frame work until og-ue-simulationcomponentandmanagersplit task 26b) | `BrawlerTickDriverGameUImpl-rationale.md`; `UESimulationSession-rationale.md` §9.7, §9.9; `OGBrawlerSimulationManager-rationale.md` §7, §8 |
+| the per-frame input work before the steps (PROBE A), the reap after the authority's batch, the input release per authority step | the tick driver and its hooks, through the game binding, and the session (the owner's per-frame work until og-ue-simulationcomponentandmanagersplit task 26b) | `BrawlerSessionHooksUImpl-rationale.md`; `UESimulationSession-rationale.md` §9.7, §9.9; `OGBrawlerSimulationManager-rationale.md` §7, §8 |
 | the world, its statics, the character slots, the bind and the release | og-simulation-jolt's world host, with this class's static import, configuration and slot glue | §3; `JoltTickWorldHost-rationale.md` |
 | the render publish, the interpolation, the correction smoothing and the capsule apply | og-simulation's presenter, through the hooks and this class's two game-thread doors; the actor move through OGSimulationUnreal's render sink | §5, §7 and §8; `TickDriverPresenter-rationale.md`; `UERenderTargetTable-rationale.md` |
 | the game-thread shadow world | og-simulation-jolt's world host | §6; `JoltTickWorldHost-rationale.md` §11 |
@@ -358,7 +358,7 @@ says which is which.
 
   Until og-input-latency task P5-7 the last two were the pawn's replicated slot (`AOGBrawlerUECharacter::GetPhysicsSlot`,
   over the replicated `PhysicsSlotValue` that task P5-8 deleted) and its write, `SetAuthoritativePhysicsSlot`
-  (`BrawlerTickDriverGameUImpl-rationale.md` §7).
+  (`BrawlerSessionHooksUImpl-rationale.md` §7).
 
   So the authority takes the lowest free slot and records it in the session, whose og-sim-net server puts it in the
   character's roster entry; a client takes the roster entry's slot, even when a lower one is free here, and never picks
@@ -973,7 +973,7 @@ og-simulation-jolt's statics split (and, until og-tickdriver task 15c, the file'
 (`TickDriverThreadContext-rationale.md` §7 in og-simulation's docs).
 
 **The game binding stays a class template.** `BrawlerTickDriverGameUImpl` is a template over the session because the
-session's header includes this one before the session class is defined (`BrawlerTickDriverGameUImpl-rationale.md`
+session's header includes this one before the session class is defined (`BrawlerSessionHooksUImpl-rationale.md`
 §1). Task 15b did not change that order: the session still holds the backend by value, so it must see the complete
 host type first.
 
@@ -1069,7 +1069,7 @@ and the brawler supplies its bindings and instantiates it.
 
 | parameter | what this class takes from it | the brawler's |
 |---|---|---|
-| `GameBindingT` | og-simulation's `TickDriverGame` (the manager, the storage, the render snapshot and the hooks, as before), and `Session`, `Component`, `Character`, `StaticData`, `gravity(session)` and `callWithSlotRequest(session, owner, key, slotCall)` | `BrawlerTickDriverGameUImpl<AOGBrawlerSimulationManager>`, named `BrawlerTickDriverGame` (`BrawlerTickDriverGameUImpl-rationale.md` §5) |
+| `GameBindingT` | og-simulation's `TickDriverGame` (the manager, the storage, the render snapshot and the hooks, as before), and `Session`, `Component`, `Character`, `StaticData`, `gravity(session)` and `callWithSlotRequest(session, owner, key, slotCall)` | `BrawlerTickDriverGameUImpl<AOGBrawlerSimulationManager>`, named `BrawlerTickDriverGame` (`BrawlerSessionHooksUImpl-rationale.md` §5) |
 | `EngineTraitsT` | the adapter and visualization types, the world-host template, the log sink, and `Statics` and `splitStatics` (`JoltEngineTraitsUImpl-rationale.md` §5) | `JoltEngineTraitsUImpl`, in OGSimulationJoltUnreal |
 | `EngineBindingT` | `Simulatable`, `categoryChannels`, `mappedCategories`, `contactCountsEnabled`, `checkCapsuleContract`, `kParkSnap` | `BrawlerJoltBindingUImpl` (`BrawlerJoltBindingUImpl-rationale.md` §6) |
 

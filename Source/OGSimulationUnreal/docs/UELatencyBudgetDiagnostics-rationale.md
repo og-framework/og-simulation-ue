@@ -363,7 +363,7 @@ their tick?** No, on either backend, verified 2026-11-11:
   (`:129`) before `beforeSimulate` (`:133`); the replay loop there (`:221-236`) calls `onGameSimulation`, the world step and
   `onPostGameSimulation` per replayed tick and never calls a step hook. `beforePhysics` (`:150`), which reaches
   `onStepStarted` (`TickDriverStepHooks.h:151-155`) and so `stampAfterStep_Internal`
-  (`BrawlerTickDriverGameUImpl.h:77`), runs once per physics step, for the prediction tick only. (Line numbers
+  (`BrawlerSessionHooksUImpl.h:77`), runs once per physics step, for the prediction tick only. (Line numbers
   re-checked 2026-11-19, og-input-latency task P5-33.)
 * **Chaos.** `OnPreSimulate_Internal` calls `stampLatencyAfterStep_Internal` only `if (!isResimulating)`
   (`ChaosTickBackendUImpl.cpp:266-267`). This bullet is the 2026-11-11 record of the former Chaos configuration, removed

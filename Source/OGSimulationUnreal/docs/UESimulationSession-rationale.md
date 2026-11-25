@@ -1936,7 +1936,7 @@ A bound client's step reaches the session twice, on the step's thread. Both entr
 (`runsPrediction()` false) and before the world session is bound (`boundImmediateClient_Step()`).
 
 **At the step's start, the drain.** The game binding's `receiveForStep` (og-simulation's `TickDriverReceiveGame` hook, called
-from each client step's `beforeTick`, before the resimulation check and the collect; `BrawlerTickDriverGameUImpl-rationale.md`
+from each client step's `beforeTick`, before the resimulation check and the collect; `BrawlerSessionHooksUImpl-rationale.md`
 §9) calls `receiveForClientStep_Step()`, which does, in this order:
 
 1. **The queued unregistrations** the game thread asked for (§18.5).
@@ -2101,7 +2101,7 @@ before) and touches no `UObject` but the world's driver, which it only reads.
 - **No frame points.** og-sim-net's server has no frame drain or flush (since og-session-runtime task 15); the session binds
   the runner's two lanes functions instead (`bindAuthorityRunner`: the RTT publish and the join, `UESimNetLanes-rationale.md`
   §12).
-- **The game binding's hooks** (`BrawlerTickDriverGameUImpl-rationale.md` §10):
+- **The game binding's hooks** (`BrawlerSessionHooksUImpl-rationale.md` §10):
   - `idleUntil(deadline)` is og-sim-net's `SimNetIdle` over the lanes' endpoint (`m_simNetIdle`), one `serviceUntil` per call:
     og-net's handlers, the SimClock answer and the relay at receipt run there, on the runner (P2-19);
   - `beforePump` runs the runner requests (§19.4), then the server's `drain()` (the lifecycle queue first, then the inbox): the
@@ -2336,7 +2336,7 @@ only), so they are built on the thread that later uses them.
 
 The tick driver calls the game binding's `beforePump(hostNowSeconds, rate)` on the scheduler's owning thread right before each
 pump (og-simulation's `TickDriverConcepts-rationale.md`), and the brawler's binding forwards both arguments to
-`beforePump_Owner(hostNowSeconds, rate)` (`BrawlerTickDriverGameUImpl-rationale.md` §10). The function was
+`beforePump_Owner(hostNowSeconds, rate)` (`BrawlerSessionHooksUImpl-rationale.md` §10). The function was
 `beforeAuthorityPump_Runner`, which took neither argument; the owning thread is the runner on the authority loop and the game
 thread on a client, hence the new suffix.
 

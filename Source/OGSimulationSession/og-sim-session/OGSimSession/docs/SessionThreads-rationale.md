@@ -140,7 +140,7 @@ as an `OG_CHECK`. (Lead note under task 22,
 > move the session here. Section numbers in it (§19, §23) are that file's, and "this table" is this section.
 
 The one table of who calls what on which thread, for both roles, read from the code after og-session-runtime task 15
-(`UESimulationSession.h`, `BrawlerTickDriverGameUImpl.h`, og-simulation's `SimulationTickDriver.h`, `TickDriverStepHooks.h`
+(`UESimulationSession.h`, `BrawlerSessionHooksUImpl.h`, og-simulation's `SimulationTickDriver.h`, `TickDriverStepHooks.h`
 and `SimulationStepDriver.h`, `UESimNetLanes.h`, `UESimNetHost.h`). og-simulation and og-sim-net state only their own
 contracts ("the owner thread only", "one consumer at a time") and name no caller; og-simulation's `ThreadingCrossings.md`
 indexes the shared data structures and points here for the callers. og-session-runtime task 22 moves this table to the

@@ -200,7 +200,7 @@ Shadow smoke shows it as a negative `bias sHat` in the lead-split tool's G3 sens
 
 *R0, og-session-runtime task 24:* the call path on the tree: the brawler's `releaseInputsForAuthorityTick` calls the Unreal
 session's `noteAuthorityStepTime_Step`, which calls `noteAuthorityStepStart`; its `onStepEnded` calls `afterStep_Step`, which
-calls `publishServerTick` with the lanes' clock server (`BrawlerTickDriverGameUImpl.h`, `UESimulationSession.h`). The
+calls `publishServerTick` with the lanes' clock server (`BrawlerSessionHooksUImpl.h`, `UESimulationSession.h`). The
 measurement history above is carried from og-time-dilation task 2b, not re-measured.
 
 *Was `UESimulationSession-guards.md` G-39 (moved by og-session-runtime task 24; og-time-dilation task 2b).*
