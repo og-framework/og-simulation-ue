@@ -59,8 +59,9 @@ is the module's generated definitions header.
   include roots. og-net is reached only through og-sim-net: the tier lint forbids og-sim-session from including og-net,
   og-simulation-jolt or any engine module (`module_tiers.psd1`, the `OGSimSession` row).
 - **`Core` is a private dependency**, for the module macro in `OGSimulationSessionModule.cpp`.
-- **`OGSimulationSessionModule.cpp` includes the six library headers** (`SessionClock.h` since og-session-runtime task 24,
-  `SessionEngine.h`, `SessionGame.h`, `SessionKnobs.h` since task 23, `SessionThreads.h`, `SessionTypes.h`), so every target that builds the module compiles each of them, with their
+- **`OGSimulationSessionModule.cpp` includes the eight library headers** (`SessionClock.h` since og-session-runtime task 24,
+  `SessionDisplay.h` and `SimulationDisplaySnapshot.h` since task 25, `SessionEngine.h`, `SessionGame.h`, `SessionKnobs.h` since
+  task 23, `SessionThreads.h`, `SessionTypes.h`), so every target that builds the module compiles each of them, with their
   self-check `static_assert`s, under that target's flags and after an engine header. That is where an identifier that
   collides with an engine macro would show first; it is why `SessionThreadChecks`' check is `checkOp`, not `check`
   (`SessionThreads-rationale.md` §4).
@@ -73,6 +74,8 @@ is the module's generated definitions header.
   intake) and `UEConfigSource.h` includes `SessionEngine.h` (the `ConfigSource` port); `OGBrawlerUnreal`'s route test includes
   `SessionKnobs.h`. Since task 24 `UESimulationSession.h` also includes `SessionClock.h` and `SessionThreads.h` (the clock
   routing and the schedule, and the clock's thread checks), and `OGBrawlerUnreal`'s clock route test includes `SessionClock.h`.
+  Since task 25 `UESimulationSession.h` includes `SessionDisplay.h` (the display) and `SimulationDisplaySnapshot.h` (moved here
+  from og-simulation; `OGBrawlerUnreal`'s visualization readers reach it through the session).
   `SessionClock.h` includes og-sim-net's `SimNetClock.h` (the SimClock client's counts on the window line) and `SimNetServer.h`
   (`kSimNetWindowSeconds`, the window's length, which only that header declares).
 
@@ -82,7 +85,9 @@ is the module's generated definitions header.
   directory, depends on `OGSimulationSession`, and adds og-simulation-tests' `Source/OGSimulationTests` folder as a private
   include path, for `TickDriver/TickDriverFakes.h`, which `SessionTestKit.h` builds on (`SessionTestKit-rationale.md`).
 - Every case carries the tag `[Session]`, which og-simulation-tests' `[@og]` alias selects (`OgTagAliases.cpp`), so
-  `OGSimulationTests.exe "[@og]"` runs them. On their own: `OGSimulationTests.exe "[Session]"`.
+  `OGSimulationTests.exe "[@og]"` runs them. On their own: `OGSimulationTests.exe "[Session]"`. The exception is
+  `SimulationDisplaySnapshotTest.cpp`, moved unchanged from og-simulation-tests by og-session-runtime task 25: its twelve
+  cases keep `[Mailbox]` (also in `[@og]`); on their own, `OGSimulationTests.exe "SimulationDisplaySnapshot.*"`.
 - `SessionSkeletonTest.cpp` proves the include roots in one translation unit (og-simulation, og-sim-net, og-sim-session and
   the test kit) and pins the test kit and the session types. `SessionThreadsTest.cpp` tests the thread table and its checks
   (`SessionThreads-rationale.md` §6), with one hidden death case, `[.][SessionThreadsDeath]`.

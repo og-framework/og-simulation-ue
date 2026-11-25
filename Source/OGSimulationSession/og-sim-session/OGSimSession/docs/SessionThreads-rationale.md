@@ -60,7 +60,9 @@ The three readings:
   checks this row). The door refuses every rate change there (`TickRateDoor`,
   `TickDriverGameTypes-rationale.md` §2).
 - **The authority's `AcquireDisplay` is applying the presentation slices** on the frame thread
-  (`presentAuthority_GameThread`), where a client acquires its display snapshot.
+  (`presentAuthority_GameThread`), where a client acquires its display snapshot. og-sim-session's `SessionDisplay` checks
+  this row in `presentLatest`, and a client's in `acquireForFrame` and its readers; both roles' `Publish` row in
+  `publishAfterBatch` and `publishPresentation` (og-session-runtime task 25, `SessionDisplay-rationale.md` §2).
 
 Three `static_assert`s hold the tables to their shape:
 
@@ -205,9 +207,9 @@ The session's shared state between these threads, each with its own synchronizat
 |---|---|---|
 | the lifecycle bridge (`m_runnerRequests`, `m_lifecycleOutcomes`, under `m_lifecycleBridgeMutex`), and og-sim-net's own lifecycle queue under it | frame → runner (the requests); runner or step → frame (the outcomes); a client's registrations go through og-sim-net's queue to the step | a mutex around the vectors (design L9 makes it one queue) |
 | each character's input sample (`Mailbox.h`'s `TripleBuffer`) | frame → step | triple buffer, one writer, one reader |
-| the display snapshot (`SimulationDisplayPublisher`) | step → frame | snapshot channel (`ThreadingCrossings.md`, the display snapshot's crossings) |
+| the display snapshot (`SimulationDisplayPublisher`, `SessionDisplay`'s since og-session-runtime task 25) | step → frame | snapshot channel (`ThreadingCrossings.md`, the display snapshot's crossings) |
 | the tier reading (`m_displayTier`) | step → step while the session steps; the frame writes it only while no step runs | triple buffer |
-| the presentation slices (`m_authorityPresentation`) | runner → frame | triple buffer |
+| the presentation slices (`SessionDisplay`'s presentation buffer since og-session-runtime task 25; the Unreal session's own until then) | runner → frame | triple buffer |
 | the inbox (og-sim-net's transport) | og-net → step on a client; runner → runner on an authority | the transport's single-consumer inbox |
 | the listener-bind request (og-sim-net's client, `SimNetClient::bindListener`) | frame → step | one atomic, consumed by the drain |
 | the RTT (`FRunnerRttTable`; the client host's published RTT, read by `serverRttSeconds`) | frame → runner; frame → step | atomics, one writer |

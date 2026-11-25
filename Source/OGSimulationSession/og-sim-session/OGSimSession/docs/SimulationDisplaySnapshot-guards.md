@@ -12,8 +12,8 @@ to a "Retired" section and its number is spent forever.
 
 ⛔ **Nothing in this file is a rationale.** The reasons live in `SimulationDisplaySnapshot-rationale.md`.
 
-⚠ **This header is `og-simulation` core and ships standalone under MPL-2.0.** Every guard below is
-true and actionable to a reader with no game engine and no other repository.
+⚠ **This header is og-sim-session's and ships under MPL-2.0** (`og-simulation` core until og-session-runtime task 25).
+Every guard below is true and actionable to a reader with no game engine.
 
 ---
 

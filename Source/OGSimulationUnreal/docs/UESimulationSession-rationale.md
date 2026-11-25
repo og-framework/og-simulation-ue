@@ -1801,8 +1801,10 @@ object only, never a `UObject`.
 ## §17 The display snapshot: what the game thread reads (og-input-latency task P5-16)
 
 The game thread draws the client's simulation from a snapshot, never from the storage, the input resolution or the
-reconciliation. The snapshot type is og-simulation's (`SimulationDisplaySnapshot-rationale.md`, in og-simulation's docs);
-this section is the session's half: where it is published, what the game thread keeps of it, and the doors that read it.
+reconciliation. The snapshot type is og-sim-session's (`SimulationDisplaySnapshot-rationale.md`, in og-sim-session's docs;
+og-simulation's until og-session-runtime task 25). Since that task the publish, the held view and the doors' answers are
+og-sim-session's `SessionDisplay` (`SessionDisplay-rationale.md`), which this class holds and forwards to; this section keeps
+the Unreal half: the type's sizes, where the hooks run, the doors' names, and the history.
 
 ### 17.1 The type and its sizes
 
@@ -1816,13 +1818,14 @@ capture poll and its 60-tick applied poll, `InputHistoryDisplay-rationale.md` §
 
 ### 17.2 Publish: after the step batch, on the thread that ran it
 
-**A predicting session** (`publishesDisplayOnStep()`: the manager exists and runs prediction; until og-session-runtime
-task 5 the engine traits' world-host flag was a first conjunct, true on Jolt, so the expression is the same on every
-build since) publishes in `publishDisplaySnapshot_Step`, which the tick-driver game binding's
+**A predicting session** publishes in `publishDisplaySnapshot_Step`, which the tick-driver game binding's
 `publishForDisplay()` calls once after each client batch, on the thread that ran the batch (the client's worker task; the
-game thread for a client stepping inline under og.Sim.RunInline=1, until og-session-runtime task 11), under the world lock (`TickDriverConcepts-rationale.md` §11, in og-simulation's
-docs). Nothing steps there, so the fill reads the storage, the input resolution, the reconciliation and the clock as the
-batch left them. `onPostPhysicsStep` does not fill for such a session; it only acquires (§17.3).
+game thread for a client stepping inline under og.Sim.RunInline=1, until og-session-runtime task 11), under the world lock
+(`TickDriverConcepts-rationale.md` §11, in og-simulation's docs). Since og-session-runtime task 25 it forwards to
+`SessionDisplay::publishAfterBatch` (`SessionDisplay-rationale.md` §3). Its role check replaced this class's `checkf` on
+publishesDisplayOnStep, deleted with that one caller (the manager exists and runs prediction; until og-session-runtime task 5
+the engine traits' world-host flag was a first conjunct, true on Jolt). `onPostPhysicsStep` does not fill for such a session;
+it only acquires (§17.3).
 
 Until og-input-latency task P5-36 every role filled in `onPostPhysicsStep`, on the game thread, on the claim that the tick
 driver's post-physics ran once the frame's step tasks had completed. It did not: `FrameWait::EarlierFrames` (a frame-locked
@@ -1830,17 +1833,16 @@ client) waits only for earlier frames' tasks, and `ThisFramesSingleStep` (an imm
 so the fill could read the storage while the frame's own batch stepped on a worker (og-input-latency's design review P5-31,
 L5; `SimulationTickDriverDisplayFillTest.cpp` in og-simulation-tests reproduces it).
 
-**What the step-thread fill reads.** og-sim-net drains on the step's thread (§18), so the relay stores, the arrival rings,
-the tier receipt and the registrations are written there too. The fill reads every source on its writer's thread. The tier
-comes from the clock's `displayTier()`, the `TripleBuffer` the recompute writes (og-sim-session's `SessionClock` since
-og-session-runtime task 24; this class's `m_displayTier` until then).
+**What the step-thread fill reads:** `SessionDisplay-rationale.md` §3, since og-session-runtime task 25. The tier comes from
+the clock's `displayTier()`, the `TripleBuffer` the recompute writes (og-sim-session's `SessionClock` since og-session-runtime
+task 24; this class's `m_displayTier` until then).
 
 Until og-session-runtime task 12 a frame-locked client (§16) filled here too, with four of its sources written on the game
 thread, where its drain ran: the tier, the relay stores, the arrival rings and the registrations. Its tier buffer's writer was
 the game thread, seeded by `beginClientSimNet` before any step. Its relay fields (each entry's last relayed input and arrival
 ring) came from a stage that `onFrameStepsDue_Step` copied on the game thread before each batch was dispatched, with
 og-simulation's relay-stage function, into a second triple buffer of the session's; the fill read the newest stage
-(`SimulationDisplaySnapshot-rationale.md` §3, in og-simulation's docs), and a `checkf` refused a batch with none. Task 12
+(`SimulationDisplaySnapshot-rationale.md` §3, then in og-simulation's docs), and a `checkf` refused a batch with none. Task 12
 removed that stage, its buffer, the staging call, the staged arm of the fill and the game-thread seed.
 
 **No other session publishes.** The authority publishes no display snapshot (§21.4): its storage is the runner's, and
@@ -1850,26 +1852,20 @@ the same thread), with only the server clock's step in its clock fields; until o
 Chaos backend did too, while its physics thread might still step. The overlay below keeps the tick backend's `OG_CHECK`
 (P5-16's F6).
 
-**Heap.** The publisher's channel holds four snapshots, each up to `kMaxSimulatableSlots` entries with both relayed rings by
-value, so the session holds it through a `std::unique_ptr`, as it holds the game-thread copies below. The session object
-stays the size it was plus three pointers.
+**Heap.** The publisher, the game-thread copies and the presentation buffer are the display's, each through a
+`std::unique_ptr` (`SessionDisplay-rationale.md` §6); this class holds one `std::optional<Display>`, after `m_clock`. Until
+og-session-runtime task 25 the three pointers were this class's own.
 
 ### 17.3 The game-thread view: one snapshot held, its states copied and overlaid
 
-`refreshDisplayView_GameThread`, in the post-physics pass, swaps the held snapshot for the newest through the publisher's
-`refreshView_GameThread(held)`, which releases the held one first and then acquires the newest
-(`SimulationDisplaySnapshot-rationale.md` §5). The order is the channel's read rule: while the reader holds a snapshot, a
-peek of the newest returns the held one, never a later commit. Until og-input-latency task P6-1 the session acquired first
-and released the old pointer only if it differed, so the peek returned the held snapshot, nothing was released, and every
-client's view stayed on the first snapshot it acquired, published before any character registered: the brawler's
-`TickComponent` found no entry (`findDisplayVizState` null) and drew no aim indicator, attack or projectile visualization,
-on immediate and frame-locked clients alike, from Ph4 on. Re-acquiring a slot just released marks it held again (the
-channel's hold is one bit per slot), so the reader holds one snapshot between passes and none between the two calls. A
-publish may run in that instant, on the step's thread: the writer's open slot is not listed, so the peek returns the newest
-committed snapshot. Every reader in the frame shares the one held snapshot until the next pass. `endPlay` releases it.
+`refreshDisplayView_GameThread`, in the post-physics pass, forwards to `SessionDisplay::acquireForFrame` (since
+og-session-runtime task 25; the view, its release-then-peek order and its history are `SessionDisplay-rationale.md` §4 and
+`SessionDisplay-guards.md` G-01). The brawler's `TickComponent` reads it through `findDisplayVizState`. `endPlay` releases the
+held snapshot (`SessionDisplay::releaseHeld`).
 
-Then, for each entry, the session copies the entry's state into its own array of visualization states (index-aligned with
-the entries) and calls the backend's `overlayRenderPoses_GameThread(id, state)`. On a driver-scheduled backend that writes
+For each entry the display copies the entry's state into its own array of visualization states (index-aligned with the
+entries) and calls the overlay this class passes, the backend's `overlayRenderPoses_GameThread(id, state)`. On a
+driver-scheduled backend that writes
 the presenter's rendered poses into every non-root body state (`TickDriverBackendUImpl-rationale.md`), exactly what the
 presenter wrote into the storage's visualization copy before; the brawler's former Chaos backend (removed by
 og-session-runtime task 3) wrote nothing, as its refresh wrote only the plain copy. The snapshot itself stays as published: it is shared with the writer's channel, and the overlay is
@@ -1892,6 +1888,10 @@ not wait shows the newest batch that finished before the pass.
 | `getLastRelayedInput(id)` | the entry's last relayed input (none without an entry) |
 | `isLocallyControlledOnThisPeer(id)` | whether the entry has a local input cache (false without an entry) |
 | `getVizSlice<SliceT>(id)` | one slice of the overlaid copy (`⛔G-02`) |
+
+Since og-session-runtime task 25 the first four forward to `SessionDisplay`'s `snapshot`, `findEntry`, `findVizState` and
+`forEachVizState`, each checked on the frame thread (`SessionDisplay-rationale.md` §2); before `beginPlay` builds the display
+they answer as before the first publish.
 
 `getLastRelayedInput`, `isLocallyControlledOnThisPeer` and `getVizSlice` keep their names and signatures; only their source
 changed. `getLocalInputCache`, `getRelayedReadObservations`, `getRelayedInputArrivals`, `getStorage` and
@@ -2249,17 +2249,22 @@ authority-only, and the replicated score property is the scoreboard's source. On
 og-session-runtime task 14) `Game::afterVisualization` read the score system on the game thread after the frame's steps (§10).
 On the loop the runner writes it, so:
 
-- **The snapshot.** `AuthorityPresentation` is `entryCount` and up to `kMaxSimulatableSlots` entries, each a sim id and the
+- **The snapshot.** og-sim-session's `SessionDisplay::Presentation` (this class's own nested struct until og-session-runtime
+  task 25) is `entryCount` and up to `kMaxSimulatableSlots` entries, each a sim id and the
   game's `AuthorityPresentationSlice` (a game type; the brawler's is its score and whether the score system holds an entry,
   `BrawlerSessionGameUImpl-rationale.md` §8 in OGBrawlerUnreal's docs). It travels in a `TripleBuffer` (og-sim's
-  `Mailbox.h`, one writer and one reader), held through a `std::unique_ptr` like the display tier's.
-- **The runner fills it** in `publishAuthorityPresentation_Runner`, the last statement of `afterAuthorityBatch` on the loop:
-  one entry per simulatable in storage, from the game's `authorityPresentationSlice_Step(systems, id)`, then `publish()`.
-- **The game thread applies it** in `presentAuthority_GameThread`, from `onPostPhysicsStep`'s authority branch before the
+  `Mailbox.h`, one writer and one reader), held through a `std::unique_ptr` like the display tier's
+  (`SessionDisplay-rationale.md` §5).
+- **The runner fills it** in `publishAuthorityPresentation_Runner`, the last statement of `afterAuthorityBatch` on the loop,
+  through `SessionDisplay::publishPresentation`: one entry per simulatable in storage, from the game's
+  `authorityPresentationSlice_Step(systems, id)`, then `publish()`.
+- **The game thread applies it** in `presentAuthority_GameThread`, through `SessionDisplay::presentLatest`, from
+  `onPostPhysicsStep`'s authority branch before the
   latency tick (where `afterVisualization` sits on a client): the newest snapshot, one `Game::presentAuthoritySlice(session, id, slice)` per
   entry. The brawler's finds the registered component for the id and writes the score property, so clients see the score
   through the same `OnRep` as the in-frame server's did.
-- **The two hooks are checked** by a `static_assert` in `publishAuthorityPresentation_Runner` and are in the name-clash probe
+- **The two hooks are checked** by a `static_assert` in `publishAuthorityPresentation_Runner` (the slice hook also by
+  og-sim-session's `SessionPresentationGame` concept on `SessionDisplay::publishPresentation`) and are in the name-clash probe
   (`ueSimulationSessionHookNames`, §12).
 - **Why not the display snapshot.** The display snapshot (§17) is og-sim's, per entry the simulatable's state; the score lives
   in the systems executor, which og-sim's snapshot does not read, and an authority publishes no display snapshot (§21.4).

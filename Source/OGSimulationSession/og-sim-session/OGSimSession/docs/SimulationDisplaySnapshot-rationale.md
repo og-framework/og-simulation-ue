@@ -10,8 +10,9 @@ explains it lives here. Prohibitions are in `SimulationDisplaySnapshot-guards.md
 **If this file and `SimulationDisplaySnapshot.h` disagree, the header is authoritative and this file is
 stale.** Fix this file; do not soften the header to match it.
 
-⚠ **This header is `og-simulation` core and ships standalone under MPL-2.0**, engine-free by
-construction. Everything below is true to a reader with no game engine and no other repository.
+⚠ **This header is og-sim-session's and ships under MPL-2.0**, engine-free by construction; it was `og-simulation` core until
+og-session-runtime task 25, which moved it with its docs and its test. Everything below is true to a reader with no game
+engine; the header needs only og-simulation, on which og-sim-session depends.
 
 ---
 
@@ -31,6 +32,7 @@ reads values it holds, never the simulation's containers.
 
 The header does not call itself: a host owns one publisher, calls `publish_Step` at the end of each
 step batch, and points its drawing-side readers at `refreshView_GameThread` or `acquire_GameThread` (§5).
+og-sim-session's own host is `SessionDisplay` (`SessionDisplay-rationale.md`).
 
 ## §2 What it carries
 
@@ -190,9 +192,11 @@ copied.
   keeps between frames.
 - The authority's state: an authority has no prediction clock, tier consumer or relay diagnostics, and
   its drawing-side readers are not this header's. A host may still fill a snapshot on an authority, as the
-  Unreal session does since og-input-latency task P5-16: `readDisplayClock` and `readDisplayTier` are not
-  called there, the host writes the simulation step into `predictionTick` and `stepDeltaSeconds`, and the
-  fill's diagnostic reads answer whatever the authority's input resolution and reconciliation hold for each id.
+  Unreal session's in-frame server did from og-input-latency task P5-16 until og-session-runtime task 14:
+  `readDisplayClock` and `readDisplayTier` are not called there, the host writes the simulation step into
+  `predictionTick` and `stepDeltaSeconds`, and the fill's diagnostic reads answer whatever the authority's input
+  resolution and reconciliation hold for each id. No authority in this tree fills one (`SessionDisplay::publishAfterBatch`
+  refuses an authority).
 
 ## §8 Provenance
 
@@ -203,3 +207,6 @@ P5-36 moved the client's fill to the stepping thread after the batch (§3) and a
 its staging function, for a host that drains on the drawing thread; og-session-runtime task 13 deleted the three with the
 frame-locked client. og-input-latency task P6-1 added
 `refreshView_GameThread` (§5), the Unreal session's refresh moved into the publisher with its order fixed.
+og-session-runtime task 25 moved the header, these docs and its test from og-simulation (`OGSimulation/`) and
+og-simulation-tests to og-sim-session (`OGSimSession/`, `tests/`), unchanged, and its host from the Unreal session to
+`SessionDisplay`.

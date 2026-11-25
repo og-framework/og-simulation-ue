@@ -416,7 +416,8 @@ og-session-runtime task 15 removed the transport's flag.
   for an arrival and for the replay at bind (G-10). The tier state a host writes there (a delay, a relay floor through
   `SimulationManager::setRelayDelayFloorTicks`, the clock's input-delay transition debt through `requestInputDelayTransition`)
   has its step-side readers (`collectInputAll`'s delay read, the clock's debt payment) later in the same step, on the same
-  thread, so they need no synchronization. A reader on another thread reads a copy: og-sim's display snapshot carries the tier
+  thread, so they need no synchronization. A reader on another thread reads a copy: the display snapshot (og-sim-session's since og-session-runtime task 25, og-sim's
+  before) carries the tier
   fields (`SimulationDisplaySnapshot.h`, `DisplayTierReading`).
 - **The RTT.** The drain's clock delivery reads the host's `serverRttSeconds()` on the step's thread, so a host whose RTT is
   read elsewhere serves a value it publishes atomically.

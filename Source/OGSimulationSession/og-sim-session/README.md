@@ -8,7 +8,9 @@ it through ports (concepts); the runtime itself is built up from them in later s
 Today it holds the ports and the vocabulary: the session's role, start parameters, registration request and outcomes
 (`OGSimSession/SessionTypes.h`), the engine and configuration ports (`SessionEngine.h`), the game's two halves
 (`SessionGame.h`), the per-role thread table with its checks (`SessionThreads.h`), and the first parts of the runtime: the
-`[OGNetcode]` knob intake (`SessionKnobs.h`) and the clock routing and schedule (`SessionClock.h`).
+`[OGNetcode]` knob intake (`SessionKnobs.h`), the clock routing and schedule (`SessionClock.h`), and the display: the display
+snapshot (`SimulationDisplaySnapshot.h`, moved here from og-simulation) and the session's display and authority presentation
+(`SessionDisplay.h`).
 
 ## Layout
 

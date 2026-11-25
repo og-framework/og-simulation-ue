@@ -36,6 +36,7 @@
 #include "OGSimNet/SimNetRoster.h"
 #include "OGSimNet/SimNetServer.h"
 #include "OGSimSession/SessionClock.h"
+#include "OGSimSession/SessionDisplay.h"
 #include "OGSimSession/SessionKnobs.h"
 #include "OGSimSession/SessionThreads.h"
 #include "OGSimulation/PhysicsEngineTraits.h"
@@ -303,29 +304,26 @@ public:
 	                                                   kSessionDisplayWindowTicks>;
 	using DisplayEntry    = typename DisplaySnapshot::Entry;
 	using DisplayVizState = typename DisplayEntry::VizState;
+	using Display         = ogsession::SessionDisplay<Game, DisplaySnapshot, ManagerType, Storage, InputResolution,
+	                                                  Reconciliation>;
 
-	const DisplaySnapshot* getDisplaySnapshot() const { return m_heldDisplaySnapshot; }
+	const DisplaySnapshot* getDisplaySnapshot() const { return m_display.has_value() ? m_display->snapshot() : nullptr; }
 
 	const DisplayEntry* findDisplayEntry(unsigned int id) const
 	{
-		return m_heldDisplaySnapshot != nullptr ? m_heldDisplaySnapshot->find(id) : nullptr;
+		return m_display.has_value() ? m_display->findEntry(id) : nullptr;
 	}
 
 	const DisplayVizState* findDisplayVizState(unsigned int id) const
 	{
-		const DisplayEntry* const entry = findDisplayEntry(id);
-		if (entry == nullptr)
-			return nullptr;
-		return &(*m_displayVizStates)[static_cast<size_t>(entry - m_heldDisplaySnapshot->entries.data())];
+		return m_display.has_value() ? m_display->findVizState(id) : nullptr;
 	}
 
 	template <typename FunctionT>
 	void forEachDisplayVizState(FunctionT&& function) const
 	{
-		if (m_heldDisplaySnapshot == nullptr)
-			return;
-		for (size_t index = 0u; index < m_heldDisplaySnapshot->entryCount; ++index)
-			function(m_heldDisplaySnapshot->entries[index].simId, (*m_displayVizStates)[index]);
+		if (m_display.has_value())
+			m_display->forEachVizState(std::forward<FunctionT>(function));
 	}
 
 	std::optional<PlayerInput> getLastRelayedInput(unsigned int id) const
@@ -459,9 +457,32 @@ private:
 
 	void stampCorrectionsHanded_Runner();
 
-	void publishAuthorityPresentation_Runner();
+	void publishAuthorityPresentation_Runner()
+	{
+		static_assert(requires(const SystemsExec& systems, const UESimulationSession& session, unsigned int id,
+				const AuthorityPresentationSlice& slice)
+			{
+				{ Game::authorityPresentationSlice_Step(systems, id) } -> std::same_as<AuthorityPresentationSlice>;
+				Game::presentAuthoritySlice(session, id, slice);
+			},
+			"UESimulationSession<TraitsT>: the game's presentation of authority-only state is "
+			"two static hooks of TraitsT::Game over its AuthorityPresentationSlice: authorityPresentationSlice_Step(systems, id), "
+			"read on the runner after each batch, and presentAuthoritySlice(session, id, slice), applied on the game thread "
+			"from the newest published snapshot. Was the loop's skip of afterVisualization, whose ring-out score push read the "
+			"score system on the game thread (og-input-latency P5-19 F5)");
+		checkf(m_systemsExec.has_value(),
+			TEXT("UESimulationSession::publishAuthorityPresentation_Runner: the authority's systems executor is built by the "
+				 "session's configuration, which the runner runs before its first batch"));
+		m_display->publishPresentation(*m_systemsExec);
+	}
 
-	void presentAuthority_GameThread();
+	void presentAuthority_GameThread()
+	{
+		m_display->presentLatest([this](unsigned int id, const AuthorityPresentationSlice& slice)
+		{
+			Game::presentAuthoritySlice(*this, id, slice);
+		});
+	}
 
 	static uint32 correctionTickOf(const SimChannel& channel);
 
@@ -499,7 +520,7 @@ private:
 
 	void receiveForClientStep_Step();
 
-	void publishDisplaySnapshot_Step();
+	void publishDisplaySnapshot_Step() { m_display->publishAfterBatch(); }
 
 	void applyUnregisterRequests_Step(typename SimNetLanes::Client& client);
 
@@ -531,9 +552,13 @@ private:
 
 	void onPostPhysicsStep();
 
-	bool publishesDisplayOnStep() const;
-
-	void refreshDisplayView_GameThread();
+	void refreshDisplayView_GameThread()
+	{
+		m_display->acquireForFrame([this](unsigned int id, DisplayVizState& vizState)
+		{
+			m_physicsBackend.overlayRenderPoses_GameThread(id, vizState);
+		});
+	}
 
 	void noteAuthorityStepTime_Step()
 	{
@@ -595,6 +620,7 @@ private:
 
 	UESessionClockEngine m_clockEngine;
 	std::optional<Clock> m_clock;
+	std::optional<Display> m_display;
 
 	SimNetLanes* m_simNetLanes = nullptr;
 	std::optional<SimNetServerHost> m_simNetServerHost;
@@ -610,12 +636,6 @@ private:
 
 	using AuthorityPresentationSlice = typename Game::AuthorityPresentationSlice;
 
-	struct AuthorityPresentationEntry;
-	struct AuthorityPresentation;
-
-	std::unique_ptr<TripleBuffer<AuthorityPresentation>> m_authorityPresentation =
-		std::make_unique<TripleBuffer<AuthorityPresentation>>();
-
 	FrameHealthProbe m_frameHealthProbe;
 
 	std::unordered_map<unsigned int, TWeakObjectPtr<typename TraitsT::Component>>
@@ -624,12 +644,6 @@ private:
 	std::unordered_set<unsigned int> m_simUnregisteredIds;
 
 	std::function<void(uint32_t, double)> m_onTimingInfoReceivedCallback;
-
-	std::unique_ptr<SimulationDisplayPublisher<DisplaySnapshot>> m_displayPublisher =
-		std::make_unique<SimulationDisplayPublisher<DisplaySnapshot>>();
-	std::unique_ptr<std::array<DisplayVizState, kMaxSimulatableSlots>> m_displayVizStates =
-		std::make_unique<std::array<DisplayVizState, kMaxSimulatableSlots>>();
-	const DisplaySnapshot* m_heldDisplaySnapshot = nullptr;
 
 	inline static constexpr size_t kInstanceSlots = 128u;
 	inline static std::atomic<UESimulationSession*> s_instances[kInstanceSlots] = {};
@@ -791,6 +805,16 @@ private:
 			"m_manager < m_replicatedTierConsumer row (og-ue-simulationcomponentandmanagersplit task 25: in the owner the "
 			"consumer was declared above the member that holds the manager, and only the owner's EndPlay reset kept it from "
 			"outliving that TimeConfig); moved onto the clock with the consumer by og-session-runtime task 24.");
+		static_assert(__builtin_offsetof(UESimulationSession, m_storage) < __builtin_offsetof(UESimulationSession, m_display)
+		           && __builtin_offsetof(UESimulationSession, m_reconciliation) < __builtin_offsetof(UESimulationSession, m_display)
+		           && __builtin_offsetof(UESimulationSession, m_inputResolution) < __builtin_offsetof(UESimulationSession, m_display)
+		           && __builtin_offsetof(UESimulationSession, m_manager) < __builtin_offsetof(UESimulationSession, m_display)
+		           && __builtin_offsetof(UESimulationSession, m_clock) < __builtin_offsetof(UESimulationSession, m_display),
+			"UESimulationSession members destruct in REVERSE declaration order. The display (og-sim-session's SessionDisplay) "
+			"keeps references to the storage, the reconciliation, the input resolution and the manager it fills from, and to "
+			"the clock's display-tier buffer, so it must be destroyed before all five. Keep m_storage, m_reconciliation, "
+			"m_inputResolution, m_manager and m_clock < m_display (og-session-runtime task 25: the display's members were the "
+			"session's own until then, built with it)");
 		static_assert(__builtin_offsetof(UESimulationSession, m_manager)
 		                  < __builtin_offsetof(UESimulationSession, m_simNetServer)
 		           && __builtin_offsetof(UESimulationSession, m_simNetServerHost)
@@ -1280,8 +1304,6 @@ void UESimulationSession<TraitsT>::stampCorrectionsHanded_Runner()
     });
 }
 
-#include "OGSimSession/SessionDisplay.h"
-
 template <typename TraitsT>
 std::optional<uint32> UESimulationSession<TraitsT>::physicsSlotFor(AActor& owner, [[maybe_unused]] uint64 key,
     unsigned int storageKey) const
@@ -1438,6 +1460,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 				*m_integrationLayer, m_netSync, m_inputResolution, m_reconciliation, *m_systemsExec,
 				m_storage, m_staticData, std::function<void(const char*)>(pctmloggerServer) });
 			m_clock.emplace(m_clockEngine, *m_manager, m_inputResolution, clockThreads);
+			m_display.emplace(clockThreads, *m_manager, m_storage, m_inputResolution, m_reconciliation, m_clock->displayTier());
 			m_reconciliation.setLogger(std::function<void(const char*)>(pctmloggerServer));
 			m_inputResolution.setLogger(std::function<void(const char*)>(pctmloggerServer));
 			m_netSync.setLogger(std::function<void(const char*)>(pctmloggerServer));
@@ -1467,6 +1490,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 				*m_integrationLayer, m_netSync, m_inputResolution, m_reconciliation, *m_systemsExec,
 				m_storage, m_staticData, std::function<void(const char*)>(pctmlogger) });
 			m_clock.emplace(m_clockEngine, *m_manager, m_inputResolution, clockThreads);
+			m_display.emplace(clockThreads, *m_manager, m_storage, m_inputResolution, m_reconciliation, m_clock->displayTier());
 			m_reconciliation.setLogger(std::function<void(const char*)>(pctmlogger));
 			m_inputResolution.setLogger(std::function<void(const char*)>(pctmlogger));
 			m_netSync.setLogger(std::function<void(const char*)>(pctmlogger));
@@ -1551,9 +1575,8 @@ void UESimulationSession<TraitsT>::endPlay()
 
 	m_clock->endTierConsumer();
 
-	if (m_heldDisplaySnapshot != nullptr)
-		m_displayPublisher->release_GameThread(m_heldDisplaySnapshot);
-	m_heldDisplaySnapshot = nullptr;
+	if (m_display.has_value())
+		m_display->releaseHeld();
 
 	unregisterInstance();
 
@@ -1589,12 +1612,6 @@ void UESimulationSession<TraitsT>::onPostPhysicsStep()
 	Game::afterVisualization(*this);
 
 	m_latencyBudgetDiagnostics.tick_GameThread();
-}
-
-template <typename TraitsT>
-bool UESimulationSession<TraitsT>::publishesDisplayOnStep() const
-{
-	return m_manager.has_value() && m_manager->runsPrediction();
 }
 
 OGSIM_OPTIMIZE_ON

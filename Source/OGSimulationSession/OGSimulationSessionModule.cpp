@@ -4,10 +4,12 @@
 #include "Modules/ModuleManager.h"
 
 #include "OGSimSession/SessionClock.h"
+#include "OGSimSession/SessionDisplay.h"
 #include "OGSimSession/SessionEngine.h"
 #include "OGSimSession/SessionGame.h"
 #include "OGSimSession/SessionKnobs.h"
 #include "OGSimSession/SessionThreads.h"
 #include "OGSimSession/SessionTypes.h"
+#include "OGSimSession/SimulationDisplaySnapshot.h"
 
 IMPLEMENT_MODULE(FDefaultModuleImpl, OGSimulationSession);
