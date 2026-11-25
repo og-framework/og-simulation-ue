@@ -20,6 +20,7 @@
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "OGSimulationUnreal/OGSimulationUnreal.h"
 #include "OGSimulationUnreal/UEAuthorityRunner.h"
+#include "OGSimulationUnreal/UEConfigSource.h"
 #include "OGSimulationUnreal/UELatencyBudgetDiagnostics.h"
 #include "OGSimulationUnreal/UESessionRefusal.h"
 #include "OGSimulationUnreal/UESimulationLogRoutes.h"
@@ -34,6 +35,7 @@
 #include "OGSimNet/SimNetIdle.h"
 #include "OGSimNet/SimNetRoster.h"
 #include "OGSimNet/SimNetServer.h"
+#include "OGSimSession/SessionKnobs.h"
 #include "OGSimulation/PhysicsEngineTraits.h"
 #include "OGSimulation/QueryGeometry.h"
 #include "OGSimulation/RelayedInputRingCodec.h"
@@ -95,6 +97,40 @@ static_assert(kSimNetHostLineBytes >= sizeof(kSimNetHostLineFormat) + sizeof("se
 	"kSimNetHostLineBytes must hold the [SimNet.Host] proof line with the longer role, the driver name and a 10-digit inbox "
 	"size");
 
+constexpr bool ueSessionKnobLineKeepsItsRoute(const char* line, ELogVerbosity::Type level)
+{
+	const OGLogRouteEntry* route = ogLogRouteForLevelLine(line);
+	return route != nullptr && route->route == OGLogRoute::Net && ogLogLevelOfLevelLine(line) == level;
+}
+
+static_assert(ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kRelayDelayFloorClamped, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kRelayDelayFloorSession, ELogVerbosity::Log)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kStateRotationClamped, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kStateRotationSession, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kResimGateUnrecognised, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kResimGateSession, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kLatencyKnobsRedundancyClamped, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kLatencyKnobsResendClamped, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kLatencyKnobsSession, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kRecentreClamped, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kRecentreSession, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kJitterNotFinite, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kJitterClamped, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kClockRttSourceUnrecognised, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kClockSourceSession, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kDilationNotApplicable, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kDilationUnrecognised, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kDilationSetpointUnrecognised, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kDilationSession, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kDilationDoors, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kDilationDoorNotFinite, ELogVerbosity::Warning)
+	&& ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kDilationDoorClamped, ELogVerbosity::Warning),
+	"Each session-knob line (ogsession::sessionKnobsLines) reaches LogOGNet at the level its UE_LOG had: Log for the "
+	"floor's ini line, Warning for every other. Was each line's UE_LOG(LogOGNet, <Level>, ...) in UESimulationSession "
+	"(og-session-runtime task 23)");
+static_assert(ogsession::SessionLogSink<UESessionLogSink>,
+	"UESessionLogSink is the session knobs' log sink: og-sim-session's SessionLogSink");
+
 namespace ueSimulationSessionHookNames
 {
 	struct Names
@@ -133,8 +169,6 @@ namespace ueSimulationSessionHookNames
 		&Probe<SessionT>::presentAuthoritySlice;
 	};
 }
-
-struct SessionKnobs;
 
 template <typename TraitsT>
 class UESimulationSession
@@ -457,21 +491,6 @@ private:
 
 	// ⛔G-05  docs/UESimulationSession-guards.md
 	int32 recomputeAndPublishEffectiveInputDelay();
-
-	static SessionKnobs readSessionKnobs(bool worldIsAuthority);
-
-	void applySessionKnobs(const SessionKnobs& knobs);
-
-	void applyResimTriggerPolicy(SessionKnobs& knobs);
-
-	void applyLatencyKnobs(const SessionKnobs& knobs);
-
-	void applyClockRttSource(const SessionKnobs& knobs, bool jitterFromIni);
-
-	void applyClockDilation(const SessionKnobs& knobs);
-
-	static bool applyClockDilationDoor(const TCHAR* key, bool hasIni, double requested, double (*clampToDoor)(double),
-		double& value);
 
 	void noteEngineRttForClockWindow(double roundTripSeconds);
 
@@ -1297,8 +1316,6 @@ int32 UESimulationSession<TraitsT>::recomputeAndPublishEffectiveInputDelay()
     return deltaDelayTicks;
 }
 
-#include "OGSimSession/SessionKnobs.h"
-
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::noteEngineRttForClockWindow(double roundTripSeconds)
 {
@@ -1658,7 +1675,8 @@ void UESimulationSession<TraitsT>::beginPlay()
 
 	m_latencyBudgetDiagnostics.begin(*uWorld, worldIsAuthority);
 
-	auto sessionKnobs = readSessionKnobs(worldIsAuthority);
+	ogsession::SessionKnobs sessionKnobs = ogsession::readSessionKnobs(UEConfigSource{}, worldIsAuthority);
+	UESessionLogSink knobLog;
 
 	auto configureSession = [&]()
 	{
@@ -1680,7 +1698,8 @@ void UESimulationSession<TraitsT>::beginPlay()
 
 			beginServerSimNet(*uWorld);
 
-			applySessionKnobs(sessionKnobs);
+			ogsession::applySessionKnobs(knobLog, *m_manager, m_simNetServer.has_value() ? &*m_simNetServer : nullptr,
+				sessionKnobs, [this](int32 floorTicks) { logRelayDelayFloorAdvisory(floorTicks); });
 
 			// ⛔G-06  docs/UESimulationSession-guards.md
 			beginTierConsumer();
@@ -1721,9 +1740,9 @@ void UESimulationSession<TraitsT>::beginPlay()
 		}
 
 		// ⛔G-24  docs/UESimulationSession-guards.md
-		applyResimTriggerPolicy(sessionKnobs);
+		ogsession::applyResimTriggerPolicy(knobLog, *m_manager, sessionKnobs);
 
-		applyLatencyKnobs(sessionKnobs);
+		ogsession::applyLatencyKnobs(knobLog, *m_manager, sessionKnobs, m_clockDilation, m_clockDilationWindow);
 
 		m_game.afterSessionConfigured(worldNetMode);
 

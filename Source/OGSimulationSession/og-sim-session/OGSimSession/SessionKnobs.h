@@ -1,12 +1,25 @@
 #pragma once
 // SPDX-License-Identifier: MPL-2.0
-// ../../../OGSimulationUnreal/docs/UESimulationSession-rationale.md · ../../../OGSimulationUnreal/docs/UESimulationSession-guards.md
+// docs/SessionKnobs-rationale.md · docs/SessionKnobs-guards.md
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <optional>
+#include <string>
+#include <string_view>
+
+#include "OGSimulation/OGAssert.h"
 #include "OGSimulation/Network/ConnectionTierTable.h"
 #include "OGSimulation/Network/CorrectionRotation.h"
 #include "OGSimulation/PCTimeManagement/ClockDilationController.h"
 #include "OGSimulation/PCTimeManagement/TimeConfig.h"
+#include "OGSimSession/SessionEngine.h"
 
+namespace ogsession
+{
 namespace clockDilationDoors
 {
 	inline constexpr double kMinGainPerTick       = 0.0;
@@ -56,501 +69,496 @@ static_assert(clockDilationDoors::kMinCommonLeadTicks >= 0.0,
 
 struct SessionKnobs
 {
-	int32   configuredRelayDelayFloorTicks;
-	int32   configuredCorrectionRotationK;
-	bool    hasIniResimTriggerPolicy;
-	FString configuredResimTriggerPolicy;
-	bool    hasIniRedundancyFrames;
-	int32   configuredRedundancyFrames;
-	bool    hasIniRelayResendEntries;
-	int32   configuredRelayResendEntries;
-	bool    hasIniRecentreSettleSamples;
-	int32   configuredRecentreSettleSamples;
-	bool    hasIniClockRttSource;
-	FString configuredClockRttSource;
-	bool    hasIniJitterMultiplier;
-	double  configuredJitterMultiplier;
-	bool    hasIniClockDilation;
-	FString configuredClockDilation;
-	bool    hasIniClockDilationGainPerTick;
-	double  configuredClockDilationGainPerTick;
-	bool    hasIniClockDilationMaxPercent;
-	double  configuredClockDilationMaxPercent;
-	bool    hasIniClockDilationTargetOffsetTicks;
-	double  configuredClockDilationTargetOffsetTicks;
-	bool    hasIniClockDilationSetpoint;
-	FString configuredClockDilationSetpoint;
-	bool    hasIniClockDilationCommonLeadTicks;
-	double  configuredClockDilationCommonLeadTicks;
+	int32_t     configuredRelayDelayFloorTicks;
+	int32_t     configuredCorrectionRotationK;
+	bool        hasIniResimTriggerPolicy;
+	std::string configuredResimTriggerPolicy;
+	bool        hasIniRedundancyFrames;
+	int32_t     configuredRedundancyFrames;
+	bool        hasIniRelayResendEntries;
+	int32_t     configuredRelayResendEntries;
+	bool        hasIniRecentreSettleSamples;
+	int32_t     configuredRecentreSettleSamples;
+	bool        hasIniClockRttSource;
+	std::string configuredClockRttSource;
+	bool        hasIniJitterMultiplier;
+	double      configuredJitterMultiplier;
+	bool        hasIniClockDilation;
+	std::string configuredClockDilation;
+	bool        hasIniClockDilationGainPerTick;
+	double      configuredClockDilationGainPerTick;
+	bool        hasIniClockDilationMaxPercent;
+	double      configuredClockDilationMaxPercent;
+	bool        hasIniClockDilationTargetOffsetTicks;
+	double      configuredClockDilationTargetOffsetTicks;
+	bool        hasIniClockDilationSetpoint;
+	std::string configuredClockDilationSetpoint;
+	bool        hasIniClockDilationCommonLeadTicks;
+	double      configuredClockDilationCommonLeadTicks;
 };
 
-template <typename TraitsT>
-auto UESimulationSession<TraitsT>::readSessionKnobs(bool worldIsAuthority) -> SessionKnobs
+namespace sessionKnobsLines
 {
-	int32 configuredRelayDelayFloorTicks = -1;
-	// ⛔G-14  docs/UESimulationSession-guards.md
-	if (worldIsAuthority && GConfig != nullptr)
+inline constexpr char kRelayDelayFloorClamped[] =
+	"[Warning][RelayDelayFloor] ini [OGNetcode] RelayDelayFloorTicks=%d out of range, clamped to %d ticks";
+inline constexpr char kRelayDelayFloorSession[] = "[RelayDelayFloor] session floor = %d ticks (ini override)";
+inline constexpr char kStateRotationClamped[] =
+	"[Warning][StateRotation] ini [OGNetcode] CorrectionRotationK=%d out of range, clamped to %d";
+inline constexpr char kStateRotationSession[] = "[Warning][StateRotation] session K = %d (%s)";
+inline constexpr char kResimGateUnrecognised[] =
+	"[Warning][ResimGate] ini [OGNetcode] ResimTriggerPolicy='%s' unrecognised "
+	"(expected FrontierExact or OnDisagreement) \xE2\x80\x94 keeping the compiled default";
+inline constexpr char kResimGateDepthSkip[] = "skip beyond %d ticks";
+inline constexpr char kResimGateSession[] =
+	"[Warning][ResimGate] session policy = %s (%s), depthPolicy = %s, rateLimit = none (structural: one resim in flight, "
+	"one pending)";
+inline constexpr char kLatencyKnobsRedundancyClamped[] =
+	"[Warning][LatencyKnobs] ini [OGNetcode] RedundancyFrames=%d out of range, clamped to %d";
+inline constexpr char kLatencyKnobsResendClamped[] =
+	"[Warning][LatencyKnobs] ini [OGNetcode] RelayResendEntries=%d out of range, clamped to %d";
+inline constexpr char kLatencyKnobsSession[] = "[Warning][LatencyKnobs] redundancyFrames=%d relayResendEntries=%d (%s)";
+inline constexpr char kRecentreClamped[] =
+	"[Warning][ClockRecentre.Config] ini [OGNetcode] RecentreSettleSamples=%d out of range, clamped to %d";
+inline constexpr char kRecentreSession[] = "[Warning][ClockRecentre.Config] recentreSettleSamples=%u (%s)";
+inline constexpr char kJitterNotFinite[] =
+	"[Warning][ClockSource.Config] ini [OGNetcode] JitterMultiplier is not a finite number, keeping the compiled defaults";
+inline constexpr char kJitterClamped[] =
+	"[Warning][ClockSource.Config] ini [OGNetcode] JitterMultiplier=%.3f out of range, clamped to %.3f";
+inline constexpr char kClockRttSourceUnrecognised[] =
+	"[Warning][ClockSource.Config] ini [OGNetcode] ClockRttSource='%s' unrecognised (expected Engine or SimClock), keeping "
+	"the compiled default";
+inline constexpr char kClockSourceSession[] =
+	"[Warning][ClockSource.Config] clockRttSource=%s (%s) jitterMultiplier engine=%.3f simClock=%.3f (%s)";
+inline constexpr char kDilationNotApplicable[] = "[Warning][Dilation.Config] mode=n/a";
+inline constexpr char kDilationUnrecognised[] =
+	"[Warning][Dilation.Config] ini [OGNetcode] ClockDilation='%s' unrecognised (expected Off, Shadow or On), running Off";
+inline constexpr char kDilationSetpointUnrecognised[] =
+	"[Warning][Dilation.Config] ini [OGNetcode] ClockDilationSetpoint='%s' unrecognised (expected OwnRtt or Common), "
+	"running %s";
+inline constexpr char kDilationSession[] =
+	"[Warning][Dilation.Config] mode=%s setpoint=%s gainPerTick=%.4f maxDeviation=%.4f (%s)";
+inline constexpr char kDilationDoors[] =
+	"[Warning][Dilation.Config] doors gainPerTick=%.4f (%s) maxPercent=%.3f (%s) targetOffsetTicks=%.3f (%s) setpoint=%s (%s) "
+	"commonLeadTicks=%.3f (%s)";
+inline constexpr char kDilationDoorNotFinite[] =
+	"[Warning][Dilation.Config] ini [OGNetcode] %s is not a finite number, keeping the compiled default";
+inline constexpr char kDilationDoorClamped[] =
+	"[Warning][Dilation.Config] ini [OGNetcode] %s=%.4f out of range, clamped to %.4f";
+
+template <typename... ArgsT>
+std::string formatLine(const char* pattern, ArgsT... args)
+{
+	if constexpr (sizeof...(ArgsT) == 0)
 	{
-		int32 iniFloorTicks = 0;
-		if (GConfig->GetInt(TEXT("OGNetcode"), TEXT("RelayDelayFloorTicks"), iniFloorTicks, GGameIni) ||
-			GConfig->GetInt(TEXT("OGNetcode"), TEXT("RelayDelayFloorTicks"), iniFloorTicks, GEngineIni))
-		{
-			configuredRelayDelayFloorTicks = iniFloorTicks;
-		}
+		return std::string(pattern);
+	}
+	else
+	{
+		const int length = std::snprintf(nullptr, 0, pattern, args...);
+		OG_CHECK(length >= 0, "sessionKnobsLines::formatLine: snprintf refused a session-knob line's format and arguments");
+		std::string line(static_cast<std::size_t>(length), '\0');
+		std::snprintf(line.data(), line.size() + 1u, pattern, args...);
+		return line;
+	}
+}
+
+template <SessionLogSink EngineT, typename... ArgsT>
+void logLine(EngineT& engine, const char* pattern, ArgsT... args)
+{
+	const std::string line = formatLine(pattern, args...);
+	engine.logRouted(line.c_str());
+}
+
+constexpr bool equalsIgnoringCase(std::string_view text, std::string_view word)
+{
+	if (text.size() != word.size())
+		return false;
+	for (std::size_t i = 0; i < text.size(); ++i)
+	{
+		const char a = (text[i] >= 'A' && text[i] <= 'Z') ? static_cast<char>(text[i] - 'A' + 'a') : text[i];
+		const char b = (word[i] >= 'A' && word[i] <= 'Z') ? static_cast<char>(word[i] - 'A' + 'a') : word[i];
+		if (a != b)
+			return false;
+	}
+	return true;
+}
+
+static_assert(equalsIgnoringCase("ONdisagreement", "OnDisagreement") && !equalsIgnoringCase("OnDisagreement ", "OnDisagreement")
+	&& !equalsIgnoringCase("0n", "On") && !equalsIgnoringCase("O\xC3\xB1", "On"),
+	"equalsIgnoringCase folds ASCII letters only, as FString::Equals(ESearchCase::IgnoreCase) does (FGenericPlatformStricmp: "
+	"two characters that are not both ASCII must be equal); was the UE session's FString::Equals");
+} // namespace sessionKnobsLines
+
+template <ConfigSource ConfigT>
+SessionKnobs readSessionKnobs(const ConfigT& config, bool worldIsAuthority)
+{
+	int32_t configuredRelayDelayFloorTicks = -1;
+	// ⛔G-01  docs/SessionKnobs-guards.md
+	if (worldIsAuthority)
+	{
+		if (const std::optional<int32_t> iniFloorTicks = config.readInt("RelayDelayFloorTicks"))
+			configuredRelayDelayFloorTicks = *iniFloorTicks;
 	}
 
-	// ⛔G-15  docs/UESimulationSession-guards.md
+	// ⛔G-02  docs/SessionKnobs-guards.md
 
-	int32 configuredCorrectionRotationK = -1;
-	if (worldIsAuthority && GConfig != nullptr)
+	int32_t configuredCorrectionRotationK = -1;
+	if (worldIsAuthority)
 	{
-		int32 iniK = 0;
-		if (GConfig->GetInt(TEXT("OGNetcode"), TEXT("CorrectionRotationK"), iniK, GGameIni) ||
-			GConfig->GetInt(TEXT("OGNetcode"), TEXT("CorrectionRotationK"), iniK, GEngineIni))
-		{
-			configuredCorrectionRotationK = iniK;
-		}
+		if (const std::optional<int32_t> iniK = config.readInt("CorrectionRotationK"))
+			configuredCorrectionRotationK = *iniK;
 	}
 
-	bool    hasIniResimTriggerPolicy = false;
-	FString configuredResimTriggerPolicy;
-	// ⛔G-16  docs/UESimulationSession-guards.md
-	if (GConfig != nullptr)
+	bool        hasIniResimTriggerPolicy = false;
+	std::string configuredResimTriggerPolicy;
+	// ⛔G-03  docs/SessionKnobs-guards.md
+	if (std::optional<std::string> iniPolicy = config.readString("ResimTriggerPolicy"))
 	{
-		FString iniPolicy;
-		if (GConfig->GetString(TEXT("OGNetcode"), TEXT("ResimTriggerPolicy"), iniPolicy, GGameIni) ||
-			GConfig->GetString(TEXT("OGNetcode"), TEXT("ResimTriggerPolicy"), iniPolicy, GEngineIni))
-		{
-			hasIniResimTriggerPolicy = true;
-			configuredResimTriggerPolicy = iniPolicy.TrimStartAndEnd();
-		}
+		hasIniResimTriggerPolicy = true;
+		configuredResimTriggerPolicy = std::move(*iniPolicy);
 	}
 
-	bool  hasIniRedundancyFrames = false;
-	int32 configuredRedundancyFrames = 0;
-	bool  hasIniRelayResendEntries = false;
-	int32 configuredRelayResendEntries = 0;
-	// ⛔G-27  docs/UESimulationSession-guards.md
-	if (GConfig != nullptr)
+	bool    hasIniRedundancyFrames = false;
+	int32_t configuredRedundancyFrames = 0;
+	bool    hasIniRelayResendEntries = false;
+	int32_t configuredRelayResendEntries = 0;
+	// ⛔G-04  docs/SessionKnobs-guards.md
+	if (const std::optional<int32_t> iniFrames = config.readInt("RedundancyFrames"))
 	{
-		int32 iniFrames = 0;
-		if (GConfig->GetInt(TEXT("OGNetcode"), TEXT("RedundancyFrames"), iniFrames, GGameIni) ||
-			GConfig->GetInt(TEXT("OGNetcode"), TEXT("RedundancyFrames"), iniFrames, GEngineIni))
-		{
-			hasIniRedundancyFrames = true;
-			configuredRedundancyFrames = iniFrames;
-		}
-		int32 iniEntries = 0;
-		if (GConfig->GetInt(TEXT("OGNetcode"), TEXT("RelayResendEntries"), iniEntries, GGameIni) ||
-			GConfig->GetInt(TEXT("OGNetcode"), TEXT("RelayResendEntries"), iniEntries, GEngineIni))
-		{
-			hasIniRelayResendEntries = true;
-			configuredRelayResendEntries = iniEntries;
-		}
+		hasIniRedundancyFrames = true;
+		configuredRedundancyFrames = *iniFrames;
+	}
+	if (const std::optional<int32_t> iniEntries = config.readInt("RelayResendEntries"))
+	{
+		hasIniRelayResendEntries = true;
+		configuredRelayResendEntries = *iniEntries;
 	}
 
-	bool  hasIniRecentreSettleSamples = false;
-	int32 configuredRecentreSettleSamples = 0;
-	if (GConfig != nullptr)
+	bool    hasIniRecentreSettleSamples = false;
+	int32_t configuredRecentreSettleSamples = 0;
+	if (const std::optional<int32_t> iniSamples = config.readInt("RecentreSettleSamples"))
 	{
-		int32 iniSamples = 0;
-		if (GConfig->GetInt(TEXT("OGNetcode"), TEXT("RecentreSettleSamples"), iniSamples, GGameIni) ||
-			GConfig->GetInt(TEXT("OGNetcode"), TEXT("RecentreSettleSamples"), iniSamples, GEngineIni))
-		{
-			hasIniRecentreSettleSamples = true;
-			configuredRecentreSettleSamples = iniSamples;
-		}
+		hasIniRecentreSettleSamples = true;
+		configuredRecentreSettleSamples = *iniSamples;
 	}
 
-	bool    hasIniClockRttSource = false;
-	FString configuredClockRttSource;
-	if (GConfig != nullptr)
+	bool        hasIniClockRttSource = false;
+	std::string configuredClockRttSource;
+	if (std::optional<std::string> iniSource = config.readString("ClockRttSource"))
 	{
-		FString iniSource;
-		if (GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockRttSource"), iniSource, GGameIni) ||
-			GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockRttSource"), iniSource, GEngineIni))
-		{
-			hasIniClockRttSource = true;
-			configuredClockRttSource = iniSource.TrimStartAndEnd();
-		}
+		hasIniClockRttSource = true;
+		configuredClockRttSource = std::move(*iniSource);
 	}
 
 	bool   hasIniJitterMultiplier = false;
 	double configuredJitterMultiplier = 0.0;
-	if (GConfig != nullptr)
+	if (const std::optional<double> iniMultiplier = config.readDouble("JitterMultiplier"))
 	{
-		double iniMultiplier = 0.0;
-		if (GConfig->GetDouble(TEXT("OGNetcode"), TEXT("JitterMultiplier"), iniMultiplier, GGameIni) ||
-			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("JitterMultiplier"), iniMultiplier, GEngineIni))
-		{
-			hasIniJitterMultiplier = true;
-			configuredJitterMultiplier = iniMultiplier;
-		}
+		hasIniJitterMultiplier = true;
+		configuredJitterMultiplier = *iniMultiplier;
 	}
 
-	bool    hasIniClockDilation = false;
-	FString configuredClockDilation;
-	if (GConfig != nullptr)
+	bool        hasIniClockDilation = false;
+	std::string configuredClockDilation;
+	if (std::optional<std::string> iniDilation = config.readString("ClockDilation"))
 	{
-		FString iniDilation;
-		if (GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockDilation"), iniDilation, GGameIni) ||
-			GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockDilation"), iniDilation, GEngineIni))
-		{
-			hasIniClockDilation = true;
-			configuredClockDilation = iniDilation.TrimStartAndEnd();
-		}
+		hasIniClockDilation = true;
+		configuredClockDilation = std::move(*iniDilation);
 	}
 
-	bool    hasIniClockDilationGainPerTick = false;
-	double  configuredClockDilationGainPerTick = 0.0;
-	bool    hasIniClockDilationMaxPercent = false;
-	double  configuredClockDilationMaxPercent = 0.0;
-	bool    hasIniClockDilationTargetOffsetTicks = false;
-	double  configuredClockDilationTargetOffsetTicks = 0.0;
-	bool    hasIniClockDilationSetpoint = false;
-	FString configuredClockDilationSetpoint;
-	bool    hasIniClockDilationCommonLeadTicks = false;
-	double  configuredClockDilationCommonLeadTicks = 0.0;
-	if (GConfig != nullptr)
-	{
-		hasIniClockDilationGainPerTick =
-			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationGainPerTick"), configuredClockDilationGainPerTick, GGameIni) ||
-			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationGainPerTick"), configuredClockDilationGainPerTick, GEngineIni);
-		hasIniClockDilationMaxPercent =
-			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationMaxPercent"), configuredClockDilationMaxPercent, GGameIni) ||
-			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationMaxPercent"), configuredClockDilationMaxPercent, GEngineIni);
-		hasIniClockDilationTargetOffsetTicks =
-			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationTargetOffsetTicks"), configuredClockDilationTargetOffsetTicks,
-				GGameIni) ||
-			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationTargetOffsetTicks"), configuredClockDilationTargetOffsetTicks,
-				GEngineIni);
-		hasIniClockDilationCommonLeadTicks =
-			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationCommonLeadTicks"), configuredClockDilationCommonLeadTicks,
-				GGameIni) ||
-			GConfig->GetDouble(TEXT("OGNetcode"), TEXT("ClockDilationCommonLeadTicks"), configuredClockDilationCommonLeadTicks,
-				GEngineIni);
-		FString iniSetpoint;
-		if (GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockDilationSetpoint"), iniSetpoint, GGameIni) ||
-			GConfig->GetString(TEXT("OGNetcode"), TEXT("ClockDilationSetpoint"), iniSetpoint, GEngineIni))
-		{
-			hasIniClockDilationSetpoint = true;
-			configuredClockDilationSetpoint = iniSetpoint.TrimStartAndEnd();
-		}
-	}
+	const std::optional<double> iniGainPerTick = config.readDouble("ClockDilationGainPerTick");
+	const std::optional<double> iniMaxPercent = config.readDouble("ClockDilationMaxPercent");
+	const std::optional<double> iniTargetOffsetTicks = config.readDouble("ClockDilationTargetOffsetTicks");
+	const std::optional<double> iniCommonLeadTicks = config.readDouble("ClockDilationCommonLeadTicks");
+	std::optional<std::string> iniSetpoint = config.readString("ClockDilationSetpoint");
 
 	return SessionKnobs{ configuredRelayDelayFloorTicks, configuredCorrectionRotationK,
-		hasIniResimTriggerPolicy, configuredResimTriggerPolicy,
+		hasIniResimTriggerPolicy, std::move(configuredResimTriggerPolicy),
 		hasIniRedundancyFrames, configuredRedundancyFrames,
 		hasIniRelayResendEntries, configuredRelayResendEntries,
 		hasIniRecentreSettleSamples, configuredRecentreSettleSamples,
-		hasIniClockRttSource, configuredClockRttSource,
+		hasIniClockRttSource, std::move(configuredClockRttSource),
 		hasIniJitterMultiplier, configuredJitterMultiplier,
-		hasIniClockDilation, configuredClockDilation,
-		hasIniClockDilationGainPerTick, configuredClockDilationGainPerTick,
-		hasIniClockDilationMaxPercent, configuredClockDilationMaxPercent,
-		hasIniClockDilationTargetOffsetTicks, configuredClockDilationTargetOffsetTicks,
-		hasIniClockDilationSetpoint, configuredClockDilationSetpoint,
-		hasIniClockDilationCommonLeadTicks, configuredClockDilationCommonLeadTicks };
+		hasIniClockDilation, std::move(configuredClockDilation),
+		iniGainPerTick.has_value(), iniGainPerTick.value_or(0.0),
+		iniMaxPercent.has_value(), iniMaxPercent.value_or(0.0),
+		iniTargetOffsetTicks.has_value(), iniTargetOffsetTicks.value_or(0.0),
+		iniSetpoint.has_value(), iniSetpoint.has_value() ? std::move(*iniSetpoint) : std::string(),
+		iniCommonLeadTicks.has_value(), iniCommonLeadTicks.value_or(0.0) };
 }
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::applySessionKnobs(const SessionKnobs& knobs)
+template <SessionLogSink EngineT, typename ManagerT, typename FloorServerT, typename FloorAdvisoryT>
+void applySessionKnobs(EngineT& engine, ManagerT& manager, FloorServerT* floorServer, const SessionKnobs& knobs,
+	FloorAdvisoryT&& logRelayDelayFloorAdvisory)
 {
 	if (knobs.configuredRelayDelayFloorTicks >= 0)
 	{
-		const int32 clampedFloor = clampRelayDelayFloorTicks(
-			knobs.configuredRelayDelayFloorTicks, m_manager->getTimeConfig());
+		const int32_t clampedFloor = clampRelayDelayFloorTicks(knobs.configuredRelayDelayFloorTicks, manager.getTimeConfig());
 		if (clampedFloor != knobs.configuredRelayDelayFloorTicks)
 		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[RelayDelayFloor] ini [OGNetcode] RelayDelayFloorTicks=%d out of range, clamped to %d ticks"),
-				knobs.configuredRelayDelayFloorTicks, clampedFloor);
+			sessionKnobsLines::logLine(engine, sessionKnobsLines::kRelayDelayFloorClamped, knobs.configuredRelayDelayFloorTicks,
+				clampedFloor);
 		}
-		m_manager->setRelayDelayFloorTicks(clampedFloor);
-		UE_LOG(LogOGNet, Log,
-			TEXT("[RelayDelayFloor] session floor = %d ticks (ini override)"), clampedFloor);
+		manager.setRelayDelayFloorTicks(clampedFloor);
+		sessionKnobsLines::logLine(engine, sessionKnobsLines::kRelayDelayFloorSession, clampedFloor);
 
 		logRelayDelayFloorAdvisory(clampedFloor);
 	}
 
 	if (knobs.configuredCorrectionRotationK != -1)
 	{
-		const int32 clampedK = correctionRotation::clampK(knobs.configuredCorrectionRotationK);
+		const int32_t clampedK = correctionRotation::clampK(knobs.configuredCorrectionRotationK);
 		if (clampedK != knobs.configuredCorrectionRotationK)
 		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[StateRotation] ini [OGNetcode] CorrectionRotationK=%d out of range, clamped to %d"),
-				knobs.configuredCorrectionRotationK, clampedK);
+			sessionKnobsLines::logLine(engine, sessionKnobsLines::kStateRotationClamped, knobs.configuredCorrectionRotationK,
+				clampedK);
 		}
-		m_manager->setCorrectionRotationK(clampedK);
+		manager.setCorrectionRotationK(clampedK);
 	}
 
-	const int32 sessionCorrectionRotationK = m_manager->getTimeConfig().correctionRotationK;
-	UE_LOG(LogOGNet, Warning,
-		TEXT("[StateRotation] session K = %d (%s)"),
-		sessionCorrectionRotationK,
-		knobs.configuredCorrectionRotationK != -1 ? TEXT("ini override") : TEXT("compiled default"));
+	const int32_t sessionCorrectionRotationK = manager.getTimeConfig().correctionRotationK;
+	sessionKnobsLines::logLine(engine, sessionKnobsLines::kStateRotationSession, sessionCorrectionRotationK,
+		knobs.configuredCorrectionRotationK != -1 ? "ini override" : "compiled default");
 
-	const int32 sessionRelayDelayFloorTicks = m_manager->getTimeConfig().relayDelayFloorTicks;
-	checkf(m_simNetServer.has_value(),
-		TEXT("UESimulationSession::applySessionKnobs: the og-sim-net server publishes the session floor, so beginPlay emplaces "
-			 "it before the knobs are applied. Was the timing relay's spawn-before-the-manager order (og-netcode-v2-input-relay "
-			 "T11) and its 'no timing relay at manager BeginPlay' warning"));
-	m_simNetServer->publishFloor(static_cast<uint8_t>(sessionRelayDelayFloorTicks));
+	const int32_t sessionRelayDelayFloorTicks = manager.getTimeConfig().relayDelayFloorTicks;
+	OG_CHECK(floorServer != nullptr,
+		"ogsession::applySessionKnobs: the og-sim-net server publishes the session floor, so the session emplaces it before "
+		"the knobs are applied. Was UESimulationSession::applySessionKnobs's checkf, and before it the timing relay's "
+		"spawn-before-the-manager order (og-netcode-v2-input-relay T11)");
+	floorServer->publishFloor(static_cast<uint8_t>(sessionRelayDelayFloorTicks));
 }
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::applyResimTriggerPolicy(SessionKnobs& knobs)
+template <SessionLogSink EngineT, typename ManagerT>
+void applyResimTriggerPolicy(EngineT& engine, ManagerT& manager, SessionKnobs& knobs)
 {
-	// ⛔G-17  docs/UESimulationSession-guards.md
+	// ⛔G-05  docs/SessionKnobs-guards.md
 	if (knobs.hasIniResimTriggerPolicy)
 	{
-		if (knobs.configuredResimTriggerPolicy.Equals(TEXT("OnDisagreement"), ESearchCase::IgnoreCase))
+		if (sessionKnobsLines::equalsIgnoringCase(knobs.configuredResimTriggerPolicy, "OnDisagreement"))
 		{
-			m_manager->setResimTriggerPolicy(TimeConfig::ResimTriggerPolicy::OnDisagreement);
+			manager.setResimTriggerPolicy(TimeConfig::ResimTriggerPolicy::OnDisagreement);
 		}
-		else if (knobs.configuredResimTriggerPolicy.Equals(TEXT("FrontierExact"), ESearchCase::IgnoreCase))
+		else if (sessionKnobsLines::equalsIgnoringCase(knobs.configuredResimTriggerPolicy, "FrontierExact"))
 		{
-			m_manager->setResimTriggerPolicy(TimeConfig::ResimTriggerPolicy::FrontierExact);
+			manager.setResimTriggerPolicy(TimeConfig::ResimTriggerPolicy::FrontierExact);
 		}
 		else
 		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[ResimGate] ini [OGNetcode] ResimTriggerPolicy='%s' unrecognised ")
-				TEXT("(expected FrontierExact or OnDisagreement) — keeping the compiled default"),
-				*knobs.configuredResimTriggerPolicy);
+			sessionKnobsLines::logLine(engine, sessionKnobsLines::kResimGateUnrecognised,
+				knobs.configuredResimTriggerPolicy.c_str());
 			knobs.hasIniResimTriggerPolicy = false;
 		}
 	}
 
-	const TimeConfig& sessionTimeConfig = m_manager->getTimeConfig();
+	const TimeConfig& sessionTimeConfig = manager.getTimeConfig();
 	const bool policyIsOnDisagreement =
 		sessionTimeConfig.resimTriggerPolicy == TimeConfig::ResimTriggerPolicy::OnDisagreement;
-	const FString depthPolicyText = policyIsOnDisagreement
-		? FString::Printf(TEXT("skip beyond %d ticks"), sessionTimeConfig.rollbackWindowTicks)
-		: FString(TEXT("off (inert under FrontierExact)"));
-	UE_LOG(LogOGNet, Warning,
-		TEXT("[ResimGate] session policy = %s (%s), depthPolicy = %s, rateLimit = none (structural: one resim in flight, one pending)"),
-		policyIsOnDisagreement ? TEXT("OnDisagreement") : TEXT("FrontierExact"),
-		knobs.hasIniResimTriggerPolicy ? TEXT("ini override") : TEXT("compiled default"),
-		*depthPolicyText);
+	const std::string depthPolicyText = policyIsOnDisagreement
+		? sessionKnobsLines::formatLine(sessionKnobsLines::kResimGateDepthSkip, sessionTimeConfig.rollbackWindowTicks)
+		: std::string("off (inert under FrontierExact)");
+	sessionKnobsLines::logLine(engine, sessionKnobsLines::kResimGateSession,
+		policyIsOnDisagreement ? "OnDisagreement" : "FrontierExact",
+		knobs.hasIniResimTriggerPolicy ? "ini override" : "compiled default",
+		depthPolicyText.c_str());
 }
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::applyLatencyKnobs(const SessionKnobs& knobs)
+template <SessionLogSink EngineT>
+bool applyClockDilationDoor(EngineT& engine, const char* key, bool hasIni, double requested,
+	double (*clampToDoor)(double), double& value)
 {
-	if (knobs.hasIniRedundancyFrames)
+	if (!hasIni)
+		return false;
+	if (!std::isfinite(requested))
 	{
-		const int32 clampedFrames = latencyKnobs::clampRedundancyFrames(knobs.configuredRedundancyFrames);
-		if (clampedFrames != knobs.configuredRedundancyFrames)
-		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[LatencyKnobs] ini [OGNetcode] RedundancyFrames=%d out of range, clamped to %d"),
-				knobs.configuredRedundancyFrames, clampedFrames);
-		}
-		m_manager->setRedundancyFrames(clampedFrames);
+		sessionKnobsLines::logLine(engine, sessionKnobsLines::kDilationDoorNotFinite, key);
+		return false;
 	}
-
-	if (knobs.hasIniRelayResendEntries)
-	{
-		const int32 clampedEntries = latencyKnobs::clampRelayResendEntries(knobs.configuredRelayResendEntries);
-		if (clampedEntries != knobs.configuredRelayResendEntries)
-		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[LatencyKnobs] ini [OGNetcode] RelayResendEntries=%d out of range, clamped to %d"),
-				knobs.configuredRelayResendEntries, clampedEntries);
-		}
-		m_manager->setRelayResendEntries(clampedEntries);
-	}
-
-	const TimeConfig& sessionTimeConfig = m_manager->getTimeConfig();
-	UE_LOG(LogOGNet, Warning,
-		TEXT("[LatencyKnobs] redundancyFrames=%d relayResendEntries=%d (%s)"),
-		sessionTimeConfig.redundancyFrames,
-		sessionTimeConfig.relayResendEntries,
-		(knobs.hasIniRedundancyFrames || knobs.hasIniRelayResendEntries) ? TEXT("ini") : TEXT("compiled"));
-
-	if (knobs.hasIniRecentreSettleSamples)
-	{
-		const int32 clampedSamples = FMath::Max(knobs.configuredRecentreSettleSamples, 0);
-		if (clampedSamples != knobs.configuredRecentreSettleSamples)
-		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[ClockRecentre.Config] ini [OGNetcode] RecentreSettleSamples=%d out of range, clamped to %d"),
-				knobs.configuredRecentreSettleSamples, clampedSamples);
-		}
-		m_manager->setRecentreSettleSamples(static_cast<uint32_t>(clampedSamples));
-	}
-	UE_LOG(LogOGNet, Warning,
-		TEXT("[ClockRecentre.Config] recentreSettleSamples=%u (%s)"),
-		m_manager->getTimeConfig().recentreSettleSamples,
-		knobs.hasIniRecentreSettleSamples ? TEXT("ini") : TEXT("compiled"));
-
-	bool jitterFromIni = false;
-	if (knobs.hasIniJitterMultiplier)
-	{
-		if (!FMath::IsFinite(knobs.configuredJitterMultiplier))
-		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[ClockSource.Config] ini [OGNetcode] JitterMultiplier is not a finite number, keeping the compiled defaults"));
-		}
-		else
-		{
-			const double clampedMultiplier = clockJitter::clampJitterMultiplier(knobs.configuredJitterMultiplier);
-			if (clampedMultiplier != knobs.configuredJitterMultiplier)
-			{
-				UE_LOG(LogOGNet, Warning,
-					TEXT("[ClockSource.Config] ini [OGNetcode] JitterMultiplier=%.3f out of range, clamped to %.3f"),
-					knobs.configuredJitterMultiplier, clampedMultiplier);
-			}
-			m_manager->setJitterMultiplier(clampedMultiplier);
-			jitterFromIni = true;
-		}
-	}
-
-	applyClockRttSource(knobs, jitterFromIni);
-
-	applyClockDilation(knobs);
+	const double clamped = clampToDoor(requested);
+	if (clamped != requested)
+		sessionKnobsLines::logLine(engine, sessionKnobsLines::kDilationDoorClamped, key, requested, clamped);
+	value = clamped;
+	return true;
 }
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::applyClockRttSource(const SessionKnobs& knobs, bool jitterFromIni)
+template <SessionLogSink EngineT, typename ManagerT>
+void applyClockRttSource(EngineT& engine, ManagerT& manager, const SessionKnobs& knobs, bool jitterFromIni)
 {
 	bool fromIni = false;
 	if (knobs.hasIniClockRttSource)
 	{
-		if (knobs.configuredClockRttSource.Equals(TEXT("Engine"), ESearchCase::IgnoreCase))
+		if (sessionKnobsLines::equalsIgnoringCase(knobs.configuredClockRttSource, "Engine"))
 		{
-			m_manager->setClockRttSource(TimeConfig::ClockRttSource::Engine);
+			manager.setClockRttSource(TimeConfig::ClockRttSource::Engine);
 			fromIni = true;
 		}
-		else if (knobs.configuredClockRttSource.Equals(TEXT("SimClock"), ESearchCase::IgnoreCase))
+		else if (sessionKnobsLines::equalsIgnoringCase(knobs.configuredClockRttSource, "SimClock"))
 		{
-			m_manager->setClockRttSource(TimeConfig::ClockRttSource::SimClock);
+			manager.setClockRttSource(TimeConfig::ClockRttSource::SimClock);
 			fromIni = true;
 		}
 		else
 		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[ClockSource.Config] ini [OGNetcode] ClockRttSource='%s' unrecognised (expected Engine or SimClock), keeping ")
-				TEXT("the compiled default"),
-				*knobs.configuredClockRttSource);
+			sessionKnobsLines::logLine(engine, sessionKnobsLines::kClockRttSourceUnrecognised,
+				knobs.configuredClockRttSource.c_str());
 		}
 	}
-	UE_LOG(LogOGNet, Warning,
-		TEXT("[ClockSource.Config] clockRttSource=%s (%s) jitterMultiplier engine=%.3f simClock=%.3f (%s)"),
-		m_manager->getTimeConfig().clockRttSource == TimeConfig::ClockRttSource::SimClock ? TEXT("SimClock") : TEXT("Engine"),
-		fromIni ? TEXT("ini") : TEXT("compiled"),
-		m_manager->getTimeConfig().jitterMultiplier,
-		m_manager->getTimeConfig().simClockJitterMultiplier,
-		jitterFromIni ? TEXT("ini") : TEXT("compiled"));
+	sessionKnobsLines::logLine(engine, sessionKnobsLines::kClockSourceSession,
+		manager.getTimeConfig().clockRttSource == TimeConfig::ClockRttSource::SimClock ? "SimClock" : "Engine",
+		fromIni ? "ini" : "compiled",
+		manager.getTimeConfig().jitterMultiplier,
+		manager.getTimeConfig().simClockJitterMultiplier,
+		jitterFromIni ? "ini" : "compiled");
 }
 
-template <typename TraitsT>
-void UESimulationSession<TraitsT>::applyClockDilation(const SessionKnobs& knobs)
+template <SessionLogSink EngineT, typename ManagerT>
+void applyClockDilation(EngineT& engine, ManagerT& manager, const SessionKnobs& knobs,
+	std::optional<ClockDilationController>& clockDilation, std::optional<ClockDilationWindow>& clockDilationWindow)
 {
-	if (!m_manager->runsPrediction())
+	if (!manager.runsPrediction())
 	{
-		UE_LOG(LogOGNet, Warning, TEXT("[Dilation.Config] mode=n/a"));
+		sessionKnobsLines::logLine(engine, sessionKnobsLines::kDilationNotApplicable);
 		return;
 	}
 	ClockDilationConfig config;
 	bool fromIni = false;
 	if (knobs.hasIniClockDilation)
 	{
-		if (knobs.configuredClockDilation.Equals(TEXT("Off"), ESearchCase::IgnoreCase))
+		if (sessionKnobsLines::equalsIgnoringCase(knobs.configuredClockDilation, "Off"))
 		{
 			config.mode = ClockDilationMode::Off;
 			fromIni = true;
 		}
-		else if (knobs.configuredClockDilation.Equals(TEXT("Shadow"), ESearchCase::IgnoreCase))
+		else if (sessionKnobsLines::equalsIgnoringCase(knobs.configuredClockDilation, "Shadow"))
 		{
 			config.mode = ClockDilationMode::Shadow;
 			fromIni = true;
 		}
-		else if (knobs.configuredClockDilation.Equals(TEXT("On"), ESearchCase::IgnoreCase))
+		else if (sessionKnobsLines::equalsIgnoringCase(knobs.configuredClockDilation, "On"))
 		{
 			config.mode = ClockDilationMode::On;
 			fromIni = true;
 		}
 		else
 		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[Dilation.Config] ini [OGNetcode] ClockDilation='%s' unrecognised (expected Off, Shadow or On), running Off"),
-				*knobs.configuredClockDilation);
+			sessionKnobsLines::logLine(engine, sessionKnobsLines::kDilationUnrecognised, knobs.configuredClockDilation.c_str());
 		}
 	}
 
-	const bool gainFromIni = applyClockDilationDoor(TEXT("ClockDilationGainPerTick"), knobs.hasIniClockDilationGainPerTick,
+	const bool gainFromIni = applyClockDilationDoor(engine, "ClockDilationGainPerTick", knobs.hasIniClockDilationGainPerTick,
 		knobs.configuredClockDilationGainPerTick, &clockDilationDoors::clampGainPerTick, config.gainPerTick);
 	double maxPercent = config.maxDeviation * 100.0;
-	const bool maxFromIni = applyClockDilationDoor(TEXT("ClockDilationMaxPercent"), knobs.hasIniClockDilationMaxPercent,
+	const bool maxFromIni = applyClockDilationDoor(engine, "ClockDilationMaxPercent", knobs.hasIniClockDilationMaxPercent,
 		knobs.configuredClockDilationMaxPercent, &clockDilationDoors::clampMaxPercent, maxPercent);
 	if (maxFromIni)
 		config.maxDeviation = maxPercent / 100.0;
-	const bool offsetFromIni = applyClockDilationDoor(TEXT("ClockDilationTargetOffsetTicks"),
+	const bool offsetFromIni = applyClockDilationDoor(engine, "ClockDilationTargetOffsetTicks",
 		knobs.hasIniClockDilationTargetOffsetTicks, knobs.configuredClockDilationTargetOffsetTicks,
 		&clockDilationDoors::clampTargetOffsetTicks, config.targetOffsetTicks);
-	const bool commonLeadFromIni = applyClockDilationDoor(TEXT("ClockDilationCommonLeadTicks"),
+	const bool commonLeadFromIni = applyClockDilationDoor(engine, "ClockDilationCommonLeadTicks",
 		knobs.hasIniClockDilationCommonLeadTicks, knobs.configuredClockDilationCommonLeadTicks,
 		&clockDilationDoors::clampCommonLeadTicks, config.commonLeadTicks);
 	bool setpointFromIni = false;
 	if (knobs.hasIniClockDilationSetpoint)
 	{
-		if (knobs.configuredClockDilationSetpoint.Equals(TEXT("OwnRtt"), ESearchCase::IgnoreCase))
+		if (sessionKnobsLines::equalsIgnoringCase(knobs.configuredClockDilationSetpoint, "OwnRtt"))
 		{
 			config.setpoint = ClockDilationSetpoint::OwnRtt;
 			setpointFromIni = true;
 		}
-		else if (knobs.configuredClockDilationSetpoint.Equals(TEXT("Common"), ESearchCase::IgnoreCase))
+		else if (sessionKnobsLines::equalsIgnoringCase(knobs.configuredClockDilationSetpoint, "Common"))
 		{
 			config.setpoint = ClockDilationSetpoint::Common;
 			setpointFromIni = true;
 		}
 		else
 		{
-			UE_LOG(LogOGNet, Warning,
-				TEXT("[Dilation.Config] ini [OGNetcode] ClockDilationSetpoint='%s' unrecognised (expected OwnRtt or Common), ")
-				TEXT("running %hs"),
-				*knobs.configuredClockDilationSetpoint, clockDilation::setpointWord(config.setpoint));
+			sessionKnobsLines::logLine(engine, sessionKnobsLines::kDilationSetpointUnrecognised,
+				knobs.configuredClockDilationSetpoint.c_str(), clockDilation::setpointWord(config.setpoint));
 		}
 	}
 
-	m_clockDilation.emplace(config);
-	m_clockDilationWindow.emplace(config);
-	const ClockDilationConfig& stored = m_clockDilation->config();
-	UE_LOG(LogOGNet, Warning,
-		TEXT("[Dilation.Config] mode=%hs setpoint=%hs gainPerTick=%.4f maxDeviation=%.4f (%s)"),
+	clockDilation.emplace(config);
+	clockDilationWindow.emplace(config);
+	const ClockDilationConfig& stored = clockDilation->config();
+	sessionKnobsLines::logLine(engine, sessionKnobsLines::kDilationSession,
 		clockDilation::modeWord(stored.mode), clockDilation::setpointWord(stored.setpoint), stored.gainPerTick,
-		stored.maxDeviation, fromIni ? TEXT("ini") : TEXT("compiled"));
-	UE_LOG(LogOGNet, Warning,
-		TEXT("[Dilation.Config] doors gainPerTick=%.4f (%s) maxPercent=%.3f (%s) targetOffsetTicks=%.3f (%s) setpoint=%hs (%s) ")
-		TEXT("commonLeadTicks=%.3f (%s)"),
-		stored.gainPerTick, gainFromIni ? TEXT("ini") : TEXT("compiled"),
-		stored.maxDeviation * 100.0, maxFromIni ? TEXT("ini") : TEXT("compiled"),
-		stored.targetOffsetTicks, offsetFromIni ? TEXT("ini") : TEXT("compiled"),
-		clockDilation::setpointWord(stored.setpoint), setpointFromIni ? TEXT("ini") : TEXT("compiled"),
-		stored.commonLeadTicks, commonLeadFromIni ? TEXT("ini") : TEXT("compiled"));
+		stored.maxDeviation, fromIni ? "ini" : "compiled");
+	sessionKnobsLines::logLine(engine, sessionKnobsLines::kDilationDoors,
+		stored.gainPerTick, gainFromIni ? "ini" : "compiled",
+		stored.maxDeviation * 100.0, maxFromIni ? "ini" : "compiled",
+		stored.targetOffsetTicks, offsetFromIni ? "ini" : "compiled",
+		clockDilation::setpointWord(stored.setpoint), setpointFromIni ? "ini" : "compiled",
+		stored.commonLeadTicks, commonLeadFromIni ? "ini" : "compiled");
 }
 
-template <typename TraitsT>
-bool UESimulationSession<TraitsT>::applyClockDilationDoor(const TCHAR* key, bool hasIni, double requested,
-	double (*clampToDoor)(double), double& value)
+template <SessionLogSink EngineT, typename ManagerT>
+void applyLatencyKnobs(EngineT& engine, ManagerT& manager, const SessionKnobs& knobs,
+	std::optional<ClockDilationController>& clockDilation, std::optional<ClockDilationWindow>& clockDilationWindow)
 {
-	if (!hasIni)
-		return false;
-	if (!FMath::IsFinite(requested))
+	if (knobs.hasIniRedundancyFrames)
 	{
-		UE_LOG(LogOGNet, Warning,
-			TEXT("[Dilation.Config] ini [OGNetcode] %s is not a finite number, keeping the compiled default"), key);
-		return false;
+		const int32_t clampedFrames = latencyKnobs::clampRedundancyFrames(knobs.configuredRedundancyFrames);
+		if (clampedFrames != knobs.configuredRedundancyFrames)
+		{
+			sessionKnobsLines::logLine(engine, sessionKnobsLines::kLatencyKnobsRedundancyClamped,
+				knobs.configuredRedundancyFrames, clampedFrames);
+		}
+		manager.setRedundancyFrames(clampedFrames);
 	}
-	const double clamped = clampToDoor(requested);
-	if (clamped != requested)
+
+	if (knobs.hasIniRelayResendEntries)
 	{
-		UE_LOG(LogOGNet, Warning,
-			TEXT("[Dilation.Config] ini [OGNetcode] %s=%.4f out of range, clamped to %.4f"), key, requested, clamped);
+		const int32_t clampedEntries = latencyKnobs::clampRelayResendEntries(knobs.configuredRelayResendEntries);
+		if (clampedEntries != knobs.configuredRelayResendEntries)
+		{
+			sessionKnobsLines::logLine(engine, sessionKnobsLines::kLatencyKnobsResendClamped,
+				knobs.configuredRelayResendEntries, clampedEntries);
+		}
+		manager.setRelayResendEntries(clampedEntries);
 	}
-	value = clamped;
-	return true;
+
+	const TimeConfig& sessionTimeConfig = manager.getTimeConfig();
+	sessionKnobsLines::logLine(engine, sessionKnobsLines::kLatencyKnobsSession,
+		sessionTimeConfig.redundancyFrames,
+		sessionTimeConfig.relayResendEntries,
+		(knobs.hasIniRedundancyFrames || knobs.hasIniRelayResendEntries) ? "ini" : "compiled");
+
+	if (knobs.hasIniRecentreSettleSamples)
+	{
+		const int32_t clampedSamples = std::max(knobs.configuredRecentreSettleSamples, int32_t{ 0 });
+		if (clampedSamples != knobs.configuredRecentreSettleSamples)
+		{
+			sessionKnobsLines::logLine(engine, sessionKnobsLines::kRecentreClamped, knobs.configuredRecentreSettleSamples,
+				clampedSamples);
+		}
+		manager.setRecentreSettleSamples(static_cast<uint32_t>(clampedSamples));
+	}
+	sessionKnobsLines::logLine(engine, sessionKnobsLines::kRecentreSession,
+		manager.getTimeConfig().recentreSettleSamples,
+		knobs.hasIniRecentreSettleSamples ? "ini" : "compiled");
+
+	bool jitterFromIni = false;
+	if (knobs.hasIniJitterMultiplier)
+	{
+		if (!std::isfinite(knobs.configuredJitterMultiplier))
+		{
+			sessionKnobsLines::logLine(engine, sessionKnobsLines::kJitterNotFinite);
+		}
+		else
+		{
+			const double clampedMultiplier = clockJitter::clampJitterMultiplier(knobs.configuredJitterMultiplier);
+			if (clampedMultiplier != knobs.configuredJitterMultiplier)
+			{
+				sessionKnobsLines::logLine(engine, sessionKnobsLines::kJitterClamped, knobs.configuredJitterMultiplier,
+					clampedMultiplier);
+			}
+			manager.setJitterMultiplier(clampedMultiplier);
+			jitterFromIni = true;
+		}
+	}
+
+	applyClockRttSource(engine, manager, knobs, jitterFromIni);
+
+	applyClockDilation(engine, manager, knobs, clockDilation, clockDilationWindow);
 }
+} // namespace ogsession

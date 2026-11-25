@@ -37,7 +37,6 @@
 <!-- lint-external-ref: onClientStepStarted_Step -- SPLIT by og-input-latency task P5-30 into receiveForClientStep_Step and afterClientCapture_Step; kept in §18.2's record of the old order -->
 <!-- lint-external-ref: onFrameStepsDue_GameThread -- RENAMED by og-input-latency task P5-33 to onFrameStepsDue_Step; kept in §7's provenance and in §9.9's record of the rename -->
 <!-- lint-external-ref: TickFlush -- Unreal Engine method, outside every scan root (§9.9) -->
-<!-- lint-external-ref: ResimCooldownTicks -- ABSENCE FENCE (§9.8, G-16): the ini key that was built and removed on a ruling. It must NOT resolve -->
 # `UESimulationSession` — rationale
 
 Companion to `Plugins/OGSimulation/Source/OGSimulationUnreal/UESimulationSession.h` and, since task 27a, its one `.cpp`,
@@ -884,180 +883,34 @@ is the effective input delay the authority held for that wire at receipt, so a p
 task 15 the stager published a whole frame's staged entries once, at the frame's flush, as the input relay's `PreReplication`
 did, so two arrivals in one server frame both reached the wire.
 
-### 9.8 The session knobs (task 26b)
+### 9.8 The session knobs (task 26b; og-sim-session's since og-session-runtime task 23)
 
-Three ini keys are read once, at composition, in the owner's start-up (the owner's `BeginPlay` until task 27b). Task 26b
-moved their statements here as three functions, which the owner calls at the positions of the statements they hold.
-og-input-latency task 4 added two more keys, read by the same intake, and a fourth function that applies them:
+The session's fourteen `[OGNetcode]` keys are read and applied by og-sim-session's `SessionKnobs.h`: its rationale
+(`SessionKnobs-rationale.md`) has the keys, the four steps every knob takes, each knob's role rule, clamp and lines, and its
+guards (`SessionKnobs-guards.md`) the intake's prohibitions. Task 26b moved the intake here from the brawler's owner as three
+members, og-input-latency tasks 4, 27, P3-10 and P3-13 and og-time-dilation tasks 8, 11 and 14 added keys and a fourth member,
+and og-session-runtime task 23 moved the members to og-sim-session, verbatim first and then adapted (`SessionKnobs-rationale.md`
+§1). The guards that marked them here (G-14, G-15, G-16, G-17, G-27) retired with the move, each with its successor there.
 
-| function | what it holds | where the owner calls it |
+What stays in this class is the binding, in `beginPlay`, at the positions the members had:
+
+| call | where | what the session passes |
 |---|---|---|
-| `readSessionKnobs(worldIsAuthority)` | the intakes (`⛔G-14`, `⛔G-15`, `⛔G-16`, and since og-input-latency task 4 `⛔G-27`); it reaches no session state and returns the requests in a `SessionKnobs` value | after the latency member's begin, before the backend builds its world: both roles |
-| `applySessionKnobs(knobs)` | the floor's clamp, set, ini line and advisory; the rotation width's clamp and set; the rotation width's proof line; the floor's publish through og-sim-net's server (`publishFloor`, since og-input-latency task P5-7; onto the timing relay before) | in the authority branch, after the neutral input and the og-sim-net server's start, before the tier consumer's start |
-| `applyResimTriggerPolicy(knobs)` | the policy's parse, apply and proof line (`⛔G-17`) | after both role branches |
-| `applyLatencyKnobs(knobs)` (og-input-latency task 4) | the two latency knobs' clamp and set, and their one proof line; since og-input-latency task 27 also the re-centre window's clamp, set and proof line; since og-input-latency tasks P3-10 and P3-13 the clock's RTT source and jitter multiplier (§20); since og-time-dilation task 8, last, `applyClockDilation` (§22), which since og-time-dilation task 11 also applies the dev doors (§22.8; four, five since task 14) | after both role branches, directly after `applyResimTriggerPolicy` |
+| `ogsession::readSessionKnobs(UEConfigSource{}, worldIsAuthority)` | after the latency member's begin, before the backend builds its world: both roles | the `[OGNetcode]` section through `UEConfigSource`: the game ini, then the engine ini, strings trimmed (`UEConfigSource-rationale.md`) |
+| `ogsession::applySessionKnobs(knobLog, *m_manager, server, sessionKnobs, advisory)` | in the authority branch, after the neutral input and the og-sim-net server's start, before the tier consumer's start | the manager; og-sim-net's server as a pointer (`nullptr` when there is none, which the function's `OG_CHECK` refuses, as the member's `checkf` did); a lambda that calls `logRelayDelayFloorAdvisory` (§9.4) |
+| `ogsession::applyResimTriggerPolicy(knobLog, *m_manager, sessionKnobs)` (`⛔G-24`) | after both role branches | the manager |
+| `ogsession::applyLatencyKnobs(knobLog, *m_manager, sessionKnobs, m_clockDilation, m_clockDilationWindow)` | directly after it | the manager, and the client's dilation controller and window (§22.2) |
 
-The statements moved unchanged: the intake's locals are returned in a `SessionKnobs` value, and the two apply functions
-read the same four fields from it (as task 26b left it; `applyLatencyKnobs` reads only the four fields og-input-latency
-task 4 added, and the two og-input-latency task 27 added); the owner's `m_session.` prefix fell away. No log text, field,
-level or category changed. The `[StateRotation] session` and `[ResimGate] session` lines are the start-up's identity lines,
-and task 26b's harness sessions hold them, and the floor's lines, byte-identical.
+`knobLog` is a `UESessionLogSink` (`UESimulationLogRoutes.h`). A knob line carries its level as a `[Warning]` token, or none for
+the floor's `Log` line; the sink takes the level from the token, the category from the line's tag (each of the seven tags,
+`[RelayDelayFloor]`, `[StateRotation]`, `[ResimGate]`, `[LatencyKnobs]`, `[ClockRecentre.Config]`, `[ClockSource.Config]` and
+`[Dilation.Config]`, has a `LogOGNet` row in the route table since task 23), and prints the line without the token. So each line
+reads byte for byte, category and level included, as the member's `UE_LOG` did: a `static_assert` beside this header's includes
+checks each of the 22 formats' category and level against the old `UE_LOG`, and the parity tests are `SessionKnobs-rationale.md`
+§8.
 
-**Every knob takes the same four steps:**
-
-| step | what | why it is not optional |
-|---|---|---|
-| 1 INTAKE | read the ini once, before the manager exists where possible | a value that arrives after the first publish has to be absorbed as a *change* |
-| 2 CLAMP / VALIDATE | out of range is **reported**, never silently corrected | a floor that big is a sizing mistake the operator needs to see |
-| 3 SET | stamp the effective value into the one shared `TimeConfig` | every derivation site must read one number |
-| 4 PROVE | an **unconditional** `Warning` line naming the value actually stored | see below |
-
-**Step 4 is at `Warning`, not `Log`**, because a game runs `LogOGNet` at `Warning` (the brawler project's
-`Config/DefaultEngine.ini` sets it there and calls `Warning` the default), and a `Log` line does not exist at `Warning`. ⚠
-**Not every knob meets step 4:** the relay-delay floor's ini line is at `Log` and inside the key-present branch. Both ini
-homes are accepted for every key, the game ini first, then the engine ini (`GGameIni`, then `GEngineIni`): the former is the
-conventional place for a gameplay-tuning value, the latter is where the brawler keeps its other netcode settings. **And
-it is unconditional**, because a line that is absent both when the key was read and when it was not cannot distinguish
-those two cases, which is the whole question a proof line exists to answer. The rotation width's and the policy's proof
-lines report values **read back from `TimeConfig`**, never the parsed request, so they cannot claim a setting the manager
-did not store.
-
-*R0, task 26b:* the moved text said these are "the only `GConfig` uses in this codebase"; the brawler's game module reads
-`GConfig` in two other places (its join screen's recent address and its movement-scheme cvar), so they are the only ones in
-the session's start-up. It said the reason for `Warning` was an ini setting that was false at the brawler's `b9f6d81`
-(`Verbose` then, the brawler's §11 C17); the brawler's ini sets `Warning` again today. And it said every proof line
-reports values read back from `TimeConfig`: the floor's ini line prints the clamped request (`clampedFloor`) it is about to
-store. The setter's clamp is idempotent, so the stored value is the same number, but that line is not a read-back.
-
-**None of these may become a cvar** (`⛔G-16`). The rotation width, because a run's probe output is read *against* the
-cadence and a value that moves mid-run makes those readings unattributable. The resim policy, because it is pushed into
-every correction cache and read at the correction-landing site (a client's drain, on the step's thread) **with no
-synchronization**, which is sound only because it is written once at composition, before any correction can land.
-
-#### `RelayDelayFloorTicks`: the session floor
-
-**Authority only, and that is correctness rather than economy** (`⛔G-14`). The floor is server-owned session state that
-is *replicated* to clients. A client reading its own ini could disagree with the server, which is the two-ends-diverge
-failure the whole tier ruling exists to avoid.
-
-The clamped value is stamped into `TimeConfig` and then published through og-sim-net's server (`publishFloor`, since
-og-input-latency task P5-7), which `beginServerSimNet` emplaces just before the knobs are applied, so the publish always has
-a server (a `checkf` says so). The server sends the floor to every attached connection and to each connection that attaches
-later; nothing publishes the floor after start-up. Before P5-7 the floor was written onto the timing relay, which the game's
-composition root spawned first for that reason, and a missing relay meant no client learned a nonzero floor.
-
-Two intakes share one clamp: this ini override, and the floor's receipt from the server (`onRelayDelayFloorReceived`; its replay
-twin was deleted by og-input-latency task P5-9), where the value arrives off the wire as a `uint8` and is clamped rather than trusted (a
-corrupt or version-mismatched byte must not schedule a read past the point where the delay line has already evicted the
-capture). The manager's setter clamps again; the call sites exist so an out-of-range value is *visible* in the log rather
-than silently corrected.
-
-`logRelayDelayFloorAdvisory` is **advisory only, never an assert**, and is called from both intakes (§9.4, *The floor
-advisory*). Floor `0` is the documented "scheduled regime OFF" mode, so og-simulation's `classifyRelayDelayFloor`
-(`Network/ConnectionTierTable.h`) never flags it; that function carries the full classification table.
-
-#### `CorrectionRotationK`: the state rotation width
-
-Controls how many characters' correction-state buffers `SimulationNetSync::sendCorrectionAll` writes per tick, round-robin,
-so each character's state replicates at the tick rate times K over N (`60 * K / N` Hz at the brawler's 60 Hz). A
-character not written is not dirty and costs zero bytes, so this is a real wire saving rather than a deferred write. It
-turns an emergent cadence into a decided number: at N characters the per-character correction rate should read that
-figure in `[DivergenceProbe.Window]`.
-
-**Authority only, but NOT for the floor's reason.** `K` is never replicated at all: only the authority sends corrections,
-and a receiver reconciles against whatever arrives without needing to know the sender's cadence. A client read would have
-no reader.
-
-> ⚠ **The compiled default is `TimeConfig::correctionRotationK` and this document does not restate its value.** The
-> brawler's `.cpp` once restated it, the value moved, and the comment did not (the brawler's §11, C1). Read it at the
-> declaration.
-
-**Sentinel collision, harmless and knowingly.** An ini that literally reads `CorrectionRotationK=-1` cannot be told from an
-absent key, because `-1` is also the intake variable's own "not present" sentinel. The proof line reports the effective
-number either way. (`-1 == absent` is the intake variable's own convention, not the field's.)
-
-#### `ResimTriggerPolicy`: the resim-gate policy
-
-Decides which landed corrections open the resim gate: `FrontierExact`, the compiled default, which reproduces the legacy
-gate; or `OnDisagreement`, the designed trigger. The field lives on `TimeConfig` (`PCTimeManagement/TimeConfig.h`); the
-mechanism is og-simulation's `ResimGatePolicy.h` and `StateCorrectionCache`. A game ships its configuration through the ini
-key (the brawler's: `ResimTriggerPolicy=OnDisagreement`, in its `Config/DefaultEngine.ini`). **`TimeConfig::resimTriggerPolicy`'s
-own declaration states the compiled default and the shipped configuration as two separate facts, and they differ: read them
-there.**
-
-**There is deliberately no `ResimCooldownTicks` key** (`⛔G-16`). A trigger-rate ceiling was built and removed on a user
-ruling: it defers acting on a correction *already known to disagree*, which is the defect this mechanism repairs. The
-throttle is structural instead. If you are here because a design document names that key, the code is right and the
-document predates the ruling.
-
-**Not authority-gated, unlike the two above, and that is the point rather than an oversight.** The resim gate exists only
-on a predicting client: an authority allocates no correction caches and never rewinds. Gating this intake on authority
-would read the ini on the one role that cannot use it and skip it on the role that can. Applying it on both roles keeps one
-`TimeConfig` shape and costs nothing; on a server the value simply has no reader.
-
-**Presence is a bool, not a sentinel value.** The value is a string, so there is no numeric sentinel to collide with, and
-`GetString` already reports presence. The step-2 parse is case-insensitive because an ini is hand-written, and an
-unrecognised policy string is **reported with the compiled default kept** (`⛔G-17`): a typo that quietly selected the
-other value would change gate behaviour on a build nobody thinks they changed.
-
-For this knob the proof line is also the **behaviour-neutrality receipt**. The gate ships defaulted to reproduce the old
-one, so every claim made from a later run ("the ratios are indistinguishable from the baseline") is a claim about *which
-policy was live*. Without that line in the log it is an assertion about the source rather than an observation about the
-run. `depthPolicy` therefore carries `(inert under FrontierExact)` rather than falling silent, and `rateLimit = none
-(structural)` is stated rather than omitted, because the absence of a cooldown is a ruling: a reader must be able to tell
-"the ceiling is off" from "this build predates it".
-
-*R0, task 26b:* verified: the compiled default is `FrontierExact` (`TimeConfig.h`), the brawler's ini sets
-`OnDisagreement`, and og-simulation's reconciliation peer allocates no correction cache on the authority (its
-`SimulationReconciliation.h` says so, and the manager gates its tick calls behind `runsPrediction`).
-
-#### `RedundancyFrames` and `RelayResendEntries`: the latency knobs (og-input-latency task 4)
-
-Two integer keys under `[OGNetcode]`, read by one intake and applied by `applyLatencyKnobs`. They feed
-`TimeConfig::redundancyFrames` (the client's redundancy window, counted in frames) and `TimeConfig::relayResendEntries`
-(already-flushed relay entries the authority re-sends per flush). What each one does, its range and why 0 is today's
-behaviour are og-simulation's `TimeConfig-rationale.md` §12. In this change neither field has a reader.
-
-**Not authority-gated** (`⛔G-27`), for the resim policy's reason rather than the floor's. `RedundancyFrames` acts only on
-a predicting client, so the client must read its own ini. `RelayResendEntries` acts only on the authority, and reading it
-on both roles keeps one `TimeConfig` shape.
-
-**The four steps.** Presence is a `bool` per key, so there is no sentinel collision (unlike the rotation width's `-1`). An
-out-of-range value is reported by a `[LatencyKnobs] ini [OGNetcode] … out of range, clamped to …` line, clamped by the
-shared `latencyKnobs::` function and set through the manager's setter, which clamps again. The proof line,
-`[LatencyKnobs] redundancyFrames=… relayResendEntries=… (ini|compiled)`, is unconditional, at `Warning`, read back from
-`TimeConfig`, and printed once per session on every peer. Its trailing token is `ini` when either key was present and
-`compiled` when neither was. **After both role branches**, like the policy's (`⛔G-24`'s reason): one call proves the
-same thing on both roles.
-
-#### `RecentreSettleSamples`: the clock's re-centre window (og-input-latency task 27)
-
-One integer key under `[OGNetcode]`, read by the same intake and applied by `applyLatencyKnobs` after the two latency
-knobs. It feeds `TimeConfig::recentreSettleSamples`, the number of clock advances with an RTT reading (a window of ticks since
-og-input-latency P3-11; it counted measured RTT samples before) the client clock waits after a join
-or a hard resync before its one-shot re-centre; 0 disables the re-centre. What the re-centre does is og-simulation's
-`TimeConfig-rationale.md` §14. The key exists so the re-centre's A arm (0) runs on the same binary as its B arm (the
-compiled default).
-
-**Not authority-gated**, for `RedundancyFrames`' reason: the field acts only on a predicting client, which must read its
-own ini, and reading it on both roles keeps one `TimeConfig` shape. A negative value is reported by a
-`[ClockRecentre.Config] ini [OGNetcode] RecentreSettleSamples=… out of range, clamped to 0` line and set to 0. The proof
-line, `[ClockRecentre.Config] recentreSettleSamples=… (ini|compiled)`, is unconditional, at `Warning`, read back from
-`TimeConfig`, once per session on every peer. It is a line of its own so the `[LatencyKnobs]` line's text is unchanged,
-and its tag is not the clock's `[Clock.Recentre]`, which a client logs once per arm.
-
-#### The retired fourth knob
-
-There was a fourth key: a session-configurable **relay-ring retention depth**. The bare-C1 flush-on-poll write path
-replaced the mechanism it sized (the stage capacity is `relayedInputRing::kMaxDepth`, a compile-time constant with no ini
-key to feed; §9.7, *The relay tap*), and the key, its clamp intake, its setter and its `[RelayDepth]` startup proof line
-were removed together. Guard **G-15** marks where the intake used to sit, in `readSessionKnobs` between the floor's intake
-and the rotation width's. It replaces the two ⛔ RETIRED prose fences that marked the intake and the apply block. **It is an
-absence fence:** the identifier it is about occurs nowhere in this tree, so there is no symbol to grep and the guard is the
-only record.
-
-*Moved from the brawler's `OGBrawlerSimulationManager-rationale.md` §3 ("The session knobs"), made game-neutral, with the R0
-above. Its history (§11 C1, C17, C18) stayed there.*
+The subsections that stood here moved with the code: `RelayDelayFloorTicks`, `CorrectionRotationK`, `ResimTriggerPolicy`, the
+latency knobs, `RecentreSettleSamples` and the retired fourth knob are `SessionKnobs-rationale.md` §2.1 to §2.7.
 
 ### 9.9 The frame probes: PROBE A and PROBE 6 (task 26b)
 
@@ -2498,28 +2351,11 @@ started, and the age is measured from it:
   the client session's drain thread, the estimator's writer: the step's thread once the session is bound. Which
   feed moves the estimate is the estimator's rule (og-simulation `TimeConfig-rationale.md` §15): the engine until the first valid
   SimClock sample under `ClockRttSource=SimClock`, which switches it once without a reset, and the SimClock after that.
-- **The knob.** `[OGNetcode] ClockRttSource=Engine|SimClock` (case-insensitive, surrounding blanks trimmed), read by
-  `readSessionKnobs` on both roles, as `RecentreSettleSamples` is (§9.8): it acts only on a predicting client, which reads its
-  own ini. `applyClockRttSource` runs at the end of `applyLatencyKnobs` and calls `SimulationManager::setClockRttSource`. An
-  unrecognised value is reported (`[ClockSource.Config] ini [OGNetcode] ClockRttSource='…' unrecognised (expected Engine or
-  SimClock), keeping the compiled default`) and the compiled default kept, never read as either value. The proof line,
-  `[ClockSource.Config] clockRttSource=<Engine|SimClock> (<ini|compiled>) jitterMultiplier engine=<m> simClock=<m> (<ini|compiled>)`
-  (the `jitterMultiplier` field since og-input-latency task P3-13, below), is unconditional, at `Warning`, read back from
-  `TimeConfig`, once per session on every peer. The setter runs before any sample can reach the estimator: `configureSession`
-  runs before `startStepping`, so a client's step drain has not started (the setter's one-shot rule, og-simulation
-  `SimulationManager-rationale.md` §16).
-- **The jitter knob** (og-input-latency task P3-13). `[OGNetcode] JitterMultiplier=<number>`, read by `readSessionKnobs` on
-  both roles (`GConfig->GetDouble`, the game ini first, as every knob here) and applied in `applyLatencyKnobs` after
-  `RecentreSettleSamples`, before `applyClockRttSource`. One value sets **both** sources' multipliers through
-  `SimulationManager::setJitterMultiplier`: `TimeConfig::jitterMultiplier` (the engine ping's) and `simClockJitterMultiplier`
-  (the SimClock's), whose compiled defaults differ (og-simulation `TimeConfig-rationale.md` §17). The key exists so the
-  multiplier's measured choice ran every value on one binary. A value that is not a finite number is reported
-  (`[ClockSource.Config] ini [OGNetcode] JitterMultiplier is not a finite number, keeping the compiled defaults`) and both
-  compiled defaults kept; one outside `clockJitter::clampJitterMultiplier`'s 0 to 4 is reported as `… out of range, clamped
-  to …` and clamped. The result is printed on the `[ClockSource.Config]` line rather than a line of its own, so no new tag
-  joins the start-up lines; its trailing token is `ini` only when the key was applied. The setter runs where
-  `setClockRttSource` runs, before `startStepping`, so before the clock reads the offset (the setter's one-shot rule,
-  og-simulation `SimulationManager-rationale.md` §17).
+- **The knobs.** `[OGNetcode] ClockRttSource=Engine|SimClock` (this task) and `[OGNetcode] JitterMultiplier=<number>`
+  (og-input-latency task P3-13) are read and applied by og-sim-session's `SessionKnobs.h` since og-session-runtime task 23: its
+  `SessionKnobs-rationale.md` §3 has their parse, clamps, unrecognised and non-finite lines, and the `[ClockSource.Config]` proof
+  line. The setters run where this class calls `applyLatencyKnobs`, in `configureSession`, before `startStepping`, so before any
+  sample reaches the estimator (og-simulation `SimulationManager-rationale.md` §16 and §17).
 - **The shadow line**, `[ClockSource.Window]` on `LogOGNet` at `Warning`, once per 10 s of `FPlatformTime`
   (og-sim-net's `kSimNetWindowSeconds`), checked from either feed on the drain's thread, on a predicting client only; the first
   call starts the window, so a client that receives neither feed logs nothing. Its fields:
@@ -2647,31 +2483,16 @@ Since og-session-runtime task 20 og-sim-net's clock produces `SimClockRttSample`
 
 ### 22.2 The knob and its proof line
 
-`[OGNetcode] ClockDilation=Off|Shadow|On`, case-insensitive, surrounding blanks trimmed. `readSessionKnobs` reads it on both roles
-(the game ini first, then the engine ini, as every knob in §9.8), and `applyClockDilation` applies it at the end of
-`applyLatencyKnobs`, after `applyClockRttSource`, so after both role branches and before `startStepping`.
+`[OGNetcode] ClockDilation=Off|Shadow|On` is read and applied by og-sim-session's `SessionKnobs.h` since og-session-runtime task
+23 (`applyClockDilation`, at the end of `applyLatencyKnobs`, after `applyClockRttSource`, so after both role branches and before
+`startStepping`). Its rationale, `SessionKnobs-rationale.md` §4, has the authority's `[Dilation.Config] mode=n/a`, the client's
+modes and unrecognised line, and the proof and doors lines (og-time-dilation's `lead_split.py` parses the proof line anchored at
+its token).
 
-- **The authority** parses nothing and builds nothing: it prints `[Dilation.Config] mode=n/a` and returns. Its step rate is the
-  reference every client's lead is measured against (og-simulation's stage `OG_CHECK`s a predicting manager, and the tick driver
-  refuses an authority's `setRateScale`). A value on a server has no reader, so it is not reported either.
-- **A client** maps `Off`, `Shadow` and `On` to their modes. Any other value logs one Warning, `[Dilation.Config] ini
-  [OGNetcode] ClockDilation='…' unrecognised (expected Off, Shadow or On), running Off`, and runs the compiled default, `Off`,
-  never a guessed mode. (Until og-time-dilation task 11, `On` logged a Warning and ran `Shadow`.)
-- **The proof line**, unconditional, at `Warning` on `LogOGNet`, once per client session: `[Dilation.Config] mode=<Off|Shadow|On>
-  setpoint=<OwnRtt|Common> gainPerTick=<g> maxDeviation=<d> (<ini|compiled>)`. Every value is read back from the controller's stored
-  `config()`, not the parsed request (§9.8's step 4). The trailing token is the mode's: `ini` when the `ClockDilation` key was
-  applied and `compiled` when it was absent or unrecognised. The line keeps task 8's exact shape, because og-time-dilation's
-  `lead_split.py` parses it (G4 reads its `maxDeviation`) with a pattern anchored at the token.
-- **The doors line** follows it, also unconditional on a client: `[Dilation.Config] doors gainPerTick=<g> (<src>) maxPercent=<p>
-  (<src>) targetOffsetTicks=<o> (<src>) setpoint=<s> (<src>) commonLeadTicks=<x> (<src>)`, each value read back from the
-  stored config with its own token (§22.8). og-time-dilation task 14 appended `commonLeadTicks` at its end, so a parser
-  anchored on the line's start reads the four older fields unchanged.
-- **Every other `ClockDilationConfig` field** (the slew, the quantum, the change hysteresis, the two time constants, the guard's
-  edges, the resync freeze) is og-simulation's compiled default, which its `static_assert`s check. No door
-  reaches them, so those checks hold for the runtime config too.
-- **The controller and the window** (`m_clockDilation`, `m_clockDilationWindow`, both `std::optional`) are emplaced there, on
-  every client session, `Off` included, and on no authority. A client's `configureSession` runs on the game thread
-  (`beginPlay` takes the runner path for an authority world only), so they are built on the thread that later uses them.
+What is this class's: **the controller and the window** (`m_clockDilation`, `m_clockDilationWindow`, both `std::optional`) are its
+members, which `beginPlay` passes to `applyLatencyKnobs`; they are emplaced there on every client session, `Off` included, and on
+no authority. A client's `configureSession` runs on the game thread (`beginPlay` takes the runner path for an authority world
+only), so they are built on the thread that later uses them.
 
 ### 22.3 `beforePump_Owner`: one hook, two roles
 
@@ -2744,56 +2565,11 @@ authority has no mode, and the line only reads the door.
 
 ### 22.8 The dev doors and their clamps (og-time-dilation task 11)
 
-Five more `[OGNetcode]` keys (four since task 11, the fifth since og-time-dilation task 14), read by `readSessionKnobs` on both roles (the game ini first, then the engine ini) and applied
-only on a client, by `applyClockDilation`, into the config the controller and the window are built from. They apply in
-`Shadow` as in `On`, so a `Shadow` run projects the `On` that the same doors would run; `Off` never calls the controller.
-
-| key | config field | door |
-|---|---|---|
-| `ClockDilationGainPerTick` | `gainPerTick` | clamped to [0, 0.05] (`clockDilationDoors::clampGainPerTick`) |
-| `ClockDilationMaxPercent` | `maxDeviation` = percent / 100 | clamped to [0, 2] % (`clampMaxPercent`) |
-| `ClockDilationTargetOffsetTicks` | `targetOffsetTicks` | clamped to [−2, 2] ticks (`clampTargetOffsetTicks`) |
-| `ClockDilationSetpoint` | `setpoint` | `OwnRtt` or `Common`, case-insensitive; any other value logs one Warning, `[Dilation.Config] ini [OGNetcode] ClockDilationSetpoint='…' unrecognised (expected OwnRtt or Common), running <the compiled setpoint>`, and runs the compiled setpoint (`OwnRtt`). Until og-time-dilation task 14 only `OwnRtt` was accepted: `Common` logged `… is not accepted by this build (expected OwnRtt), running OwnRtt` |
-| `ClockDilationCommonLeadTicks` | `commonLeadTicks` | clamped to [0, 10] ticks (`clampCommonLeadTicks`; og-time-dilation task 14). The compiled default is og-simulation's, 3.65; the door sets it in every mode, but only `Common` reads it |
-
-- **The four number doors** go through `applyClockDilationDoor`. A value that is not finite logs `[Dilation.Config] ini
-  [OGNetcode] <key> is not a finite number, keeping the compiled default` and keeps it (token `compiled`). An out-of-range value
-  logs `[Dilation.Config] ini [OGNetcode] <key>=<v> out of range, clamped to <c>` and runs the clamped value (token `ini`), as
-  the latency knobs do (§9.8).
-- **The doors line** (§22.2) reports what was applied: `gainPerTick=%.4f`, `maxPercent=%.3f` (`maxDeviation` · 100),
-  `targetOffsetTicks=%.3f`, `setpoint` and `commonLeadTicks=%.3f`, each with its own `(ini|compiled)` token. The proof line's `gainPerTick` and
-  `maxDeviation` are the same stored values; its token stays the mode's.
-- **The clamps are the controller's constraints in runtime form.** og-simulation's `ClockDilationConfig` `static_assert`s check
-  its compiled defaults only; the controller checks no runtime config. So the doors' bounds carry their own `static_assert`s:
-  - the ceiling of `ClockDilationMaxPercent` keeps `maxDeviation` under the render bracket's bound, 0.2, for every accepted
-    value (og-simulation's `ClockDilationController-rationale.md` §7): `kMaxMaxPercent / 100 < 0.2`;
-  - neither the gain nor the deviation door admits a negative value. A negative gain turns `1 − gainPerTick · error` into
-    positive feedback, and a negative `maxDeviation` gives `std::clamp` a low bound above its high one;
-  - each compiled default lies inside its own door, so writing the compiled value into the ini changes nothing (since
-    og-time-dilation task 14 `commonLeadTicks` too);
-  - the `Common` lead's door admits no negative lead: a target behind the server's tick would make every client's inputs late
-    by construction.
-- **What no door reaches** keeps its compiled values, and with them their `static_assert`s, at runtime: `quantum > 0`; the
-  slew, `0 < slewPerCall` (0.002, a whole number of quanta, 20, by its value rather than by an assert); the change hysteresis,
-  `changeHysteresisQuanta ≥ 0.5` and `changeHysteresisQuanta · quantum ≤ slewPerCall` (2 today); and the guard's edges with
-  og-time-dilation task 7b's frame-aware low-edge asserts. None of those fields is exposed.
-- **One compiled check the door does not keep:** og-simulation's `slewPerCall ≤ maxDeviation`. The door goes down to 0 %, as
-  the task specifies, and `slewPerCall` is 0.2 %. Below it the slew no longer binds and the clamp does, so a change is still at
-  most the distance between two values inside `[1 − maxDeviation, 1 + maxDeviation]`. Below two quanta (0.02 %) the change
-  hysteresis holds the scale at exactly 1.0 (from 1.0, every slewed value is within `maxDeviation`, under 2 · `quantum`),
-  and 0 % turns the law off while the window still reports it; a gain of 0 does the same.
-- **The gain's ceiling, 0.05**, is ten times the default. At that gain the loop's per-frame step `f · K_p · Δt` is 0.10 at
-  30 fps and 0.03 at 100 fps, still small against 1 (og-simulation's `ClockDilationController-rationale.md` §8), and the
-  scale saturates at `maxDeviation` from 0.2 tick of error at the default 1 % (`maxDeviation / gainPerTick`).
-- **The `Common` lead's range, [0, 10] ticks**, is a dev door's. og-time-dilation task 13's report puts the shapes it
-  measured inside [3.17, 3.71] at 100 fps and names its fallbacks, 3.60 and 3.70; a session with a farther client needs a
-  higher lead, and 10 ticks is above every guard centre this initiative measured. Whatever the door admits, each client's
-  band guard still clamps the target into its own band (og-simulation's `ClockDilationController-rationale.md` §5): a
-  client whose band does not admit the lead binds at its edge and holds a lead near its own, and what the clock still does
-  there is og-simulation's §5.2 and §21.
-- **The offset's range, ±2 ticks**, is for og-time-dilation's G7 seen-failing arm (+0.5 tick). The guard still clamps the
-  shifted target into its band (og-simulation's `ClockDilationController-rationale.md` §5), so no offset can push the lead past
-  the clock's quiet band.
+Five `[OGNetcode]` keys (four since task 11, the fifth, `ClockDilationCommonLeadTicks`, since og-time-dilation task 14) set the
+dilation config a client's controller and window are built from: the gain, the maximum deviation, the target offset, the setpoint
+and the `Common` lead. They are og-sim-session's since og-session-runtime task 23: `SessionKnobs-rationale.md` §5 has their doors
+(`clockDilationDoors`), their lines, the four `static_assert`s that keep each door inside the controller's constraints, and what
+no door reaches.
 
 ### 22.9 The authority's refused rate changes: `[Dilation.Authority]` (og-time-dilation task 11)
 

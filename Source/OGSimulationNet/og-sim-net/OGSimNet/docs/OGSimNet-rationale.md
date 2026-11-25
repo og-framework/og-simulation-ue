@@ -98,7 +98,9 @@ it yet, and later tasks keep it. It is not a wire version. The bytes on the wire
   runs it. On its own: `OGSimulationTests.exe "SimNetSkeleton.*"`.
 - Measured: with og-net's `tests/` removed from the include path, `SimNetSkeletonTest.cpp` fails to compile, on
   `VirtualNetwork.h`.
-- **No standalone build yet.** og-sim-net has no CMake project; its tests build only through the Unreal low-level-test target.
+- **The tests also build without Unreal.** og-sim-net's `CMakeLists.txt` builds the library, compiles each header alone and
+  builds these tests, one CTest entry per `[@og]` case (og-sim-net's README.md, "Standalone build"); the plugin's
+  `standalone/` project builds it with og-simulation, og-net and og-sim-session from one working tree (its README.md).
 
 ## §7 `kWireTokenFragment`: og-sim-net's part of the wire token
 

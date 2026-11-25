@@ -58,6 +58,7 @@ Source/glm/                            UE module stub for GLM (header-only)
 Source/OGSimulationJolt/               UE module rules + og-simulation-jolt/ (submodule — Jolt backend source)
 Source/OGSimulationUnreal/             Unreal adapter module (code and docs/)
 Source/OGSimulationJoltUnreal/         Unreal + Jolt traits module (code and docs/)
+standalone/                            CMake project: the engine-free libraries and their tests, without Unreal (README.md)
 ```
 
 ## Canonical workflow

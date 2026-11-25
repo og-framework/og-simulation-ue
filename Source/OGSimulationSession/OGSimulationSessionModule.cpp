@@ -5,6 +5,7 @@
 
 #include "OGSimSession/SessionEngine.h"
 #include "OGSimSession/SessionGame.h"
+#include "OGSimSession/SessionKnobs.h"
 #include "OGSimSession/SessionThreads.h"
 #include "OGSimSession/SessionTypes.h"
 

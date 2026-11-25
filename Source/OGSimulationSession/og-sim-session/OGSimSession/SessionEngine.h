@@ -85,10 +85,40 @@ static_assert(!SessionRunner<MissingJoin>,
 } // namespace sessionRunnerSelfCheck
 
 template <typename E>
-concept SessionEngine = TickDriverEngine<E>
-	&& requires(E& e, const char* line, sessionEngineConceptProbe::RunnerBody body, bool highResolutionWait)
+concept SessionLogSink = requires(E& e, const char* line)
 {
 	{ e.logRouted(line) } -> std::same_as<void>;
+};
+
+namespace sessionLogSinkSelfCheck
+{
+struct Conforming
+{
+	void logRouted(const char*);
+};
+
+struct MissingLogRouted
+{
+	void log(const char*);
+};
+
+struct LogRoutedReturnsAStatus
+{
+	bool logRouted(const char*);
+};
+
+static_assert(SessionLogSink<Conforming>,
+	"SessionLogSink self-check: the reference shape must satisfy the concept");
+static_assert(!SessionLogSink<MissingLogRouted>,
+	"SessionLogSink self-check: logRouted is the one sink for lines that carry their own level and tag");
+static_assert(!SessionLogSink<LogRoutedReturnsAStatus>,
+	"SessionLogSink self-check: logRouted returns nothing; a line has no outcome the session acts on");
+} // namespace sessionLogSinkSelfCheck
+
+template <typename E>
+concept SessionEngine = TickDriverEngine<E> && SessionLogSink<E>
+	&& requires(E& e, sessionEngineConceptProbe::RunnerBody body, bool highResolutionWait)
+{
 	typename E::Runner;
 	requires SessionRunner<typename E::Runner>;
 	{ e.startRunner(std::move(body), highResolutionWait) } -> std::same_as<std::unique_ptr<typename E::Runner>>;

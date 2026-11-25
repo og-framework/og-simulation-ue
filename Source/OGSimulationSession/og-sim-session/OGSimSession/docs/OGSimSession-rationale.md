@@ -59,17 +59,19 @@ is the module's generated definitions header.
   include roots. og-net is reached only through og-sim-net: the tier lint forbids og-sim-session from including og-net,
   og-simulation-jolt or any engine module (`module_tiers.psd1`, the `OGSimSession` row).
 - **`Core` is a private dependency**, for the module macro in `OGSimulationSessionModule.cpp`.
-- **`OGSimulationSessionModule.cpp` includes the four library headers** (`SessionEngine.h`, `SessionGame.h`,
-  `SessionThreads.h`, `SessionTypes.h`), so every target that builds the module compiles each of them, with their
+- **`OGSimulationSessionModule.cpp` includes the five library headers** (`SessionEngine.h`, `SessionGame.h`,
+  `SessionKnobs.h` since og-session-runtime task 23, `SessionThreads.h`, `SessionTypes.h`), so every target that builds the module compiles each of them, with their
   self-check `static_assert`s, under that target's flags and after an engine header. That is where an identifier that
   collides with an engine macro would show first; it is why `SessionThreadChecks`' check is `checkOp`, not `check`
   (`SessionThreads-rationale.md` §4).
 - **Nothing is exported.** The headers hold templates, inline functions and constants. Measured: the Editor build's module DLL
   exports one name, the engine's module marker ThisIsAnUnrealEngineModule.
 - **The plugin lists `OGSimulationSession`** as a Runtime module, after `OGSimulationNet`.
-- **`OGSimulationUnreal` and `OGBrawlerUnreal` list it as a public dependency, and include none of its headers yet.** The
-  thin Unreal adapter of design §3.6 will; until then the dependency only adds the include root (measured: the Editor build's
-  `OGSimulationUnreal` response files carry it).
+- **`OGSimulationUnreal` and `OGBrawlerUnreal` list it as a public dependency.** Until og-session-runtime task 23 they included
+  none of its headers and the dependency only added the include root (measured at task 22: the Editor build's
+  `OGSimulationUnreal` response files carry it). Since task 23 `UESimulationSession.h` includes `SessionKnobs.h` (the knob
+  intake) and `UEConfigSource.h` includes `SessionEngine.h` (the `ConfigSource` port); `OGBrawlerUnreal`'s route test includes
+  `SessionKnobs.h`.
 
 ## §5 The tests, in `OGSimulationTests`
 
@@ -83,4 +85,7 @@ is the module's generated definitions header.
   (`SessionThreads-rationale.md` §6), with one hidden death case, `[.][SessionThreadsDeath]`.
 - Measured at task 22: `OGSimulationTests.exe "[Session]"` runs 12 cases, 288 assertions; `[@og]` grew from 1265 cases and
   994151 assertions to 1277 and 994439.
-- **No standalone build yet.** og-session-runtime task 22b adds a CMake project for og-sim-net and og-sim-session.
+- **The tests also build without Unreal.** og-sim-session's `CMakeLists.txt` (og-session-runtime task 22b) builds the
+  library, compiles each header alone and builds these tests, one CTest entry per `[@og]` case (og-sim-session's README.md,
+  "Standalone build"); the plugin's `standalone/` project builds it with og-simulation, og-net and og-sim-net from one
+  working tree (its README.md).

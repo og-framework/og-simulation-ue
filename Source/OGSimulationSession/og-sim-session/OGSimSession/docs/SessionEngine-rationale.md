@@ -2,7 +2,8 @@
 # `SessionEngine.h` — rationale
 
 `SessionEngine.h` holds three of the session runtime's ports (og-session-runtime design §3.3): the engine (`SessionEngine`),
-the authority's runner (`SessionRunner`) and the configuration source (`ConfigSource`). Each is a concept with a reference
+the authority's runner (`SessionRunner`) and the configuration source (`ConfigSource`), and the engine's log sink on its own
+(`SessionLogSink`, since og-session-runtime task 23). Each is a concept with a reference
 shape that models it and one negative per requirement, checked by `static_assert`s in the header, the way
 `TickDriverConcepts.h` checks the tick driver's. It is the docs pointer target of `SessionEngine.h`. Every rule the header
 states is one of those `static_assert`s, so there is no guards file.
@@ -47,6 +48,20 @@ The concept calls `startRunner` with a probe body, `sessionEngineConceptProbe::R
 runner by reference, as the tick driver's concept probes its executor with a task. **`startRunner` returns an owning pointer,
 not the runner by value**, a change from the design's `-> Runner`: a runner's thread holds its address (today's
 `FUEAuthorityRunner` is neither copyable nor movable), so the runtime must be able to hold it without moving it.
+
+### 3.1 `SessionLogSink` (og-session-runtime task 23)
+
+The engine's `logRouted` requirement is its own concept, and `SessionEngine` requires it. A component that only writes lines
+takes a `SessionLogSink`, not a whole engine: `SessionKnobs.h`'s functions do, and the Unreal session passes them a
+`UESessionLogSink` (`UESimulationLogRoutes.h`) before it has a session engine.
+
+| requirement | negative in `sessionLogSinkSelfCheck` |
+|---|---|
+| `logRouted(const char*)` | `MissingLogRouted` |
+| it returns `void`: a line has no outcome the session acts on | `LogRoutedReturnsAStatus` |
+
+`SessionEngine`'s own negative for the requirement, `sessionEngineSelfCheck::MissingLogRouted`, still fails it through the
+refinement.
 
 ## §4 `ConfigSource`
 

@@ -44,7 +44,14 @@ inline constexpr OGLogRouteEntry kOGAdapterLogRoutes[] = {
 	{ TEXT("[RelayProbe"),                       OGLogRoute::RelayProbe,      ELogVerbosity::Log },
 	{ TEXT("SimulationManager:"),                OGLogRoute::Mgmt,            ELogVerbosity::Log },
 	{ TEXT("tryRegister:"),                      OGLogRoute::Mgmt,            ELogVerbosity::Log },
-	{ TEXT("NewFramework:"),                     OGLogRoute::Mgmt,            ELogVerbosity::Log }
+	{ TEXT("NewFramework:"),                     OGLogRoute::Mgmt,            ELogVerbosity::Log },
+	{ TEXT("[RelayDelayFloor]"),                 OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[StateRotation]"),                   OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[ResimGate]"),                       OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[LatencyKnobs]"),                    OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[ClockRecentre.Config]"),            OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[ClockSource.Config]"),              OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[Dilation.Config]"),                 OGLogRoute::Net,             ELogVerbosity::Log }
 };
 
 inline constexpr OGLogRoute kOGLogRouteUnmapped = static_cast<OGLogRoute>(0xFF);
@@ -308,3 +315,104 @@ inline void RouteOGMessage(const char* msg)
 
 #undef EMIT_OG
 }
+
+constexpr bool ogLogRouteStartsWithNarrow(const char* text, const TCHAR* prefix)
+{
+	for (; *prefix != 0; ++text, ++prefix)
+	{
+		if (*text == 0
+			|| ogLogRouteFoldCase(static_cast<TCHAR>(static_cast<unsigned char>(*text))) != ogLogRouteFoldCase(*prefix))
+			return false;
+	}
+	return true;
+}
+
+constexpr const char* ogLevelLineBody(const char* line)
+{
+	if (ogLogRouteStartsWithNarrow(line, TEXT("[Verbose]")) || ogLogRouteStartsWithNarrow(line, TEXT("[Warning]")))
+		return line + 9;
+	return line;
+}
+
+constexpr const OGLogRouteEntry* ogLogRouteForLevelLine(const char* line)
+{
+	const char* body = ogLevelLineBody(line);
+	for (const OGLogRouteEntry& entry : kOGLogRoutes)
+	{
+		if (ogLogRouteStartsWithNarrow(body, entry.prefix))
+			return &entry;
+	}
+	return nullptr;
+}
+
+constexpr ELogVerbosity::Type ogLogLevelOfLevelLine(const char* line)
+{
+	if (ogLogRouteStartsWithNarrow(line, TEXT("[Verbose]")))
+		return ELogVerbosity::Verbose;
+	if (ogLogRouteStartsWithNarrow(line, TEXT("[Warning]")))
+		return ELogVerbosity::Warning;
+	const OGLogRouteEntry* route = ogLogRouteForLevelLine(line);
+	return route != nullptr ? route->plainLevel : ELogVerbosity::Log;
+}
+
+inline void RouteOGLevelLine(const char* line)
+{
+	const FString text(UTF8_TO_TCHAR(line));
+
+	ELogVerbosity::Type severity = ELogVerbosity::Log;
+	FString body = text;
+	if (text.StartsWith(TEXT("[Verbose]")))
+	{
+		severity = ELogVerbosity::Verbose;
+		body = text.RightChop(9);
+	}
+	else if (text.StartsWith(TEXT("[Warning]")))
+	{
+		severity = ELogVerbosity::Warning;
+		body = text.RightChop(9);
+	}
+
+	const OGLogRouteEntry* route = nullptr;
+	for (const OGLogRouteEntry& entry : kOGLogRoutes)
+	{
+		if (body.StartsWith(entry.prefix))
+		{
+			route = &entry;
+			break;
+		}
+	}
+	if (route != nullptr && severity == ELogVerbosity::Log)
+		severity = route->plainLevel;
+
+#define EMIT_OG_BODY(cat) \
+	do { \
+		switch (severity) { \
+			case ELogVerbosity::Warning: UE_LOG(cat, Warning, TEXT("%s"), *body); break; \
+			case ELogVerbosity::Verbose: UE_LOG(cat, Verbose, TEXT("%s"), *body); break; \
+			default:                     UE_LOG(cat, Log,     TEXT("%s"), *body); break; \
+		} \
+	} while (0)
+
+	if (route == nullptr)
+	{
+		EMIT_OG_BODY(LogOG);
+		return;
+	}
+	switch (route->route)
+	{
+	case OGLogRoute::SimTick:          EMIT_OG_BODY(LogOGSimTick); break;
+	case OGLogRoute::ResimProbe:       EMIT_OG_BODY(LogOGResimProbe); break;
+	case OGLogRoute::Sim:              EMIT_OG_BODY(LogOGSim); break;
+	case OGLogRoute::Net:              EMIT_OG_BODY(LogOGNet); break;
+	case OGLogRoute::RelayProbe:       EMIT_OG_BODY(LogOGRelayProbe); break;
+	case OGLogRoute::DivergenceProbe:  EMIT_OG_BODY(LogOGDivergenceProbe); break;
+	case OGLogRoute::Mgmt:             EMIT_OG_BODY(LogOGMgmt); break;
+	}
+
+#undef EMIT_OG_BODY
+}
+
+struct UESessionLogSink
+{
+	void logRouted(const char* line) { RouteOGLevelLine(line); }
+};
