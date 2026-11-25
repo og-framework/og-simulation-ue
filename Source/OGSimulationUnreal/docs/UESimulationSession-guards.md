@@ -514,8 +514,9 @@ of `unregisterFromNewFramework` after its hook check (og-input-latency task P5-7
 
 **The prohibition.** ⛔ Keep this early return, and keep it first (after the no-session return, which runs only in a
 world that registered nothing). A client's roster Remove of a registered id
-(`onSimNetRegisteredRemoved` on the step, its host work finished and the id recorded by `collectLifecycleOutcomes_GameThread`
-since og-session-runtime task 12) and the og-net lanes' stop (`onSimNetLanesStopping`) unregister a character before its pawn
+(og-sim-session's `SessionLifecycle::onRegisteredRemoved` on the step, its host work finished and the id recorded by
+`onPredictionOutcome_GameThread` since og-session-runtime task 29; `onSimNetRegisteredRemoved` and
+`collectLifecycleOutcomes_GameThread` before, since task 12) and the og-net lanes' stop (`onSimNetLanesStopping`) unregister a character before its pawn
 ends play, and each records the id; the pawn's `EndPlay` then calls this function for the same id, and must do nothing. Do not
 replace the set by a test of the registered map (a pending, never-registered pawn is in neither map and must still run the
 whole sequence: its bodies exist), and do not erase the id anywhere else. `endPlay`'s clear of the whole set (G-21's list, since
@@ -532,112 +533,6 @@ the pawn's destruction, or a driver that stops before its world ends.
 
 ---
 
-## G-31 — an immediate client's queued unregistration notifies the executor before it enqueues, behind the `has<>` guard
-
-**Tag site:** `UESimulationSession.h`, `enqueueQueuedUnregister_Step`, directly above
-`if (m_systemsNotified_Step.erase(id) != 0u && m_storage.template has<Simulatable>(id))`, before `client.unregisterCharacter`
-(og-input-latency task P5-17).
-
-**The prohibition.** ⛔ Keep the systems executor's notify here, before the enqueue, and keep both conditions. Do not move the
-notify into the unregister's `applied` hook, and do not drop the notified-set test or the storage test. The enqueued job runs at
-the top of the drain that follows, and og-sim-net's `unregisterSimulatable` takes the character out of storage first; the
-`applied` hook runs after it.
-
-**What breaks if the edit is made.**
-* Moved into `applied`, or after the drain: a system's `onCharacterUnregistered` reaches a character storage has already freed.
-  The brawler's hit routing takes `&view.get<SimulatableBrawler>(id)` there (the R0 of G-26, retired by og-session-runtime task 14), so it reads a destroyed object.
-* The notified-set test dropped: the executor is told of the removal of a character it was never told of (one whose register
-  applied while an unregister was pending, `⛔G-32`). The brawler's systems erase by id or by pointer and tolerate it; the pair of
-  notifies no longer matches.
-* The storage test dropped: the notify runs for an id og-sim-net already removed (a roster Remove in an earlier drain), and the
-  hook's `view.get<>(id)` has nothing to return.
-
-**What breaks if the tag moves.** Nothing mechanical: no test unregisters a character from a live immediate session.
-
----
-
-## G-32 — an immediate client notifies the executor of a registration only in its `applied` hook, and not when an unregister is pending
-
-**Tag site:** `UESimulationSession.h`, `onQueuedRegisterApplied_Step`, directly above
-`if (m_unregisterRequested_Step.find(id) == m_unregisterRequested_Step.end())`, which guards `notifyCharacterRegistered`
-(og-input-latency task P5-17).
-
-**The prohibition.** ⛔ The queued registration's executor notify stays here: after og-sim-net's `registerSimulatable` put the
-character in storage, on the drain's thread, and only when no unregister request for the id is pending. Do not move it to the game
-thread's finish (`finishQueuedRegistration`), and do not drop the pending-unregister test.
-
-**What breaks if the edit is made.**
-* Moved to the game thread: the notify writes the systems' maps (the hit routing's root-body map, the score map) while a step may
-  be reading them on a worker, and every step that ran between the apply and the finish integrated the character with no
-  hit-routing or hit-detection entry, so hits on it went unrouted.
-* The pending-unregister test dropped: a character unregistered before its registration applied (its pawn ended play in
-  between) is registered with the executor by its register job and removed from storage by the unregister job that follows it in
-  the same drain, with no notify between (`⛔G-31` found it not notified). The executor keeps a pointer to a destroyed character.
-
-**What breaks if the tag moves.** Nothing mechanical.
-
----
-
-## G-33 — an immediate client's game-thread unregistration releases the bodies only after the step has applied it
-
-**Tag site:** `UESimulationSession.h`, `requestQueuedUnregister_GameThread`, directly above
-`unregisterCharacterHostOnly(id, &owner, /*releaseBodiesNow=*/false);` (og-input-latency task P5-17).
-
-**The prohibition.** ⛔ When the id is queued or registered, the game thread posts the request, holds the component and runs the
-host work with `releaseBodiesNow` false. Do not pass true here, and do not call the backend's `onUnregistered_GameThread` before
-the `UnregisterApplied` outcome (`collectLifecycleOutcomes_GameThread`) or the teardown.
-
-**What breaks if the edit is made.** The backend's unregistration releases the character's physics slot, unbinding its bodies from
-the bind table on the game thread (`JoltTickWorldHost::release`). The character is still in storage until a step's drain
-applies the queued unregister, and that drain runs at the start of the first step that begins after the request is posted
-(og-sim-session's `SessionNetHooks::receiveForStep` since og-session-runtime task 26, the session's `receiveForClientStep_Step`
-before, §18.2 of the rationale). The game thread does not wait for the steps: a frame-bounded step runs on
-an executor task while the game thread runs, so a step that began before the request was posted, past its drain, can still be running, and it
-integrates a character whose bodies are no longer bound. (Before og-input-latency task P5-30 the drain ran after the integrate,
-so the first step after the post integrated the character too.)
-
-**What breaks if the tag moves.** Nothing mechanical; a leave in an immediate smoke may survive it when no step falls in the window.
-
----
-
-## G-34 — an immediate client's teardown stops the steps before it unregisters anything
-
-**Tag site:** `UESimulationSession.h`, `teardownImmediateClient_GameThread`, directly above `m_physicsBackend.onEndPlayBegin();`
-(og-input-latency task P5-17).
-
-**The prohibition.** ⛔ The teardown's first statement after its once-only test stops the backend's steps and waits for them. Do
-not move anything above it, and do not drop it on the grounds that `endPlay` already called it: the lanes' stop handler calls the
-teardown with the steps still running.
-
-**What breaks if the edit is made.** The teardown's game-thread drain and its unregistrations then run while a step drains the
-same og-sim-net session and runs the same simulation on a worker: two drains (og-sim-net's in-drain flag `OG_CHECK`s one that
-overlaps; one that does not overlap is a data race), and storage changed under a running step.
-
-**What breaks if the tag moves.** Nothing mechanical; a client that leaves while its steps run hits it.
-
----
-
-## G-35 — the og-sim-net hosts' unregistering hook notifies the executor only for a notified id still in storage
-
-**Tag site:** `UESimulationSession.h`, `onSimNetLifecycleUnregistering`, directly above
-`if (m_systemsNotified_Step.erase(id) != 0u && m_storage.template has<Simulatable>(id))` (og-input-latency task P5-19).
-
-**The prohibition.** ⛔ Keep both tests, and keep the notify in this hook. Do not drop the `erase` test, do not drop the `has<>`
-test, and do not move the notify after the hook returns.
-
-**The consequence.** og-sim-net calls the hook before the facade of every queue-registered character's unregister (a roster
-Remove, a queued unregister, `removeCharacter`; `SimNetHost-rationale.md` §4a), on the drain's thread. Without the `erase` test
-the executor hears of one unregistration twice (an immediate client's queued unregister already notified at its enqueue, G-31).
-Without the `has<>` test the brawler's `brawlerHitRouting::System::onCharacterUnregistered` takes `view.get<SimulatableBrawler>(id)`
-of a character that is not there (the reason of G-26, retired by og-session-runtime task 14). Moved out of the hook, the notify runs after the facade destroyed the storage
-entry, or not at all for a roster Remove: the hit-routing system then keeps a pointer to the destroyed brawler (og-input-latency
-task P5-17's F1).
-
-**What breaks if the tag moves.** Nothing mechanical. The og-sim-net cases `SimNetLifecycleUnregisteringHook.*` pin that the hook
-is called before the facade; nothing reaches this answer in a test (it needs the Unreal session).
-
----
-
 ## G-36 — the authority loop notifies the executor of a registration in the `applied` hook on the runner, and records it
 
 **Tag site:** `UESimulationSession.h`, `onRunnerRegisterApplied_Runner`, directly above `m_manager->notifyCharacterRegistered(id);`
@@ -649,7 +544,7 @@ not move the notify to the game thread's finish of the registration (`tryRegiste
 the record.
 
 **The consequence.** The executor's systems are stepped by the runner: a game-thread notify mutates them while a step reads them.
-Without the record, `onSimNetLifecycleUnregistering` (G-35) finds no notified id at the character's unregistration and never tells
+Without the record, `onSimNetLifecycleUnregistering` (`⛔G-41`) finds no notified id at the character's unregistration and never tells
 the executor, so the hit-routing system keeps a pointer into freed storage.
 
 **What breaks if the tag moves.** Nothing at compile time; on the authority (every one runs the loop since og-session-runtime
@@ -669,7 +564,7 @@ bodies only in the `applied` callback of `SimNetServer::unregisterCharacter`. Do
 **The consequence.** The registration reaches og-sim-net's lifecycle queue in a runner request and is applied by the server's
 drain after every request of that wake. A direct release then runs before a registration still in the queue: the character is
 registered afterwards with released bodies, its slot free for the next join, and no owner left on the game thread to unregister
-it. Through the queue the unregister is applied after the registration (the queue is FIFO), the systems are notified first (G-35),
+it. Through the queue the unregister is applied after the registration (the queue is FIFO), the systems are notified first (`⛔G-41`),
 and the bodies go after the facade, in that order.
 
 **What breaks if the tag moves.** Nothing mechanical. A pawn that leaves within a frame or two of joining keeps a registered
@@ -677,8 +572,32 @@ character in the simulation.
 
 ---
 
+## G-41 — the authority's unregistering hook notifies the executor only for a notified id still in storage
 
+**Tag site:** `UESimulationSession.h`, `onSimNetLifecycleUnregistering`, directly above
+`if (m_systemsNotified_Step.erase(id) != 0u && m_storage.template has<Simulatable>(id))`. Since og-session-runtime task 29 only
+the og-sim-net server's host reaches this function (`UESimNetLanesServerHost::onLifecycleUnregistering`, `UESimNetHost.h`); a
+client's link session reaches og-sim-session's `SessionLifecycle::onUnregistering` (`SessionLifecycle-guards.md` G-05).
 
+**The prohibition.** ⛔ Keep both tests, and keep the notify in this hook. Do not drop the `erase` test, do not drop the `has<>`
+test, and do not move the notify after the hook returns.
+
+**The consequence.** og-sim-net's server calls the hook before the facade of every queue-registered character's unregister (a
+queued unregister, `removeCharacter`; `SimNetHost-rationale.md` §4a), on the runner. Without the `erase` test the executor
+could hear of an unregistration for an id it was never told of. Without the `has<>` test the brawler's
+`brawlerHitRouting::System::onCharacterUnregistered` takes `view.get<SimulatableBrawler>(id)` of a character that is not there.
+Moved out of the hook, the notify runs after the facade destroyed the storage entry: the hit-routing system then keeps a pointer
+to the destroyed brawler (og-input-latency task P5-17's F1). The record the test reads is written in the runner's `applied` hook
+(`⛔G-36`).
+
+**What breaks if the tag moves.** Nothing mechanical. The og-sim-net case
+`SimNetLifecycleUnregisteringHook.TheServerHookRunsBeforeTheFacadeWhileTheCharacterIsInStorage` pins that the hook is called
+before the facade; nothing reaches this answer in a test (it needs the Unreal session). Task 30 moves it with the authority's
+path.
+
+*Was the authority's half of `⛔G-35` (og-input-latency task P5-19), split by og-session-runtime task 29.*
+
+---
 
 ## §R — Retired ids
 
@@ -759,7 +678,7 @@ notify in the authority's unqueued arm of `tryRegister`, the in-frame server's g
 
 **Why it retired.** Task 14 deleted that arm: an authority registers on its runner, a client through its queue. The rule is
 each remaining path's own guard. **Successors:** `⛔G-36` (the authority runner's applied hook) and `⛔G-32` (a client's applied
-hook).
+hook; since og-session-runtime task 29 og-sim-session's `SessionLifecycle-guards.md` G-02).
 
 ### G-26 — RETIRED by og-session-runtime task 14 (2026-11-24): its site was deleted
 
@@ -768,7 +687,8 @@ the `has<>` test at the top of the in-frame unregistration.
 
 **Why it retired.** Task 14 deleted that unregistration with the in-frame server. The same order and the same guard are each
 remaining path's own. **Successors:** `⛔G-31` (a client's queued unregistration) and `⛔G-35` (og-sim-net's unregistering hook,
-which the authority runner's queue reaches).
+which the authority runner's queue reaches); since og-session-runtime task 29 og-sim-session's `SessionLifecycle-guards.md` G-01
+and, for the hook, `SessionLifecycle-guards.md` G-05 (a client) and `⛔G-41` (the authority).
 
 ### G-14 — RETIRED by og-session-runtime task 23 (2026-11-25): moved with its site to og-sim-session
 
@@ -884,3 +804,47 @@ the site with it. The entry moved with its text and its R0 history, re-verified.
 feeds and the window line, the dilation stage, the authority's rate line, its step start and the server tick's publish),
 the site with it. The entry moved with its text and its R0 history, re-verified. **Successor:** og-sim-session's
 `SessionClock-guards.md` G-07.
+
+### G-31 — RETIRED by og-session-runtime task 29 (2026-11-25): moved with its site to og-sim-session
+
+**Was:** *"an immediate client's queued unregistration notifies the executor before it enqueues, behind the `has<>` guard"*. Its
+tag sat in `enqueueQueuedUnregister_Step`, above the notified-set and storage test before `client.unregisterCharacter`.
+
+**Why it retired.** Task 29 moved the prediction role's registration and unregistration out of this class into og-sim-session's
+engine-free `SessionLifecycle.h`, the site with it (`enqueueUnregister`). The entry moved with its text, re-verified.
+**Successor:** og-sim-session's `SessionLifecycle-guards.md` G-01.
+
+### G-32 — RETIRED by og-session-runtime task 29 (2026-11-25): moved with its site to og-sim-session
+
+**Was:** *"an immediate client notifies the executor of a registration only in its `applied` hook, and not when an unregister is
+pending"*. Its tag sat in `onQueuedRegisterApplied_Step`, above the pending-unregister test.
+
+**Why it retired.** As G-31: the site moved to `SessionLifecycle::onRegisterApplied`. **Successor:** og-sim-session's
+`SessionLifecycle-guards.md` G-02.
+
+### G-33 — RETIRED by og-session-runtime task 29 (2026-11-25): moved with its decision to og-sim-session
+
+**Was:** *"an immediate client's game-thread unregistration releases the bodies only after the step has applied it"*. Its tag sat
+in `requestQueuedUnregister_GameThread`, above `unregisterCharacterHostOnly(id, &owner, /*releaseBodiesNow=*/false)`.
+
+**Why it retired.** As G-31. The decision to keep the bodies is now `SessionLifecycle::requestUnregister`'s answer
+`UnregisterRelease::AfterApplied`, where the tag sits; the adapter's one host-work call passes `release ==
+UnregisterRelease::Now` (`unregisterFromNewFramework`). **Successor:** og-sim-session's `SessionLifecycle-guards.md` G-03.
+
+### G-34 — RETIRED by og-session-runtime task 29 (2026-11-25): moved with its site to og-sim-session
+
+**Was:** *"an immediate client's teardown stops the steps before it unregisters anything"*. Its tag sat in
+`teardownImmediateClient_GameThread`, above `m_physicsBackend.onEndPlayBegin()`.
+
+**Why it retired.** As G-31: the site moved to `SessionLifecycle::teardown`, above the port's `stopSteps()` (which the adapter's
+port maps to `onEndPlayBegin`). The R0 of the move corrected one claim: the overlap check is og-sim's `SimInbox::drain`, not
+og-sim-net's. **Successor:** og-sim-session's `SessionLifecycle-guards.md` G-04.
+
+### G-35 — RETIRED by og-session-runtime task 29 (2026-11-25): split by role
+
+**Was:** *"the og-sim-net hosts' unregistering hook notifies the executor only for a notified id still in storage"*. Its tag sat
+in `onSimNetLifecycleUnregistering`, which both og-sim-net hosts reached (the client's link session and the server's host).
+
+**Why it retired.** Task 29 moved the prediction role's half into og-sim-session (`SessionLifecycle::onUnregistering`, with its own
+notified set); the authority's stays here until task 30, with its own id. **Successors:** og-sim-session's
+`SessionLifecycle-guards.md` G-05 (a client) and `⛔G-41` (the authority).

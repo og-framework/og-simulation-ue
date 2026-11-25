@@ -161,7 +161,7 @@ TEST_CASE("SessionSkeleton.TheSessionTypesDefaultToNothingRegistered", "[Session
 TEST_CASE("SessionSkeleton.ALifecycleOutcomeHoldsEachKind", "[Session]")
 {
 	using namespace ogsession::lifecycleOutcome;
-	const std::vector<ogsession::LifecycleOutcome> outcomes{ Registered{ 3u, 1u }, Refused{ 4u, ogsession::RegisterRefusal::NoChannel },
+	const std::vector<ogsession::LifecycleOutcome> outcomes{ Registered{ 3u, 1u }, Refused{ 4u, ogsession::RegisterRefusal::SimNetRefused },
 		Unregistered{ 5u }, RosterRemoved{ 6u }, BodiesReleasable{ ogsession::EntityKey{ 77u } } };
 
 	std::vector<std::string> names;
@@ -171,6 +171,6 @@ TEST_CASE("SessionSkeleton.ALifecycleOutcomeHoldsEachKind", "[Session]")
 	CHECK(names == expected);
 
 	CHECK(std::get<Registered>(outcomes[0]).slot == 1u);
-	CHECK(std::get<Refused>(outcomes[1]).reason == ogsession::RegisterRefusal::NoChannel);
+	CHECK(std::get<Refused>(outcomes[1]).reason == ogsession::RegisterRefusal::SimNetRefused);
 	CHECK(std::get<BodiesReleasable>(outcomes[4]).entityKey == ogsession::EntityKey{ 77u });
 }

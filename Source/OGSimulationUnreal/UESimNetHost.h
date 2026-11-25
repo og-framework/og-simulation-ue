@@ -475,7 +475,7 @@ struct UESimNetLinkSession
 	void onRelayFloor(uint8_t floorTicks) { session->onRelayDelayFloorReceived(floorTicks); }
 	void onConnectionTier(uint8_t oldTier, uint8_t newTier) { session->onConnectionTierReceived(oldTier, newTier); }
 	void onClockSample(const SimClockRttSample& sample) { session->onSimClockSample(sample); }
-	void onLifecycleUnregistering(uint8_t simId) { session->onSimNetLifecycleUnregistering(simId); }
+	void onLifecycleUnregistering(uint8_t simId) { session->onSimNetClientLifecycleUnregistering(simId); }
 
 	void stampClientReceived(ogsimnet::SimNetStream stream, uint8_t simId, uint32_t tick, double recvSeconds)
 	{

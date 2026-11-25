@@ -323,7 +323,9 @@ test, had no caller left in code after og-session-runtime task 3 deleted that ho
 deleted it. og-input-latency task P5-9 deleted the two `Replayed`
 overrides, so three listener overrides remain (`onConnectionTierReceived`, `onRelayDelayFloorReceived`,
 `onTimingInfoReceived`), and task P5-26 deleted `getSyncedTimingBuffer`. The og-sim-net hosts also call
-`onSimClockSample` (og-input-latency task P3-10, §20) and `onSimNetLifecycleUnregistering` (`⛔G-35`). The owner keeps its own
+`onSimClockSample` (og-input-latency task P3-10, §20) and `onSimNetLifecycleUnregistering` (`⛔G-41`; since og-session-runtime
+task 29 the server's host only, a client's link session calling `onSimNetClientLifecycleUnregistering`, which forwards to
+og-sim-session's `SessionLifecycle`). The owner keeps its own
 `getLatencyBudgetDiagnostics()` / `editLatencyBudgetDiagnostics()`, which forward here, so its latency lookups (`instanceFor`)
 are unchanged. *R0, task 28:* the mutable one keeps one caller, the latency member's own `instanceFor`
 (`UELatencyBudgetDiagnostics.h`), which reaches it through `TraitsT::SessionOwner::instanceFor`; the const one has no caller
@@ -1421,7 +1423,8 @@ executor". Both notifies are unconditional, on both roles: the manager forwards 
 role, and the executor calls a system only where its role affinity fires (`SimulationSystemsExecutor`'s `firesOnRole`).
 The brawler's hit-routing and hit-detection systems fire on every role; its ring-out score system on the authority only.
 What the authority-only score system relies on, and why the notify must precede `Ready`, was G-25 (retired by
-og-session-runtime task 14); on the remaining paths it is `⛔G-36` (the runner) and `⛔G-32` (a client).
+og-session-runtime task 14); on the remaining paths it is `⛔G-36` (the runner) and, for a client, og-sim-session's `SessionLifecycle-guards.md` G-02
+(this file's `⛔G-32` until og-session-runtime task 29).
 
 ### 12.5 The four registration hooks, their inline checks, and the name-clash row
 
@@ -1769,7 +1772,8 @@ destruction), and on a client marks the bindings unregistered.
 
 Two other paths unregister a character before the pawn's `EndPlay`, and each records the id in `m_simUnregisteredIds`, so
 the later `EndPlay` returns at its first statement (`⛔G-30`) and the line prints once:
-- **a client's roster Remove** of a registered id (`onSimNetRegisteredRemoved`, called by the client host inside og-sim-net's
+- **a client's roster Remove** of a registered id (`SessionLifecycle::onRegisteredRemoved` since og-session-runtime task 29,
+  `onSimNetRegisteredRemoved` before, called by the client host inside og-sim-net's
   Remove handling, before the channel is erased; P7's C-4). It ran `unregisterCharacter` there until og-session-runtime task 12;
   since then og-sim-net has unregistered the queue-registered character itself, and the session posts the host work to the game
   thread, which records the id the same way (§18.5);
@@ -1997,75 +2001,58 @@ moved:
 
 ### 18.4 Registration through the lifecycle queue
 
-`tryRegister` sends every client registration to `tryRegisterQueued` once the bodies exist and are resolvable (the unqueued
-client branch, the frame-locked client's, went with og-session-runtime task 12):
+Since og-session-runtime task 29 the queue path is og-sim-session's `SessionLifecycle` (`SessionLifecycle-rationale.md` §4): the
+gate on the bindings' verdict, the enqueue with the latency-wrapped provider, the apply on the drain's thread (the input stamps,
+the executor's notify, `SessionLifecycle-guards.md` G-02), and the finish with its two lines. The session keeps its frame door and
+the host work:
 
-1. **The gate** is the bindings' verdict, asked and marked in one hold (`markRegisteredIfReady`): `Wait` stays `Pending`, a role
-   mismatch is the `checkf` the frame-locked branch had, `Ready` marks the id registered. The client session's channel map is the
-   drain's, so the gate does not read it (the frame-locked branch did).
-2. **The enqueue**: `registerCharacter(simId, simulatable, provider, applied)` with the latency-wrapped provider. The record keeps
-   no simulatable after this (`queued`), and every later call goes to `finishQueuedRegistration` first.
-3. **The apply**, on the drain's thread: og-sim-net registers the character with its channel as the owner, then calls `applied`
-   (`onQueuedRegisterApplied_Step`), which sets a local character's `Handed` callback (posting through the mailbox), notifies the
-   systems executor (`⛔G-32`), and posts `RegisterApplied` to the game thread. A refusal (`noChannel`, `registered`) posts
-   `RegisterRefused`.
-4. **The finish**, on the game thread, at the binding's next attempt: `collectLifecycleOutcomes_GameThread` reads the posted
-   outcomes (under a mutex; the session also collects them once a frame, in `onPostPhysicsStep`). On `RegisterApplied`, the host
-   work the frame-locked branch did at once: the registered-component map, the `tryRegister: registered` line, the game's `afterRegistered`
-   and the backend's `onRegistered_GameThread`, then `Ready`. On a refusal, or a roster Remove before the finish, the bindings are
-   marked unregistered, an `Error` names the id, and `Refused` (the simulatable died in the job; the pawn's `EndPlay` releases its
-   bodies).
+1. `tryRegister` creates the pending record and runs the frame door (`createBodies_GameThread`, then the resolvable poll; design
+   Q12) until the bodies exist and resolve, then hands the record's simulatable and provider to `SessionLifecycle::tryRegister`
+   with a request whose entity key is the component (`entityKeyOf`). When the lifecycle queued it (`isQueued`), the record drops
+   its simulatable and is marked `queued`.
+2. Every later call of a queued record collects the outcomes (`collectLifecycleOutcomes_GameThread`, which on a client is the
+   lifecycle's `pollOutcomes` with `onPredictionOutcome_GameThread`) and asks the lifecycle again: `Refused` erases the record;
+   `Ready` runs the host work the frame-locked branch did at once (the registered-component map, the game's `afterRegistered`,
+   the backend's `onRegistered_GameThread`) and erases it.
 
 **The order, against the retired frame-locked branch.** The executor's notify runs before the game's `afterRegistered`, on the
-step, right after the character entered storage (G-25's condition, in storage and before `Ready`, holds). The session keeps no
-channel map (the in-frame server's was the last, until og-session-runtime task 14): the game thread never touches a client's
-channel. A local character's input sample is
-published from the frame after `Ready` (`sampleInput` walks the registered map), so its first one or two steps after the apply
-read the neutral input; a frame-locked character's first step after `Ready` already had a sample.
+step, right after the character entered storage. The session keeps no channel map: the frame thread never touches a client's
+channel. A local character's input sample is published from the frame after `Ready` (`sampleInput` walks the registered map), so
+its first one or two steps after the apply read the neutral input; a frame-locked character's first step after `Ready` already
+had a sample.
 
 ### 18.5 Unregistration
 
-- **The pawn's `EndPlay`** (`unregisterFromNewFramework`, after `⛔G-30`) calls `requestQueuedUnregister_GameThread`. An id that
-  never reached the queue (no queued record, not registered) runs the host work at once, bodies included
-  (`unregisterCharacterHostOnly`); nothing of it is in og-sim. Otherwise the game thread erases the pending record, posts the id to
-  the step, holds the component (`TStrongObjectPtr`) and runs the host work except the bodies' release (`⛔G-33`): the maps and
-  the bindings (`forgetSimNetCharacter`), the game's `onUnregistered`, the latency forget and the `NewFramework: unregistered`
-  line.
-- **The step** takes the posted ids at its start, before its drain (`applyUnregisterRequests_Step`, in
-  `receiveForClientStep_Step`): for each it notifies the systems executor while the character is still in storage (`⛔G-31`, the queue's form of `⛔G-26`) and enqueues `unregisterCharacter`, which the
-  same step's drain applies at its top. `applied` clears the channel's `Handed` callback and posts `UnregisterApplied`; the game
-  thread then runs the backend's `onUnregistered_GameThread` on the held component and lets it go. The bodies are released only
-  after the character has left storage, so no step integrates a character whose bodies are unbound.
-- **A queued registration not yet applied** is unregistered by the same request: the queue is FIFO, the register applies, and its
-  `applied` sees the pending unregister and does not notify the executor, so the executor never holds the character.
-- **A roster Remove** of a registered id: og-sim-net unregisters a queue-registered character inside the drain before it calls
-  the host (`SimNetClient-guards.md` G-12), and the host's handler reaches `onSimNetRegisteredRemoved` on the step, which posts
-  `RosterRemoved`. The game thread runs the host work with the release and records the id (`⛔G-30`), as the frame-locked
-  client did at once. If the
-  pawn's request is already pending, its own completion does the release; if the registration has not finished, it ends
-  `Refused`. **Known gap:** og-sim-net calls no host hook before its own unregister, so the systems executor is not notified for a
-  character removed this way, and a system that keeps a pointer into storage (the brawler's hit routing) keeps it past the
-  character's removal (the task's notes, finding F1).
+- **The pawn's `EndPlay`** (`unregisterFromNewFramework`, after `⛔G-30`) asks `SessionLifecycle::requestUnregister`, erases the
+  pending record, and runs the host work (`unregisterCharacterHostOnly`: the maps and the bindings, the game's `onUnregistered`,
+  the latency forget, the `NewFramework: unregistered` line) with the bodies' release when the answer is `Now`, and without it,
+  holding the component (`TStrongObjectPtr`), when it is `AfterApplied` (`SessionLifecycle-guards.md` G-03).
+- **The step** applies the posted requests at its start, before its drain (`SessionNetHooks::receiveForStep` through
+  `NetPort::applyUnregisterRequests`; `SessionLifecycle-guards.md` G-01 for the notify's place). On the `Unregistered` outcome the
+  session runs the backend's `onUnregistered_GameThread` on the held component and lets it go
+  (`onPredictionOutcome_GameThread`).
+- **A roster Remove** of a registered id: og-sim-net unregisters a queue-registered character inside the drain, calling the
+  unregistering hook first (`SessionLifecycle-guards.md` G-05; the client's link session reaches it through
+  `onSimNetClientLifecycleUnregistering`), then the host, whose handler reaches `SessionLifecycle::onRegisteredRemoved`, which
+  posts `RosterRemoved`. The session runs the host work with the release and records the id (`⛔G-30`). *R0, task 29:* this
+  section called that hook missing ("og-sim-net calls no host hook before its own unregister", finding F1); it is there since
+  og-input-latency task P5-19 (`SimNetClient-guards.md` G-13).
 
 ### 18.6 Teardown
 
 `teardownImmediateClient_GameThread` runs once, from whichever comes first: the lanes' stop handler (`onSimNetLanesStopping`,
 before its own loop, which then finds nothing registered) or `endPlay` (after `onEndPlayBegin`, before `detachFromSimNetLanes`).
+It hands the lifecycle's work to `SessionLifecycle::teardown` (`SessionLifecycle-rationale.md` §6; the steps stop first,
+`SessionLifecycle-guards.md` G-04): the port's `stopSteps` is `m_physicsBackend.onEndPlayBegin()`, idempotent, so `endPlay`'s
+own call before it does nothing; its `drainWhileStopped` marks the clock's stopped drain (`m_clock->beginStoppedDrain()` /
+`endStoppedDrain()`, `SessionClock-rationale.md` §3) around `drainClientWhileStopped_GameThread`. Then the session finishes: every
+held component's bodies released, every registered character's host work run with its id recorded (`⛔G-30`: the pawn's later
+`EndPlay` returns at once), and the queued records erased (the lifecycle unmarked their bindings). Later registrations stay
+`Pending` (the lifecycle's `stepsStopped`).
 
-1. **The steps stop first** (`⛔G-34`): `m_physicsBackend.onEndPlayBegin()` stops the tick driver and waits for its step tasks;
-   it is idempotent, so `endPlay`'s own call after it does nothing. From here the game thread is the only thread that touches the
-   simulation.
-2. **Everything queued or registered is unregistered through the queue**: the posted requests, every queued record and every
-   registered character, each with its executor notify; then one game-thread drain (`drainClientWhileStopped_GameThread`) applies
-   them. So og-sim-net's client holds no registered character and no pending job that points into this session's storage, and
-   the session can die before the lanes (review_P2-17 N2). The session is still bound, so a timing info, clock sample, tier or
-   floor in that drain reaches the clock's receipt doors on the game thread: since og-session-runtime task 24 the drain is
-   marked (`m_clock->beginStoppedDrain()` before, `endStoppedDrain()` after), and inside the marks those doors check the
-   client's stopped-drain row of the thread table, `SessionOp::DrainStopped`, instead of the step's (`SessionClock-rationale.md`
-   §3; `SessionThreads-rationale.md` §7.1).
-3. **The game thread finishes**: the outcomes are collected, every held component's bodies released, every registered
-   character's host work run with its id recorded (`⛔G-30`: the pawn's later `EndPlay` returns at once), and the queued records
-   erased with their bindings unmarked. The session's later registrations stay `Pending` (`m_immediateStepsStopped`).
+`detachFromSimNetLanes` unmarks the registered ids and, through `SessionLifecycle::detach`, the queued ones (og-session-runtime
+task 29, review_SR5_28 lead item 1): a destructor that detaches without `endPlay` leaves no id marked for the next attach's seed
+(`SessionLifecycle-rationale.md` §7).
 
 ### 18.7 What frame-locked kept (retired by og-session-runtime task 12)
 
@@ -2158,7 +2145,8 @@ does the host's half at once (the maps, the game's `onUnregistered`, the latency
 `NewFramework: unregistered` line); when bodies may be held it posts a runner request that unregisters through og-sim-net's queue
 once a registration was posted (G-37) and releases the bodies in its `applied` callback. og-sim-net calls the host's
 `onLifecycleUnregistering` before the facade, which the session answers with the executor's notify while the character is in
-storage (G-35; the same answer serves a client's roster Removes, og-input-latency P5-17's F1). After the runner has
+storage (`⛔G-41`; a client's roster Removes get the same answer from og-sim-session's `SessionLifecycle::onUnregistering`,
+`SessionLifecycle-guards.md` G-05, og-input-latency P5-17's F1). After the runner has
 stopped nothing is posted: the simulation and its world are destroyed whole.
 
 ### 19.5 The game thread on the loop

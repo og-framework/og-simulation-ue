@@ -8,6 +8,7 @@
 #include "OGSimSession/SessionEngine.h"
 #include "OGSimSession/SessionGame.h"
 #include "OGSimSession/SessionKnobs.h"
+#include "OGSimSession/SessionLifecycle.h"
 #include "OGSimSession/SessionNetHooks.h"
 #include "OGSimSession/SessionThreads.h"
 #include "OGSimSession/SessionTickGame.h"

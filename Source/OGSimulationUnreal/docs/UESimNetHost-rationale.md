@@ -185,7 +185,9 @@ same causes; "no UWorld" is gone because the services read their driver directly
 - `onRelayFloor(v)` → `onRelayDelayFloorReceived(v)`: replayed or not, the floor pays for an increase
   (`SimNetLink-guards.md` G-04).
 - `onConnectionTier(old, new)` → `onConnectionTierReceived(old, new)`, replayed or not.
-- `onClockSample(sample)` → `onSimClockSample(sample)`; `onLifecycleUnregistering(simId)` → `onSimNetLifecycleUnregistering(simId)`.
+- `onClockSample(sample)` → `onSimClockSample(sample)`; `onLifecycleUnregistering(simId)` → `onSimNetClientLifecycleUnregistering(simId)`
+  (og-session-runtime task 29; it forwards to og-sim-session's `SessionLifecycle::onUnregistering`, and the server's host keeps
+  `onSimNetLifecycleUnregistering`).
 - `stampClientReceived(stream, simId, tick, recv)` → the diagnostics' `stampClientReceived_Internal` (§4).
 
 The link calls them only while attached. The floor and tier are not lost: og-sim-net's client latches them and replays them at

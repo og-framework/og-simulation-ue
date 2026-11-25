@@ -56,7 +56,7 @@ enum class RegisterStatus : uint8_t
 
 enum class RegisterRefusal : uint8_t
 {
-	NoChannel,
+	SimNetRefused,
 };
 
 namespace lifecycleOutcome
@@ -70,7 +70,7 @@ struct Registered
 struct Refused
 {
 	uint32_t        simId  = 0u;
-	RegisterRefusal reason = RegisterRefusal::NoChannel;
+	RegisterRefusal reason = RegisterRefusal::SimNetRefused;
 };
 
 struct Unregistered

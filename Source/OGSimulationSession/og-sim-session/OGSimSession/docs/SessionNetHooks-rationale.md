@@ -48,10 +48,10 @@ deleting the type-name line alone changes nothing. The server and the idle servi
 is a session pointer, so the server, the idle service and the lanes are read through it on every call, as the session's
 members were (they are built and reset over the session's life).
 
-The lifecycle halves stay with the Unreal session until the runtime's lifecycle component (og-session-runtime tasks 29 and
-30): the runner
-requests (`runRunnerRequests_Owner`, the bridge's swap-and-run that `beforePump_Owner` held) and the client's unregister
-requests (`applyUnregisterRequests_Step`).
+The lifecycle halves are the runtime's lifecycle component's: the client's unregister requests are
+`SessionLifecycle::applyRequests` since og-session-runtime task 29 (`applyUnregisterRequests_Step` before), which the port's
+`applyUnregisterRequests` calls before the drain (`SessionLifecycle-rationale.md` §2); the runner requests
+(`runRunnerRequests_Owner`, the bridge's swap-and-run that `beforePump_Owner` held) stay with the Unreal session until task 30.
 
 ## §3 The doors
 

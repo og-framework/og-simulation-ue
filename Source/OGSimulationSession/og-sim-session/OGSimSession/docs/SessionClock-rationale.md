@@ -79,9 +79,9 @@ in `beginClientSimNet`, after the manager, and the tick driver's hooks run only 
 ## §3 The stopped drain
 
 A bound client drains og-sim-net's inbox at the start of each step, on the step's thread (`UESimNetLanes::drainClient_Step`,
-inside the driver's `StepScope`), and once more on the frame thread at its teardown: `teardownImmediateClient_GameThread` stops
-the steps (`onEndPlayBegin`), queues the unregistrations and calls `drainClientWhileStopped_GameThread` while the session is still
-bound, so a timing info, a clock sample, a tier or a floor in that drain reaches the four receipt doors on the frame. Their row
+inside the driver's `StepScope`), and once more on the frame thread at its teardown: `SessionLifecycle::teardown` (since og-session-runtime task 29;
+the Unreal session's `teardownImmediateClient_GameThread` before) stops the steps (`onEndPlayBegin`), queues the unregistrations
+and, through its port, calls `drainClientWhileStopped_GameThread` while the session is still bound, so a timing info, a clock sample, a tier or a floor in that drain reaches the four receipt doors on the frame. Their row
 is `DrainInbox`, the step's; so the Unreal session marks that one drain with `beginStoppedDrain()` and `endStoppedDrain()`
 around the call, and between them each receipt door checks `SessionOp::DrainStopped`, the client's frame row (the authority has
 none: it has no such drain). `DrainInbox` itself is not widened: a receipt on the frame outside that window still fails (lead
