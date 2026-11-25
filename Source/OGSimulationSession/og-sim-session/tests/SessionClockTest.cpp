@@ -14,7 +14,7 @@
 #include "OGSimulation/Network/ReplicatedTierConsumer.h"
 #include "OGSimulation/PCTimeManagement/NetworkTimeEstimator.h"
 #include "OGSimulation/PCTimeManagement/TimeConfig.h"
-#include "OGSimulation/SimulationDisplaySnapshot.h"
+#include "OGSimSession/SimulationDisplaySnapshot.h"
 #include "OGSimulation/SimulationScheduler.h"
 #include "OGSimulation/TickDriverGameTypes.h"
 #include "OGSimulation/TickDriverThreadContext.h"

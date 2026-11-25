@@ -16,7 +16,7 @@
 #include "OGSimulation/PCTimeManagement/ClockDilationController.h"
 #include "OGSimulation/PCTimeManagement/NetworkTimeEstimator.h"
 #include "OGSimulation/PCTimeManagement/TimeConfig.h"
-#include "OGSimulation/SimulationDisplaySnapshot.h"
+#include "OGSimSession/SimulationDisplaySnapshot.h"
 #include "OGSimulation/TickDriverGameTypes.h"
 #include "OGSimNet/SimNetClock.h"
 #include "OGSimNet/SimNetServer.h"
