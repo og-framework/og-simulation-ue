@@ -8,6 +8,7 @@
   "EnabledByDefault": true,
   "Modules": [
     { "Name": "OGSimulation", "Type": "Runtime", "LoadingPhase": "Default" },
+    { "Name": "OGTickDriver", "Type": "Runtime", "LoadingPhase": "Default" },
     { "Name": "OGNet",        "Type": "Runtime", "LoadingPhase": "Default" },
     { "Name": "OGNetUnreal",  "Type": "Runtime", "LoadingPhase": "Default" },
     { "Name": "OGSimulationNet", "Type": "Runtime", "LoadingPhase": "Default" },

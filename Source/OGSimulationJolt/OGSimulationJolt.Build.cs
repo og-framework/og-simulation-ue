@@ -15,7 +15,7 @@ public class OGSimulationJolt : ModuleRules
 		bEnableExceptions = false;
 		bUseRTTI = false;
 
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "glm", "OGSimulation" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "glm", "OGSimulation", "OGTickDriver" });
 
 		string LibraryRoot = Path.Combine(ModuleDirectory, "og-simulation-jolt");
 		PublicIncludePaths.Add(LibraryRoot);

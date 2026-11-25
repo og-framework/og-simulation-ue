@@ -4,7 +4,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(OGSimulationStandalone CXX)
 
-option(OG_STANDALONE_CORE_ONLY "Build og-simulation, og-simulation-jolt and their tests only: og-net, og-sim-net and og-sim-session are not added" OFF)
+option(OG_STANDALONE_CORE_ONLY
+    "Build og-simulation, og-tickdriver, og-simulation-jolt and their tests only: og-net, og-sim-net and og-sim-session are not added" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,6 +31,7 @@ target_include_directories(Catch2 PUBLIC "${OGNET_CATCH2_DIR}")
 
 add_subdirectory("${OG_STANDALONE_SOURCE}/OGSimulation/og-simulation/glm" glm)
 add_subdirectory("${OG_STANDALONE_SOURCE}/OGSimulation/og-simulation/OGSimulation" og_simulation)
+add_subdirectory("${OG_STANDALONE_SOURCE}/OGSimulation/og-simulation/og-tickdriver" og_tickdriver)
 add_subdirectory("${OG_STANDALONE_SOURCE}/OGSimulationJolt/og-simulation-jolt" og_simulation_jolt)
 add_subdirectory("${OG_SIMULATION_TESTS_DIR}/Source/OGSimulationTests" og_simulation_tests)
 

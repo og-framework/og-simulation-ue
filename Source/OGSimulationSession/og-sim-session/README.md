@@ -40,7 +40,8 @@ above it. `OGSimSession/docs/OGSimSession-rationale.md` describes the module and
   target does.
 
 og-sim-net comes from the parent project when its target `og_sim_net` exists, or else from `OG_SIM_NET_DIR`, which takes
-og-simulation and og-net in turn (`OG_SIMULATION_DIR`, `OG_NET_DIR`). og-simulation-jolt comes from the parent or
+og-simulation and og-net in turn (`OG_SIMULATION_DIR`, `OG_NET_DIR`). og-tickdriver comes from the parent's
+`og_tickdriver` target, or else from the `og-tickdriver/` folder of that og-simulation checkout. og-simulation-jolt comes from the parent or
 `OG_SIMULATION_JOLT_DIR` when either is given, and only the tests link it: the library does not depend on it.
 
 ```

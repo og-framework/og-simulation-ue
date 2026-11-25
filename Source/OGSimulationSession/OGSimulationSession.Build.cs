@@ -14,7 +14,7 @@ public class OGSimulationSession : ModuleRules
 		bEnableExceptions = false;
 		bUseRTTI = false;
 
-		PublicDependencyModuleNames.AddRange(new string[] { "OGSimulation", "OGSimulationNet" });
+		PublicDependencyModuleNames.AddRange(new string[] { "OGSimulation", "OGTickDriver", "OGSimulationNet" });
 		PrivateDependencyModuleNames.AddRange(new string[] { "Core" });
 
 		string LibraryRoot = Path.Combine(ModuleDirectory, "og-sim-session");

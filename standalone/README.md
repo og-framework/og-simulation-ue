@@ -7,7 +7,8 @@ header does not compile here.
 
 | Library | Its CMake | Target | Tests (CTest) |
 |---|---|---|---|
-| og-simulation | `../Source/OGSimulation/og-simulation/OGSimulation/` | `og_simulation` | `og_simulation_tests`, from og-simulation-tests |
+| og-simulation | `../Source/OGSimulation/og-simulation/OGSimulation/` | `og_simulation`; `og_simulation_header_check` compiles each header alone | `og_simulation_tests`, from og-simulation-tests |
+| og-tickdriver | `../Source/OGSimulation/og-simulation/og-tickdriver/` | `og_tickdriver`; `og_tickdriver_header_check` compiles each header alone | its cases in `og_simulation_tests` |
 | og-simulation-jolt | `../Source/OGSimulationJolt/og-simulation-jolt/` | `og_simulation_jolt` | its cases in `og_simulation_tests` |
 | og-net | `../Source/OGNet/og-net/` | `og_net` | `og_net_tests`, `og_net_check_aborts` |
 | og-sim-net | `../Source/OGSimulationNet/og-sim-net/` | `og_sim_net` | one CTest entry per `[@og]` case, label `og_sim_net` |
@@ -43,7 +44,7 @@ ctest --test-dir Intermediate/OGStandalone/full -C Release
 cmake -S Plugins/OGSimulation/standalone -B Intermediate/OGStandalone/core -DOGNET_CATCH2_DIR=<Catch2 directory> -DOG_STANDALONE_CORE_ONLY=ON
 ```
 
-builds og-simulation, og-simulation-jolt and og-simulation-tests only: og-net, og-sim-net and og-sim-session are not added,
+builds og-simulation, og-tickdriver, og-simulation-jolt and og-simulation-tests only: og-net, og-sim-net and og-sim-session are not added,
 so the core is shown to build and pass its tests without the layers above it.
 
 ## Flags

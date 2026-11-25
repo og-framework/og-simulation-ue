@@ -33,7 +33,8 @@ it. `OGSimNet/docs/OGSimNet-rationale.md` describes the module and the test wiri
   og-brawler-unreal has it.
 
 og-simulation and og-net come from the parent project when its targets `og_simulation` and `og_net` exist, or else from
-`OG_SIMULATION_DIR` and `OG_NET_DIR`, the way og-simulation-jolt takes og-simulation.
+`OG_SIMULATION_DIR` and `OG_NET_DIR`, the way og-simulation-jolt takes og-simulation. The tests also link og-tickdriver:
+the parent's `og_tickdriver` target, or else the `og-tickdriver/` folder of that og-simulation checkout.
 
 ```
 cmake -S og-sim-net -B <out> -DOG_SIMULATION_DIR=<og-simulation> -DOG_NET_DIR=<og-net> -DOGNET_CATCH2_DIR=<Catch2 v3 amalgamated> -DOG_SIMULATION_TESTS_DIR=<og-simulation-tests>

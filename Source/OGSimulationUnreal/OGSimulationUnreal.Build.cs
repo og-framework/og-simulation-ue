@@ -11,6 +11,6 @@ public class OGSimulationUnreal : ModuleRules
 		PrivatePCHHeaderFile = EngineDirectory + "/Source/Runtime/Engine/Public/EngineSharedPCH.h";
 		bUseUnity = false;
 
-		PublicDependencyModuleNames.AddRange(new string[] { "Chaos", "Core", "PhysicsCore", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "OGSimulation", "OGNet", "OGNetUnreal", "OGSimulationNet", "OGSimulationSession" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Chaos", "Core", "PhysicsCore", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "OGSimulation", "OGTickDriver", "OGNet", "OGNetUnreal", "OGSimulationNet", "OGSimulationSession" });
 	}
 }
