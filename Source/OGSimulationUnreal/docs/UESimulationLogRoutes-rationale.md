@@ -24,7 +24,7 @@ table has is a `static_assert` (§9).
 | `LogOGSim`, `LogOGSimTick`, `LogOGMgmt`, `LogOGNet`, `LogOG`, `LogOGRelayProbe`, `LogOGDivergenceProbe`, `LogOGResimProbe` | the eight routed categories, `OGSIMULATIONUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(…, Log, All)` in the header, `DEFINE_LOG_CATEGORY` in the `.cpp` (§3, §11) |
 | `OGLogRoute` | the seven routes a row can name, one per routed category except the fallback `LogOG` |
 | `OGLogRouteEntry` | one row: a `TCHAR` prefix, an `OGLogRoute`, and `plainLevel` (§6) |
-| `kOGAdapterLogRoutes` | the adapter's 20 rows (§8) |
+| `kOGAdapterLogRoutes` | the adapter's 24 rows (§8) |
 | `ogLogRouteOf`, `ogLogVerbosityOf` | the two mappings from og-simulation's engine-free row fields to Unreal's (§8) |
 | `kOGSimulationLogRoutePrefixes` | og-simulation's `char` prefixes widened to `TCHAR` at compile time (§8) |
 | `kOGLogRoutes` | the concatenation, og-simulation's 30 rows first, then the adapter's 20 (§8) |
@@ -69,7 +69,10 @@ so an ini value with non-ASCII characters prints as it did. Its `EMIT_OG_BODY` m
 `RouteOGMessage` is unchanged: its callers print the token, as before.
 
 `UESessionLogSink` is the stateless sink the Unreal session hands the knob functions (`logRouted` calls `RouteOGLevelLine`);
-the session `static_assert`s that it models og-sim-session's `SessionLogSink`.
+the session `static_assert`s that it models og-sim-session's `SessionLogSink`. Since og-session-runtime task 24 the session's
+clock logs through the same router: `UESessionClockEngine` (in `UESimulationSession.h`) is its engine, `logRouted` calling
+`RouteOGLevelLine` and a `nowSeconds` of `FPlatformTime::Seconds()`, and a second `static_assert` there checks every clock
+format's category and level (`SessionClock-rationale.md` §8).
 
 `ogLogRouteForLevelLine` and `ogLogLevelOfLevelLine` are the same lookup on a `char` line, `constexpr`: the token compared
 and the tag matched ignoring ASCII case, as `FString::StartsWith` does for these prefixes. The Unreal session uses them in a
@@ -269,9 +272,9 @@ data in og-simulation: `kSimulationLogRoutes` in its `SimulationLogRoutes.h`, wi
 `SimulationLogRoute` and a `HostLogLevel`. The rest are here, in `kOGAdapterLogRoutes`. `ogConcatenateLogRoutes` builds
 `kOGLogRoutes` at compile time: og-simulation's 30 rows first (25 until og-input-latency task 5b added
 `[InputArrival.Window]`, 26 until og-input-latency P3-1 added `[InputArrival.BackDate]`, 27 until og-input-latency
-P2-5 added `[RelayFlush]`, 28 until og-input-latency P5-4 added `[SimNet.` and `[Roster.`), then the adapter's 20 (14 until og-session-runtime task 7b deleted
-`[ResimCheck.TriggerRewind]`, 13 until og-session-runtime task 23 added the knob intake's seven), each block in the order the
-single table had before task 12, the seven appended at its end. `RouteOGMessage`, `OG_LOG_ROUTED` and `ogLogRouteFor` read
+P2-5 added `[RelayFlush]`, 28 until og-input-latency P5-4 added `[SimNet.` and `[Roster.`), then the adapter's 24 (20 until og-session-runtime task 24 added the session clock's four, 14 until task 7b deleted
+`[ResimCheck.TriggerRewind]`, 13 until task 23 added the knob intake's seven), each block in the order the single table had
+before task 12, the seven and then the four appended at its end. `RouteOGMessage`, `OG_LOG_ROUTED` and `ogLogRouteFor` read
 `kOGLogRoutes`.
 
 **Which rows are og-simulation's** was decided by the emitters (og-tickdriver task 12): a row went to og-simulation when
@@ -290,9 +293,14 @@ The adapter's first 13 rows are those a game's host also emits or alone emits (`
 `[RelayProbe` are emitted by both), plus the four with no emitter. The last seven (og-session-runtime task 23) are the knob
 intake's tags, `[RelayDelayFloor]`, `[StateRotation]`, `[ResimGate]`, `[LatencyKnobs]`, `[ClockRecentre.Config]`,
 `[ClockSource.Config]` and `[Dilation.Config]`, each to `LogOGNet` at plain level `Log`: og-sim-session emits them through
-`RouteOGLevelLine`, which this module's session installs (§2.1); the session also logs other `[RelayDelayFloor]` lines
-directly with `UE_LOG(LogOGNet, …)`, past the table. No line `RouteOGMessage` routes begins with any of the seven, so the rows
-change no existing route; each closes with its `]`, so no wider family is caught. The 14 rows of task 19's day moved here from the first game's module
+`RouteOGLevelLine`, which this module's session installs (§2.1). Until og-session-runtime task 24 the session also logged its
+other `[RelayDelayFloor]` lines directly with `UE_LOG(LogOGNet, …)`, past the table; since task 24 og-sim-session's session
+clock emits them through `RouteOGLevelLine` too, and the last four rows are its other tags, `[ConnectionTier]`,
+`[ClockSource.Window]`, `[Dilation.Window]` and `[Dilation.Authority]`, each to `LogOGNet` at plain level `Log` (a `Warning`
+line carries its token; `SessionClock-rationale.md` §8). No line `RouteOGMessage` routes begins with any of the eleven (grep of
+og-simulation, og-sim-net and this module at task 24: only the clock emits the four; og-simulation's `[Dilation.Window]`
+format is the window's, which only the clock logs), so the rows change no existing route; each closes with its `]`, so no
+wider family is caught. The 14 rows of task 19's day moved here from the first game's module
 unchanged in task 19 (Q5: the router stays one plain function and no game block exists); the table was renamed from
 `kOGGameLogRoutes` (Q4).
 

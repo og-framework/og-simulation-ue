@@ -69,8 +69,9 @@ input-collection cache, now inside that hook.)
 > ⛔ NOTHING TIER-RELATED IS BOUND HERE -- the tier is a WIRE property, bound once per world. §5
 
 **The prohibition.** Do not re-add a per-character tier consumer binding here, nor in the hook this call runs. The tier
-consumer is the session's `m_replicatedTierConsumer`, one per world: the session's `beginPlay` emplaces it through
-`beginTierConsumer` on both roles. The tier itself arrives once per connection, as og-sim-net's `ConnectionTier` Control
+consumer is the session's, one per world: og-sim-session's `SessionClock` holds it since og-session-runtime task 24 (the
+session's `m_replicatedTierConsumer` until then), and the session's `beginPlay` emplaces it through
+`m_clock->beginTierConsumer()` on both roles. The tier itself arrives once per connection, as og-sim-net's `ConnectionTier` Control
 message since og-input-latency task P5-7 (the per-connection relay's property before).
 
 **Correction (R0).** The game component's entry called it "the client-side consumer", emplaced "from the manager's

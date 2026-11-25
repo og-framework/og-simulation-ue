@@ -51,7 +51,11 @@ inline constexpr OGLogRouteEntry kOGAdapterLogRoutes[] = {
 	{ TEXT("[LatencyKnobs]"),                    OGLogRoute::Net,             ELogVerbosity::Log },
 	{ TEXT("[ClockRecentre.Config]"),            OGLogRoute::Net,             ELogVerbosity::Log },
 	{ TEXT("[ClockSource.Config]"),              OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[Dilation.Config]"),                 OGLogRoute::Net,             ELogVerbosity::Log }
+	{ TEXT("[Dilation.Config]"),                 OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[ConnectionTier]"),                  OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[ClockSource.Window]"),              OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[Dilation.Window]"),                 OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[Dilation.Authority]"),              OGLogRoute::Net,             ELogVerbosity::Log }
 };
 
 inline constexpr OGLogRoute kOGLogRouteUnmapped = static_cast<OGLogRoute>(0xFF);

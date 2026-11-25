@@ -35,7 +35,9 @@
 #include "OGSimNet/SimNetIdle.h"
 #include "OGSimNet/SimNetRoster.h"
 #include "OGSimNet/SimNetServer.h"
+#include "OGSimSession/SessionClock.h"
 #include "OGSimSession/SessionKnobs.h"
+#include "OGSimSession/SessionThreads.h"
 #include "OGSimulation/PhysicsEngineTraits.h"
 #include "OGSimulation/QueryGeometry.h"
 #include "OGSimulation/RelayedInputRingCodec.h"
@@ -69,6 +71,7 @@
 #include <mutex>
 #include <optional>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -130,6 +133,44 @@ static_assert(ueSessionKnobLineKeepsItsRoute(ogsession::sessionKnobsLines::kRela
 	"(og-session-runtime task 23)");
 static_assert(ogsession::SessionLogSink<UESessionLogSink>,
 	"UESessionLogSink is the session knobs' log sink: og-sim-session's SessionLogSink");
+
+struct UESessionClockEngine
+{
+	void logRouted(const char* line) { RouteOGLevelLine(line); }
+	double nowSeconds() const { return FPlatformTime::Seconds(); }
+};
+
+static_assert(ogsession::SessionClockEngine<UESessionClockEngine>,
+	"UESessionClockEngine is the session clock's engine: its lines through the log routes, and FPlatformTime::Seconds(), "
+	"the clock og-net stamps receive times with");
+static_assert(ogsession::sessionClock::kNoRttReadingSeconds == kNoRttReadingSeconds,
+	"og-sim-session's clock prints the same no-reading value as the Unreal client host's (UESimNetHost.h), -1");
+
+constexpr bool ueSessionClockLineKeepsItsRoute(const char* line, ELogVerbosity::Type level)
+{
+	const OGLogRouteEntry* route = ogLogRouteForLevelLine(line);
+	return route != nullptr && route->route == OGLogRoute::Net && ogLogLevelOfLevelLine(line) == level;
+}
+
+static_assert(ueSessionClockLineKeepsItsRoute(ogsession::sessionClockLines::kConnectionTierChange, ELogVerbosity::Log)
+	&& ueSessionClockLineKeepsItsRoute(ogsession::sessionClockLines::kConnectionTierTag, ELogVerbosity::Log)
+	&& ueSessionClockLineKeepsItsRoute(ogsession::sessionClockLines::kRelayDelayFloorTag, ELogVerbosity::Log)
+	&& ogLogRouteStartsWithNarrow(ogsession::sessionClockLines::kNoTransition, TEXT("%s floor"))
+	&& ogLogRouteStartsWithNarrow(ogsession::sessionClockLines::kTransition, TEXT("[Warning]%s floor"))
+	&& ogLogRouteStartsWithNarrow(ogsession::sessionClockLines::kDilationWindow, TEXT("[Warning]%s"))
+	&& ueSessionClockLineKeepsItsRoute(ogsession::sessionClockLines::kRelayFloorClamped, ELogVerbosity::Warning)
+	&& ueSessionClockLineKeepsItsRoute(ogsession::sessionClockLines::kRelayFloorBelowHiccupBaseline, ELogVerbosity::Warning)
+	&& ueSessionClockLineKeepsItsRoute(ogsession::sessionClockLines::kRelayFloorUniformD, ELogVerbosity::Log)
+	&& ueSessionClockLineKeepsItsRoute(ogsession::sessionClockLines::kAppliedInputDelay, ELogVerbosity::Log)
+	&& ueSessionClockLineKeepsItsRoute(ogsession::sessionClockLines::kClockSourceWindow, ELogVerbosity::Warning)
+	&& ueSessionClockLineKeepsItsRoute("[Warning][Dilation.Window] mode=%s", ELogVerbosity::Warning)
+	&& ueSessionClockLineKeepsItsRoute(ogsession::sessionClockLines::kDilationAuthority, ELogVerbosity::Warning),
+	"Each session-clock line (ogsession::sessionClockLines) reaches LogOGNet at the level its UE_LOG had: Log for the tier "
+	"change, the no-transition line (no token, led by its tag: [ConnectionTier] or [RelayDelayFloor]), the uniform-D "
+	"advisory and the applied delay; Warning for the transition line (a token, then its tag), the received floor's clamp, "
+	"the hiccup advisory, [ClockSource.Window], the dilation window's own [Dilation.Window] line after its token, and "
+	"[Dilation.Authority]. Was each line's UE_LOG(LogOGNet, <Level>, ...) in UESimulationSession (og-session-runtime task "
+	"24)");
 
 namespace ueSimulationSessionHookNames
 {
@@ -228,6 +269,24 @@ private:
 	using SimNetServerHost = typename SimNetLanes::ServerHost;
 	using SimNetServer     = ogsimnet::SimNetServer<Composition, SimNetServerHost, typename SimNetLanes::Transport>;
 	using SimChannel       = typename SimNetServer::template Channel<Simulatable>;
+	using Clock            = ogsession::SessionClock<ManagerType, InputResolution, UESessionClockEngine>;
+
+	struct ClockLink
+	{
+		const SimNetLanes* lanes = nullptr;
+
+		double ackSrttSeconds() const { return lanes != nullptr ? lanes->ackSrttSeconds() : kNoRttReadingSeconds; }
+
+		ogsimnet::SimNetClockStats clockStats() const
+		{
+			const UESimNetClockClient* const clock = lanes != nullptr ? lanes->clockClient() : nullptr;
+			return clock != nullptr ? clock->stats() : ogsimnet::SimNetClockStats{};
+		}
+	};
+
+	static_assert(ogsession::SessionClockLink<ClockLink> && ogsession::SessionClockServer<UESimNetClockServer>,
+		"UESimulationSession hands its clock the lanes' ack round trip and SimClock counts (ClockLink, for the "
+		"[ClockSource.Window] line) and og-sim-net's SimClock server (publishServerTick(tick, tickStartSeconds))");
 
 public:
 	const ServerTickClock& getServerClock() const { return m_manager->getServerClock(); }
@@ -320,25 +379,47 @@ public:
 		m_onTimingInfoReceivedCallback = std::move(fn);
 	}
 
-	void onTimingInfoReceived(uint32_t authorityTick, double roundTripTime);
+	void onTimingInfoReceived(uint32_t authorityTick, double roundTripTime)
+	{
+		m_latencyBudgetDiagnostics.noteWireSample_Internal(roundTripTime);
+		if (m_onTimingInfoReceivedCallback)
+		{
+			m_onTimingInfoReceivedCallback(authorityTick, roundTripTime);
+			return;
+		}
+		if (!m_clock.has_value())
+			return;
+		m_clock->onAuthorityTick(authorityTick, roundTripTime, ClockLink{ m_simNetLanes });
+	}
 
-	void onSimClockSample(const SimClockRttSample& sample);
-
-	void publishClientEffectiveInputDelayTicks(int32 delayTicks);
+	void onSimClockSample(const SimClockRttSample& sample)
+	{
+		if (!m_clock.has_value())
+			return;
+		m_clock->onClockSample(sample, ClockLink{ m_simNetLanes });
+	}
 
 	int32 getClientEffectiveInputDelayTicks() const
 	{
 		return m_inputResolution.getClientEffectiveInputDelayTicks();
 	}
 
-	void onConnectionTierReceived(uint8_t oldTier, uint8_t newTier);
+	void onConnectionTierReceived(uint8_t oldTier, uint8_t newTier)
+	{
+		if (m_clock.has_value())
+			m_clock->onConnectionTier(oldTier, newTier);
+	}
 
 	const ReplicatedTierConsumer* getReplicatedTierConsumer() const
 	{
-		return m_replicatedTierConsumer.has_value() ? &(*m_replicatedTierConsumer) : nullptr;
+		return m_clock.has_value() ? m_clock->tierConsumer() : nullptr;
 	}
 
-	void onRelayDelayFloorReceived(uint8_t floorTicks);
+	void onRelayDelayFloorReceived(uint8_t floorTicks)
+	{
+		if (m_clock.has_value())
+			m_clock->onRelayFloor(floorTicks);
+	}
 
 	using ReceptionCoordinator = typename SimNetServer::Coordinator;
 
@@ -362,12 +443,6 @@ public:
 	void onSimNetLifecycleUnregistering(uint8_t simId);
 
 private:
-	void requestInputDelayTransition(int32 deltaDelayTicks);
-
-	void payInputDelayTransition(const TCHAR* lineTag, int32 deltaDelayTicks, int32 floorTicks);
-
-	void beginTierConsumer();
-
 	SimNetLanes* findDriverSimNetLanes(UWorld& world, ognet::Role role);
 
 	void beginServerSimNet(UWorld& world);
@@ -376,11 +451,11 @@ private:
 
 	void beforePump_Owner(double hostNowSeconds, TickRateDoor& rate);
 
-	void runClockDilation_GameThread(double hostNowSeconds, TickRateDoor& rate);
-
-	void noteAuthorityRateDoor_Owner(double hostNowSeconds, const TickRateDoor& rate);
-
-	void afterStep_Step();
+	void afterStep_Step()
+	{
+		if (m_clock.has_value())
+			m_clock->publishServerTick(m_clockServer);
+	}
 
 	void stampCorrectionsHanded_Runner();
 
@@ -452,20 +527,6 @@ private:
 
 	void onSimNetRegisteredRemoved(uint8_t simId);
 
-	int32 applyReplicatedConnectionTier(uint8 tier);
-
-	void applyReplicatedRelayDelayFloor(uint8 floorTicks);
-
-	// ⛔G-04  docs/UESimulationSession-guards.md
-	void logRelayDelayFloorAdvisory(int32 floorTicks);
-
-	// ⛔G-05  docs/UESimulationSession-guards.md
-	int32 recomputeAndPublishEffectiveInputDelay();
-
-	void noteEngineRttForClockWindow(double roundTripSeconds);
-
-	void maybeLogClockSourceWindow();
-
 	void onFrameStepsDue_Step(int32 firstUpcomingSimTick, int32 numSteps);
 
 	void onPostPhysicsStep();
@@ -474,7 +535,11 @@ private:
 
 	void refreshDisplayView_GameThread();
 
-	void noteAuthorityStepTime_Step();
+	void noteAuthorityStepTime_Step()
+	{
+		if (m_clock.has_value())
+			m_clock->noteAuthorityStepStart();
+	}
 
 	void releaseDelayedInputsForStep(int32 firstTick, int32 numSteps);
 
@@ -528,9 +593,8 @@ private:
 	std::optional<ManagerType> m_manager;
 	PhysicsBackend m_physicsBackend{ *this, m_physicsBackendWorlds };
 
-	std::optional<ReplicatedTierConsumer> m_replicatedTierConsumer;
-
-	int32 m_lastPublishedEffectiveInputDelayTicks = 0;
+	UESessionClockEngine m_clockEngine;
+	std::optional<Clock> m_clock;
 
 	SimNetLanes* m_simNetLanes = nullptr;
 	std::optional<SimNetServerHost> m_simNetServerHost;
@@ -541,8 +605,6 @@ private:
 	const char* m_noSessionReason = "no-session";
 	bool m_noSessionRegisterRaisesMessage = false;
 	bool m_runnerStopped = false;
-	std::optional<double> m_releaseStepSeconds_Step;
-	std::optional<double> m_clockTickStartSeconds_Step;
 	std::unordered_map<unsigned int, uint64> m_runnerBodyKeysById;
 	uint64 m_authorityWakes_Runner = 0u;
 
@@ -632,12 +694,6 @@ private:
 	}
 
 	bool m_immediateStepsStopped = false;
-	double m_engineRttWindowSeconds = kNoRttReadingSeconds;
-	std::optional<double> m_clockWindowStartSeconds;
-	std::optional<ClockDilationController> m_clockDilation;
-	std::optional<ClockDilationWindow> m_clockDilationWindow;
-	std::optional<double> m_authorityRateLineDueSeconds_Owner;
-	uint64_t m_authorityRefusedRateChangesLogged_Owner = 0u;
 	std::mutex m_lifecycleBridgeMutex;
 	std::vector<unsigned int> m_unregisterRequests;
 	std::vector<LifecycleOutcome> m_lifecycleOutcomes;
@@ -646,7 +702,6 @@ private:
 	std::unordered_set<unsigned int> m_unregisterRequested_Step;
 	std::unordered_map<unsigned int, TStrongObjectPtr<typename TraitsT::Component>> m_pendingUnregisters;
 	std::unordered_map<unsigned int, TStrongObjectPtr<typename TraitsT::Component>> m_componentsHeldForRunner;
-	std::unique_ptr<TripleBuffer<DisplayTierReading>> m_displayTier = std::make_unique<TripleBuffer<DisplayTierReading>>();
 
 	static constexpr bool compositionContractsHold()
 	{
@@ -735,13 +790,16 @@ private:
 			"< hooks < driver' before that (og-simulationscheduler-withjolt task 18); its hooks < driver half is "
 			"og-simulation's SimulationTickDriver's own row, and the tick driver last is TickDriverBackendUImpl's, since "
 			"og-tickdriver task 8. Moved here by og-ue-simulationcomponentandmanagersplit task 24a.");
-		static_assert(__builtin_offsetof(UESimulationSession, m_manager)
-		                  < __builtin_offsetof(UESimulationSession, m_replicatedTierConsumer),
-			"UESimulationSession members destruct in REVERSE declaration order. The tier consumer is emplaced from the "
-			"manager's TimeConfig and keeps a reference to it (ReplicatedTierConsumer borrows its config), so it must be "
-			"destroyed before the manager. Keep m_manager < m_replicatedTierConsumer. Added when the transport moved here "
-			"(og-ue-simulationcomponentandmanagersplit task 25): in the owner the consumer was declared above the member "
-			"that holds the manager, and only the owner's EndPlay reset kept it from outliving that TimeConfig.");
+		static_assert(__builtin_offsetof(UESimulationSession, m_manager) < __builtin_offsetof(UESimulationSession, m_clock)
+		           && __builtin_offsetof(UESimulationSession, m_inputResolution) < __builtin_offsetof(UESimulationSession, m_clock)
+		           && __builtin_offsetof(UESimulationSession, m_clockEngine) < __builtin_offsetof(UESimulationSession, m_clock),
+			"UESimulationSession members destruct in REVERSE declaration order. The clock (og-sim-session's SessionClock) keeps "
+			"references to the manager, the input-resolution peer and its engine, and its tier consumer is emplaced from the "
+			"manager's TimeConfig and keeps a reference to it (ReplicatedTierConsumer borrows its config), so the clock must be "
+			"destroyed before all three. Keep m_manager, m_inputResolution and m_clockEngine < m_clock. Was the "
+			"m_manager < m_replicatedTierConsumer row (og-ue-simulationcomponentandmanagersplit task 25: in the owner the "
+			"consumer was declared above the member that holds the manager, and only the owner's EndPlay reset kept it from "
+			"outliving that TimeConfig); moved onto the clock with the consumer by og-session-runtime task 24.");
 		static_assert(__builtin_offsetof(UESimulationSession, m_manager)
 		                  < __builtin_offsetof(UESimulationSession, m_simNetServer)
 		           && __builtin_offsetof(UESimulationSession, m_simNetServerHost)
@@ -1017,13 +1075,13 @@ void UESimulationSession<TraitsT>::postRunnerRequest(TUniqueFunction<void()> req
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::beforePump_Owner(double hostNowSeconds, TickRateDoor& rate)
 {
-	if (m_manager.has_value() && m_manager->runsPrediction())
+	if (m_clock.has_value() && m_manager->runsPrediction())
 	{
-		runClockDilation_GameThread(hostNowSeconds, rate);
+		m_clock->beforePredictionPump(hostNowSeconds, rate);
 		return;
 	}
-	if (m_manager.has_value())
-		noteAuthorityRateDoor_Owner(hostNowSeconds, rate);
+	if (m_clock.has_value())
+		m_clock->noteAuthorityRateDoor(hostNowSeconds, rate);
 	std::vector<TUniqueFunction<void()>> requests;
 	{
 		const std::scoped_lock lock(m_lifecycleBridgeMutex);
@@ -1047,7 +1105,7 @@ void UESimulationSession<TraitsT>::onSimNetLifecycleUnregistering(uint8_t simId)
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::beginClientSimNet(UWorld& world)
 {
-	checkf(m_manager.has_value() && m_replicatedTierConsumer.has_value(),
+	checkf(m_manager.has_value() && getReplicatedTierConsumer() != nullptr,
 		TEXT("UESimulationSession: the client binds the og-net session after the manager and the tier consumer exist: the "
 			 "bind replays the latched relay-delay floor (the manager's) and connection tier (the tier consumer's), and either "
 			 "apply returns early without its target. Was G-07's bind-then-pull order, on the timing and connection relays"));
@@ -1107,8 +1165,6 @@ void UESimulationSession<TraitsT>::detachFromSimNetLanes()
 	lanes->setOnRegisteredRemoved(nullptr);
 	lanes->unbindClientSession();
 }
-
-#include "OGSimSession/SessionClock.h"
 
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::onFrameStepsDue_Step(int32 firstUpcomingSimTick, int32 numSteps)
@@ -1183,7 +1239,7 @@ OGSIM_OPTIMIZE_OFF
 template <typename TraitsT>
 void UESimulationSession<TraitsT>::releaseDelayedInputsForStep(int32 firstTick, int32 numSteps)
 {
-    const std::optional<double> stepSeconds = std::exchange(m_releaseStepSeconds_Step, std::nullopt);
+    const std::optional<double> stepSeconds = m_clock.has_value() ? m_clock->takeReleaseStepSeconds() : std::nullopt;
     if (!m_simNetServer.has_value())
         return;
 
@@ -1413,6 +1469,9 @@ void UESimulationSession<TraitsT>::beginPlay()
 
 	ogsession::SessionKnobs sessionKnobs = ogsession::readSessionKnobs(UEConfigSource{}, worldIsAuthority);
 	UESessionLogSink knobLog;
+	const ogsession::SessionThreadChecks clockThreads(
+		worldIsAuthority ? ogsession::SessionRole::Authority : ogsession::SessionRole::Prediction,
+		&m_physicsBackendWorlds.host.threadContext(), std::this_thread::get_id());
 
 	auto configureSession = [&]()
 	{
@@ -1425,6 +1484,7 @@ void UESimulationSession<TraitsT>::beginPlay()
 			m_manager.emplace(false, dt, typename ManagerType::Params{
 				*m_integrationLayer, m_netSync, m_inputResolution, m_reconciliation, *m_systemsExec,
 				m_storage, m_staticData, std::function<void(const char*)>(pctmloggerServer) });
+			m_clock.emplace(m_clockEngine, *m_manager, m_inputResolution, clockThreads);
 			m_reconciliation.setLogger(std::function<void(const char*)>(pctmloggerServer));
 			m_inputResolution.setLogger(std::function<void(const char*)>(pctmloggerServer));
 			m_netSync.setLogger(std::function<void(const char*)>(pctmloggerServer));
@@ -1435,10 +1495,10 @@ void UESimulationSession<TraitsT>::beginPlay()
 			beginServerSimNet(*uWorld);
 
 			ogsession::applySessionKnobs(knobLog, *m_manager, m_simNetServer.has_value() ? &*m_simNetServer : nullptr,
-				sessionKnobs, [this](int32 floorTicks) { logRelayDelayFloorAdvisory(floorTicks); });
+				sessionKnobs, [this](int32 floorTicks) { m_clock->logRelayDelayFloorAdvisory(floorTicks); });
 
 			// ⛔G-06  docs/UESimulationSession-guards.md
-			beginTierConsumer();
+			m_clock->beginTierConsumer();
 
 			simlog::setGlobal(std::function<void(const char*)>(pctmloggerServer));
 			Game::installGameLoggers(worldIsAuthority);
@@ -1453,13 +1513,14 @@ void UESimulationSession<TraitsT>::beginPlay()
 			m_manager.emplace(/*usePrediction=*/true, dt, typename ManagerType::Params{
 				*m_integrationLayer, m_netSync, m_inputResolution, m_reconciliation, *m_systemsExec,
 				m_storage, m_staticData, std::function<void(const char*)>(pctmlogger) });
+			m_clock.emplace(m_clockEngine, *m_manager, m_inputResolution, clockThreads);
 			m_reconciliation.setLogger(std::function<void(const char*)>(pctmlogger));
 			m_inputResolution.setLogger(std::function<void(const char*)>(pctmlogger));
 			m_netSync.setLogger(std::function<void(const char*)>(pctmlogger));
 
 			m_inputResolution.template setNeutralInput<Simulatable>(Game::neutralInput());
 
-			beginTierConsumer();
+			m_clock->beginTierConsumer();
 
 			beginClientSimNet(*uWorld);
 			simlog::setGlobal(std::function<void(const char*)>(pctmlogger));
@@ -1478,7 +1539,8 @@ void UESimulationSession<TraitsT>::beginPlay()
 		// ⛔G-24  docs/UESimulationSession-guards.md
 		ogsession::applyResimTriggerPolicy(knobLog, *m_manager, sessionKnobs);
 
-		ogsession::applyLatencyKnobs(knobLog, *m_manager, sessionKnobs, m_clockDilation, m_clockDilationWindow);
+		ogsession::applyLatencyKnobs(knobLog, *m_manager, sessionKnobs, m_clock->dilationController(),
+			m_clock->dilationWindow());
 
 		m_game.afterSessionConfigured(worldNetMode);
 
@@ -1534,7 +1596,7 @@ void UESimulationSession<TraitsT>::endPlay()
 	m_pendingUnregisters.clear();
 	m_componentsHeldForRunner.clear();
 
-	m_replicatedTierConsumer.reset();
+	m_clock->endTierConsumer();
 
 	if (m_heldDisplaySnapshot != nullptr)
 		m_displayPublisher->release_GameThread(m_heldDisplaySnapshot);
@@ -1593,7 +1655,7 @@ void UESimulationSession<TraitsT>::publishDisplaySnapshot_Step()
 
 	const DisplayClockReading clock = readDisplayClock(m_manager->getClientClock(), m_manager->getNetworkEstimator());
 	DisplayTierReading tier;
-	if (const DisplayTierReading* const published = m_displayTier->acquireLatest())
+	if (const DisplayTierReading* const published = m_clock->displayTier().acquireLatest())
 		tier = *published;
 
 	m_displayPublisher->publish_Step([&](DisplaySnapshot& snapshot)
@@ -2187,7 +2249,9 @@ void UESimulationSession<TraitsT>::teardownImmediateClient_GameThread()
             live.push_back(entry.first);
         for (const unsigned int id : live)
             enqueueQueuedUnregister_Step(*client, id);
+        m_clock->beginStoppedDrain();
         lanes->drainClientWhileStopped_GameThread();
+        m_clock->endStoppedDrain();
     }
     collectLifecycleOutcomes_GameThread();
 

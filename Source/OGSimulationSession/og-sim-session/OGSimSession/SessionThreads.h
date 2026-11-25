@@ -38,6 +38,7 @@ enum class SessionOp : uint8_t
 	Publish,
 	ServiceNet,
 	LinkFrameService,
+	DrainStopped,
 	Count,
 };
 
@@ -67,6 +68,7 @@ inline constexpr SessionThreadTable kPredictionThreads{ {
 	{ SessionOp::Publish,                SessionThread::Step },
 	{ SessionOp::ServiceNet,             SessionThread::NetIo },
 	{ SessionOp::LinkFrameService,       SessionThread::Frame },
+	{ SessionOp::DrainStopped,           SessionThread::Frame },
 } };
 
 inline constexpr SessionThreadTable kAuthorityThreads{ {
@@ -85,6 +87,7 @@ inline constexpr SessionThreadTable kAuthorityThreads{ {
 	{ SessionOp::Publish,                SessionThread::Step },
 	{ SessionOp::ServiceNet,             SessionThread::NetIo },
 	{ SessionOp::LinkFrameService,       SessionThread::Frame },
+	{ SessionOp::DrainStopped,           std::nullopt },
 } };
 
 namespace sessionThreadTable
@@ -119,6 +122,10 @@ static_assert(sessionThreadTable::stepWorkIsOffTheFrame(kPredictionThreads)
 	"the publish and the og-net service never run on the frame thread, on either role");
 static_assert(!kAuthorityThreads[static_cast<std::size_t>(SessionOp::SampleInput)].thread.has_value(),
 	"kAuthorityThreads: the authority samples no input; its characters' inputs arrive over the network");
+static_assert(kPredictionThreads[static_cast<std::size_t>(SessionOp::DrainStopped)].thread == SessionThread::Frame
+		&& !kAuthorityThreads[static_cast<std::size_t>(SessionOp::DrainStopped)].thread.has_value(),
+	"kPredictionThreads, kAuthorityThreads: the stopped drain is a client's, once, on the frame thread at its teardown, after "
+	"its steps have stopped; an authority has no such drain (og-session-runtime task 24)");
 
 class SessionThreadChecks
 {

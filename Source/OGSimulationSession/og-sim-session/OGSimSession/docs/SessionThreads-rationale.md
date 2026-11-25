@@ -39,15 +39,25 @@ client they are different threads.
 | drain the inbox; apply lifecycle requests; capture; step; send; publish the display or the presentation | `DrainInbox`, `ApplyLifecycleRequests`, `Capture`, `Step`, `Send`, `Publish` |
 | service og-net | `ServiceNet` |
 | the link's frame service | `LinkFrameService` |
+| the client's stopped drain at its teardown (og-session-runtime task 24) | `DrainStopped` |
 
 `kPredictionThreads` and `kAuthorityThreads` give each operation its thread, or none. They follow the design's table, with
-three readings taken from the code, through task 16's table (§7.1):
+three readings taken from the code, through task 16's table (§7.1), and one row the design's table does not have:
+
+- **The stopped drain** (`DrainStopped`, after `LinkFrameService`): a client's teardown drains og-sim-net's inbox once on the
+  frame thread after its steps stopped (§7.1, its row), and a message in that drain reaches the session clock's receipt doors
+  there; its row is the client's `Frame`, and the authority has none (it has no such drain). The session clock checks it only
+  between the teardown's two markers (`SessionClock-rationale.md` §3); `DrainInbox` stays the step's (lead ruling under task 24,
+  2026-11-25 02:25). A fourth `static_assert` holds the row's shape.
+
+The three readings:
 
 - **The authority samples no input** (`std::nullopt`): its characters' inputs arrive over the network, and the tick
   driver's `startFrame` returns at once in `FreeRunning`.
 - **The authority's rate door is on the runner** (`Step`), where the design's row says "Frame (no rate change)": the
   driver builds the door before each pump, on the thread that pumps, and on the authority that is the runner
-  (`noteAuthorityRateDoor_Owner`, §7.1). The door refuses every rate change there (`TickRateDoor`,
+  (`noteAuthorityRateDoor_Owner` in §7.1; the session clock's `noteAuthorityRateDoor` since og-session-runtime task 24, which
+  checks this row). The door refuses every rate change there (`TickRateDoor`,
   `TickDriverGameTypes-rationale.md` §2).
 - **The authority's `AcquireDisplay` is applying the presentation slices** on the frame thread
   (`presentAuthority_GameThread`), where a client acquires its display snapshot.
@@ -110,8 +120,14 @@ as an `OG_CHECK`. (Lead note under task 22,
   forbidden).
 - `SessionThreads.WithoutTheRolesContextOnlyTheFrameRowsPass`: no context, or a client's context given to the authority.
 - `SessionThreads.CheckOpIsSilentOnTheRowsThreadAndTheSentinelHasNoRow`.
+- `SessionThreads.TheStoppedDrainIsAClientsFrameRowAndNoStepsOrAuthoritys` (og-session-runtime task 24): `DrainStopped` passes
+  on the client's frame thread and fails in a step and on both of the authority's threads, where `DrainInbox` passes in the step
+  and fails on the frame.
 - **Hidden** (`[.][SessionThreadsDeath]`): `SessionThreads.DrainInboxOnTheFrameTripsTheCheck` calls `checkOp(DrainInbox)` on
-  the frame thread and must never reach its `FAIL`. Run it by name. In `OGSimulationTests` the failed `OG_CHECK` is reported as
+  the frame thread and must never reach its `FAIL`; `SessionThreads.DrainStoppedOnTheAuthorityTripsTheCheck` (task 24) calls
+  `checkOp(DrainStopped)` on an authority's frame thread, where the row has no thread. Run them by name. (A client's step on
+  a worker is the other forbidden thread; the matrix case above covers it, because an `OG_CHECK` that fails off the test's
+  thread ends the runner.) In `OGSimulationTests` the failed `OG_CHECK` is reported as
   a failed case with its message (seen at task 22). It calls the check on the test's own thread.
 
 ## §7 The Unreal session's thread table (task 16), moved here
@@ -149,6 +165,7 @@ below:
 | The link's frame service (clock ping, the pre-bind drain, the RTT publish) | frame, in `UESimNetLanes::afterDispatch`: `servicePing`, `publishServerRtt_GameThread`, and the drain while no session is bound (`UESimNetLanes-guards.md` G-02) | frame, in `UESimNetLanes::afterDispatch`: `publishRunnerRtt_GameThread` (`FRunnerRttTable`, read on the runner) |
 | Start | frame: `beginPlay` builds the world, configures the session and starts stepping | frame starts the runner and waits for it (`runAuthorityLoop_GameThread`, `waitForStart_GameThread`); the runner builds the world and configures the session (§19.2) |
 | Stop | frame: `endPlay` → `onEndPlayBegin` (the tick functions unregistered, the steps waited for), then the teardown drain (`teardownImmediateClient_GameThread` → `drainClientWhileStopped_GameThread`) | frame: `onEndPlayBegin` joins the runner (`stopAuthorityLoop_GameThread`), or the lanes' stop has joined it first (`onAuthorityRunnerJoined_GameThread`) |
+| The stopped drain's receipts (row added by og-session-runtime task 24) | frame: the teardown drain above runs with the session still bound, so a timing info, clock sample, tier or floor in it reaches the session clock's receipt doors on the frame; `teardownImmediateClient_GameThread` marks the drain (`m_clock->beginStoppedDrain()`, `endStoppedDrain()`), and inside the marks those doors check `SessionOp::DrainStopped` (§3) | none: the authority has no teardown drain |
 
 A body is created where its role registers it: a client creates it on the frame (`createBodies_GameThread`, the frame-thread
 door, design Q12) and queues the registration, which og-sim-net applies in the next drain on the step

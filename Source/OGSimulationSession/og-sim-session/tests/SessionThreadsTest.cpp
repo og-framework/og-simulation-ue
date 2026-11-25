@@ -42,6 +42,7 @@ constexpr std::array<ExpectedRow, kSessionOpCount> kExpected{ {
 	{ SessionOp::Publish,                "Publish",                SessionThread::Step,  SessionThread::Step },
 	{ SessionOp::ServiceNet,             "ServiceNet",             SessionThread::NetIo, SessionThread::NetIo },
 	{ SessionOp::LinkFrameService,       "LinkFrameService",       SessionThread::Frame, SessionThread::Frame },
+	{ SessionOp::DrainStopped,           "DrainStopped",           SessionThread::Frame, std::nullopt },
 } };
 
 using Allowed = std::array<bool, kSessionOpCount>;
@@ -160,9 +161,30 @@ TEST_CASE("SessionThreads.AnAuthorityOpPassesOnItsThreadAndOnNoOther", "[Session
 		CHECK_FALSE(onOther[index]);
 		allowedCases += static_cast<uint32_t>(onFrame[index]) + onRunner[index] + onOther[index];
 	}
-	CHECK(allowedCases == kSessionOpCount - 1u);
+	CHECK(allowedCases == kSessionOpCount - 2u);
 	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::SampleInput)]);
 	CHECK_FALSE(onRunner[static_cast<std::size_t>(SessionOp::SampleInput)]);
+	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::DrainStopped)]);
+	CHECK_FALSE(onRunner[static_cast<std::size_t>(SessionOp::DrainStopped)]);
+}
+
+TEST_CASE("SessionThreads.TheStoppedDrainIsAClientsFrameRowAndNoStepsOrAuthoritys", "[Session]")
+{
+	PredictionRig client;
+	const std::size_t stopped = static_cast<std::size_t>(SessionOp::DrainStopped);
+	const std::size_t inbox = static_cast<std::size_t>(SessionOp::DrainInbox);
+
+	const Allowed onFrame = allowedHere(client.checks);
+	const Allowed inStep  = allowedInAStep(client.checks, client.context);
+	CHECK(onFrame[stopped]);
+	CHECK_FALSE(onFrame[inbox]);
+	CHECK_FALSE(inStep[stopped]);
+	CHECK(inStep[inbox]);
+	client.checks.checkOp(SessionOp::DrainStopped);
+
+	AuthorityRig authority;
+	CHECK_FALSE(authority.allowedOnTheRunner()[stopped]);
+	CHECK_FALSE(allowedHere(authority.checks)[stopped]);
 }
 
 TEST_CASE("SessionThreads.WithoutTheRolesContextOnlyTheFrameRowsPass", "[Session]")
@@ -203,4 +225,12 @@ TEST_CASE("SessionThreads.DrainInboxOnTheFrameTripsTheCheck", "[.][SessionThread
 	PredictionRig rig;
 	rig.checks.checkOp(SessionOp::DrainInbox);
 	FAIL("SessionThreadChecks::checkOp(DrainInbox) on the frame thread did NOT fire - the check is vacuous in this target");
+}
+
+TEST_CASE("SessionThreads.DrainStoppedOnTheAuthorityTripsTheCheck", "[.][SessionThreadsDeath]")
+{
+	AuthorityRig rig;
+	rig.checks.checkOp(SessionOp::DrainStopped);
+	FAIL("SessionThreadChecks::checkOp(DrainStopped) on an authority's frame thread did NOT fire - the authority has no "
+		 "stopped drain");
 }

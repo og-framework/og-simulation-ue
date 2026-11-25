@@ -3,7 +3,6 @@
 <!-- lint-external-ref: hadAnyTier -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: shouldStallForTierTransition -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: OnRep -- Unreal Engine symbol or file, outside every scan root -->
-<!-- lint-external-ref: onRelayDelayFloorReplayed -- deleted by og-input-latency task P5-9 (the relay actors, their listeners and the session's two replay members); kept in the history -->
 <!-- lint-external-ref: OutBytes -- Unreal Engine connection stat, outside every scan root (retired G-19) -->
 <!-- lint-external-ref: OutPackets -- Unreal Engine connection stat, outside every scan root (retired G-19) -->
 # `UESimulationSession.h` — guards
@@ -16,7 +15,7 @@ task P5-32 also the hitch's delay cvar and its marker line; rationale §10), sha
 **If this file and the source disagree, the source is authoritative and this file is stale.**
 
 The member order is checked by the compiler, not here: `compositionContractsHold()` asserts the construction chain and
-the destruction-order rows (since task 25 also the tier consumer's, and since og-input-latency task P5-7 og-sim-net's
+the destruction-order rows (since task 25 also the tier consumer's, the clock's since og-session-runtime task 24, and since og-input-latency task P5-7 og-sim-net's
 server's, below the manager and its host; the session's own detached lanes until og-session-runtime task 14), and the constructor asserts `compositionContractsHold()`
 (rationale §2). So is the shape of `getTimeConfigPtr` (a pointer, rationale §8), so is the owner type, og-sim-net's one
 channel for both roles (since P5-7; the session's being both reception sinks before, rationale §16.7), so is the order of the
@@ -107,101 +106,13 @@ copy in both configurations.
 
 ---
 
-## G-03 — `requestInputDelayTransition` keeps its `runsPrediction()` guard
 
-**Tag site:** `UESimulationSession.h`, directly above the `if (!m_manager.has_value() || !m_manager->runsPrediction())`
-early return in `requestInputDelayTransition` (`requestInputDelayIncreaseStall` until og-input-latency P6-2, which renamed it
-when the clock's debt became signed; the guard and its site are unchanged).
 
-**The prohibition.** ⛔ Do not remove or weaken the early return: the transition request reaches the manager's client clock
-only on a manager that predicts.
-
-**What breaks if the edit is made.** `SimulationManager::editClientClock()` calls `std::terminate()` when the manager holds
-no client clock, which is every authority and standalone manager. Remove the guard and the first call that reaches a
-manager that does not predict ends the process: not a wrong number, a dead server.
-
-*R0, og-ue-simulationcomponentandmanagersplit task 25:* verified against `SimulationManager.h` (`editClientClock` and
-`getClientClock` both terminate on an empty client clock). The fence the entry was converted from named `getClientClock()`;
-the call this guard protects is `editClientClock()`, as the brawler's task 11 already noted.
-
-*Moved from `OGBrawlerSimulationManager-guards.md` G-03 (og-netcode-v2-field-defects task 11) by
-og-ue-simulationcomponentandmanagersplit task 25, with the member it marks; the text is that entry's without the
-header-fence quotation, which stays in the retired entry.*
-
----
-
-## G-04 — the relay-delay-floor advisory is ADVISORY: never an assert
-
-**Tag site:** `UESimulationSession.h`, directly above the declaration `void logRelayDelayFloorAdvisory(int32 floorTicks);`.
-
-**The prohibition.** ⛔ The advisory reports; it never asserts, `ensure`s or `check`s. Its contract is a log line.
-
-**What breaks if the edit is made.** Floor `0` is the documented "scheduled regime OFF" mode, and the function is called
-from every intake point of the floor: the owner's ini override at start-up (`applySessionKnobs` in `beginPlay` since
-og-ue-simulationcomponentandmanagersplit task 27b; the owner's `BeginPlay` before; og-sim-session's since og-session-runtime
-task 23, which `beginPlay` hands this function as its advisory) and the floor listener, on a live change and on the latched replay. An
-assert here would fire on the shipped default configuration. `classifyRelayDelayFloor` (og-simulation's
-`Network/ConnectionTierTable.h`) never flags `0`; this function only reports what that classification says. The same
-prohibition is guarded inside the body, at the classification `switch`, by **G-09**: the two tags sit where the two
-different wrong edits would be typed (one would change the function's contract, the other would assert in its body).
-
-*R0, task 25:* the moved text said "both intake points — the ini override and the `OnRep`". The floor listener has two
-entry points, the change (`onRelayDelayFloorReceived`) and the replay (`onRelayDelayFloorReplayed`), and both reach this
-function through `applyReplicatedRelayDelayFloor`, so there are three call paths over two intake sources.
-
-*R0, og-input-latency task P5-7:* the client's floor intake is og-net's since P5-7: the client host applies every floor it is
-handed, live or latched, through `onRelayDelayFloorReceived` (`UESimNetHost-guards.md` G-05), so the replay entry point has no
-caller; the prohibition is unchanged.
-
-*R0, og-input-latency task P5-9:* the replay entry point is deleted. The function is called from the ini override's intake
-(`applySessionKnobs`) and the floor's receipt (`onRelayDelayFloorReceived`, through `applyReplicatedRelayDelayFloor`); the
-prohibition is unchanged.
-
-*R0, og-session-runtime task 23:* the ini override's intake is og-sim-session's `ogsession::applySessionKnobs` now
-(`SessionKnobs.h`); `beginPlay` passes it a lambda that calls this function with the clamped floor, after the floor's ini line, where
-the member called it. Still two intake sources and two call paths; the prohibition is unchanged.
-
-*Moved from `OGBrawlerSimulationManager-guards.md` G-15 (og-netcode-v2-field-defects task 11) by
-og-ue-simulationcomponentandmanagersplit task 25, with the declaration it marks.*
-
----
-
-## G-05 — ONE recompute publishes the effective input delay, over BOTH inputs
-
-**Tag site:** `UESimulationSession.h`, directly above the declaration `int32 recomputeAndPublishEffectiveInputDelay();`.
-
-**The prohibition.** ⛔ One site, both channels: no other code writes the effective-input-delay atomic
-(`publishClientEffectiveInputDelayTicks`), and no caller derives half of the formula itself.
-
-```
-effective = max(floor, tierKnown ? tierInputDelayTicks(tier)
-                                 : rttTierInputDelays[kMaxConnectionTierIndex])
-```
-
-**What breaks if the edit is made.** The floor and the tier are two independent og-net Control messages since
-og-input-latency task P5-7 (the session relay's and the per-connection relay's properties before), and they land in either
-order. Two writers each holding half the formula answer with a stale other half whenever they interleave. Every publish
-(the tier change, the floor change and the start-up baseline in `beginTierConsumer`; until og-input-latency task P5-9 also
-their replay entry points) goes
-through this one function, which reads both cached
-inputs through `ReplicatedTierConsumer::effectiveInputDelayTicks`, the same lookups (`tierInputDelayTicks`, which floors,
-and the floored worst-tier fallback) that the server's `ServerInputDelayQueue::effectiveDelay` uses for the same
-connection. Its return value is the change in published delay, which is how a caller that must pay for a change can (both receipts
-do, either sign, since og-input-latency P6-2: `⛔G-40`).
-
-*R0, task 25:* verified against `ReplicatedTierConsumer.h` and `ServerInputDelayQueue.h`; "the same derivation the
-server's queue mirrors" is exact in the sense above (both ends call the same shared lookups), not a shared function.
-
-*Moved from `OGBrawlerSimulationManager-guards.md` G-16 (og-netcode-v2-field-defects task 11) by
-og-ue-simulationcomponentandmanagersplit task 25, with the declaration it marks; the two header-fence quotations stay in
-the retired entry.*
-
----
 
 ## G-06 — the tier cache is emplaced on the authority world too
 
-**Tag site:** `UESimulationSession.h`, directly above the authority branch's `beginTierConsumer();` in `beginPlay` (since
-task 27b). `beginPlay` calls `beginTierConsumer` once in each role branch, at the position of the two statements it
+**Tag site:** `UESimulationSession.h`, directly above the authority branch's `m_clock->beginTierConsumer();` in `beginPlay`
+(since task 27b; the clock's member since og-session-runtime task 24). `beginPlay` calls `beginTierConsumer` once in each role branch, at the position of the two statements it
 replaced; the wrong edit, dropping the authority's call or making the call client-only, is typed at that call. Until task
 27b the start-up was the owner's `BeginPlay`, so the tag sat in `beginTierConsumer` above its emplace (task 25's A5); task
 27b re-sited it at the caller.
@@ -224,31 +135,17 @@ publishing when the consumer is empty, and the local input path reads the atomic
 *R0, og-input-latency task P5-7:* re-checked: the authority's call follows `applySessionKnobs` (the listener registrations
 are gone), and the client's precedes `beginClientSimNet`, whose replayed tier applies only to an emplaced consumer.
 
+*R0, og-session-runtime task 24:* re-checked: `beginTierConsumer` is og-sim-session's `SessionClock`'s since task 24 (the
+tier consumer, the recompute and the start-up publish moved with it), and `beginPlay` calls `m_clock->beginTierConsumer()` on
+both branches at the same positions (the clock is emplaced right after the manager on each). The recompute still returns
+early without a consumer, and the atomic still starts at `0`.
+
 *Moved from `OGBrawlerSimulationManager-guards.md` G-61 (og-netcode-v2-field-defects task 12) by
 og-ue-simulationcomponentandmanagersplit task 25. Its site was the authority branch's emplace in the owner's `BeginPlay`;
 the emplace and the baseline publish moved into `beginTierConsumer`, and the tag moved with the emplace.*
 
 ---
 
-## G-09 — the relay-delay-floor advisory is a log line, never an assert
-
-**Tag site:** `UESimulationSession.h`, the `switch (classifyRelayDelayFloor(...))` in `logRelayDelayFloorAdvisory`.
-
-**The prohibition.** ⛔ ADVISORY ONLY, never an assert: floor `0` is scheduled-regime-OFF, and `classifyRelayDelayFloor`
-never flags it.
-
-**What breaks if the edit is made.** An assert on `BelowHiccupBaseline` takes a server down on a legal configured floor of
-`1` (the classification's one value below the hiccup baseline that is not off, unless the worst tier's delay is itself
-`1` or less, when `1` is uniform-D).
-
-**The same prohibition, at the declaration:** G-04 carries it at the declaration of `logRelayDelayFloorAdvisory`.
-
-*R0, task 25:* verified against `classifyRelayDelayFloor` (`<= 0` is `None`, uniform-D is tested first, then `== 1`).
-
-*Moved from `OGBrawlerSimulationManager-guards.md` G-66 (og-netcode-v2-field-defects task 12) by
-og-ue-simulationcomponentandmanagersplit task 25, with the statement it marks.*
-
----
 
 ## G-10 — the destructor touches no `UObject`: it clears the static instance table and unbinds from the og-net lanes, nothing else
 
@@ -430,7 +327,7 @@ marks: the owner's `EndPlay` statements before `Super` became `endPlay`.*
 **Tag site:** `UESimulationSession.h`, directly above `m_simNetServer.reset();` in `endPlay`, after
 `detachFromSimNetLanes();`, which follows `m_physicsBackend.onEndPlayBegin();` (`⛔G-20`); the server host's reset, the clears
 of the two registered maps and the slot map, the unregistered-id set's clear (since og-input-latency task P5-9) and the tier
-cache's reset follow it. (Since og-input-latency task P5-7; until then the tag stood above
+cache's reset (`m_clock->endTierConsumer()` since og-session-runtime task 24) follow it. (Since og-input-latency task P5-7; until then the tag stood above
 the delayed-input map's clear, with the session's own coordinator's reset after it.)
 
 **The prohibition, as it stood in the source:**
@@ -458,6 +355,10 @@ teardown of the manager.
 *R0, og-input-latency task P5-7:* og-sim-net's server holds the reception coordinator and a `const TimeConfig&` of its own, and
 `compositionContractsHold()` asserts it below the manager; so the rule is the same for the server as it was for the
 coordinator, and the reset moved to the server.
+
+*R0, og-session-runtime task 24:* the tier consumer is og-sim-session's `SessionClock`'s member since task 24; `endPlay`
+resets it through `m_clock->endTierConsumer()` at the same position, and the clock is declared after `m_manager`
+(`compositionContractsHold()`'s `m_manager < m_clock` row), so member destruction still takes the borrower first.
 
 *Moved from `OGBrawlerSimulationManager-guards.md` G-64 (the brawler's task 12 conversion of its `EndPlay` and header
 fences) by og-ue-simulationcomponentandmanagersplit task 27a, with the statements it marks: the two resets, the map's
@@ -774,90 +675,8 @@ character in the simulation.
 
 ---
 
-## G-38 — the dilation stage's sensor clock is `FPlatformTime::Seconds()`, never the driver's `hostNowSeconds`
 
-**Tag site:** `UESimulationSession.h`, `runClockDilation_GameThread`, directly above
-`const double clockNowSeconds = FPlatformTime::Seconds();` (og-time-dilation task 8).
 
-**The prohibition.** ⛔ Do not pass `hostNowSeconds` as the stage's `clockNowSeconds` (the third argument of
-`clockDilation::beforeClientPump`), and do not replace this read with any clock other than the one og-net stamps receive times
-with. The stage takes two times on purpose: `hostNowSeconds` places the prediction tick against the scheduler's deadlines, and
-`clockNowSeconds` is the time at which the server-tick sensor is read and the window is timed.
-
-**The consequence.** The sensor's samples are stamped with `FPlatformTime::Seconds()`: og-net's UE host clock is
-`FPlatformTime::Seconds()`, and the SimClock client reads `t0` from the clock that stamps `t3` (a `static_assert` in
-og-sim-net's `SimNetClock.h` says so). A client's `hostNowSeconds` is a different clock: its driver runs `timeBase=worldDelta`,
-so it is the sum of the world's frame deltas since the driver was built (og-simulation's `SimulationTickDriver.h`), with its own
-origin, and og-time-dilation task 9's `og.Sim.TestClientClockRatePpm` scales those deltas. Read at that time, the sensor's estimate of the server
-tick is wrong by the difference of the two origins (on the task's smoke host `sHatClock` read 16,833,176 s against a host time
-of under 200 s), so every lead and error on `[Dilation.Window]` is
-meaningless, and under `On` (accepted since og-time-dilation task 11) the law steers the rate with it. The drift gate is lost as well: the emulated clock-rate
-offset moves `hostNowSeconds` and `FPlatformTime` apart, which is exactly what the sensor has to see.
-
-**What breaks if the tag moves.** Nothing mechanical: both arguments are `double` seconds. A Shadow run still prints windows, with
-nonsense in `lead`, `err` and `sHat`.
-
-*R0, og-time-dilation task 8:* written with the code. Verified: `FOGNetUnrealHost::nowSeconds` and `FUEPlatformClock::nowSeconds`
-both return `FPlatformTime::Seconds()`; the client's `[SimHost.Frame]` line reads `timeBase=worldDelta` on the task's Shadow
-smoke (`T8_shadow`), the server's `timeBase=monotonic`.
-
----
-
-## G-39 — the SimClock server's tick is published with its step's start time, never a time read at the publish
-
-**Tag site:** `UESimulationSession.h`, `afterStep_Step`, directly above
-`m_clockServer->publishServerTick(static_cast<uint32_t>(getServerClock().getTick()), *tickStartSeconds);`
-(og-time-dilation task 2b).
-
-**The prohibition.** ⛔ Do not replace the second argument, `*tickStartSeconds`, with `FPlatformTime::Seconds()` or any
-other time read in `afterStep_Step`. It is the stamp `noteAuthorityStepTime_Step` took at the start of the same authority
-step, the value that step's `[AuthoritySimulation] tick=<t> stepSeconds=<s>` line prints for the same tick (rationale §19.8).
-
-**The consequence.** og-sim-net's SimClock server measures each pong's `serverTickAgeUs` from this time, and a client's
-server-tick estimator places the tick at `t2 − age`. The function runs after the step, so a time read here is later than
-the step's start by the step's duration D, and every client's `Ŝ` then reads D · f ticks low against the server's own
-step-start timeline, the truth the G-DIL-0 sensor check compares it with. D grows with the server's load: on the brawler's
-smokes it is typically about 0.075 ms (0.0045 tick at 60 Hz) and at most 0.24 ms (0.014 tick; rationale §19.8), and a
-heavier step moves every client's estimate by its whole duration. Under `ClockDilation=On` the controller would hold each client's true lead D · f below its
-target.
-
-**What breaks if the tag moves.** Nothing mechanical: both are `double` seconds on the same clock, and every test passes. A
-Shadow smoke shows it, as a negative `bias sHat` in the lead-split tool's G3 sensor check.
-
-*R0, og-time-dilation task 2b:* written with the code. Verified: on Jolt the authority steps one tick per
-`SimulationStepDriver::runAuthorityTick`, whose `beforeTick` reaches `releaseInputsForAuthorityTick` (the stamp) and whose
-`afterTick` reaches `onStepEnded` → `afterStep_Step` (the publish); `getServerClock().getTick()` there is the tick that step's
-`[AuthoritySimulation]` line printed (`onGameSimulationAuthority` advances the clock once, before the print). D's bound is
-the server's `[SimHost.Window]` `preUs` + `stepUs` (p50/p99/max triples) on the `T8_shadow`, `T8_on` and `T2b_shadow` smokes:
-median p50 sum 70–75 µs, largest max sum 237 µs. ⚠ Task 8's measured sensor bias (−0.04 to −0.11 tick) is **not** D · f: it
-is 3 to 8 times the worst D · f (0.014), and task 2b's smoke still reads −0.05 to −0.07 with the start time (rationale
-§19.8, which names a candidate for the rest: the b0 shaper's in-order clamp, not established).
-
----
-
-## G-40 — the tier receipt pays the recompute's change, either sign, its first arrival included
-
-**Tag site:** `UESimulationSession.h`, `onConnectionTierReceived`, directly above
-`payInputDelayTransition(TEXT("[ConnectionTier]"), deltaDelayTicks, ...)`.
-
-**The prohibition.** ⛔ Do not gate this payment on the tier indices (`oldTier == newTier`, `tierDelayDeltaTicks(oldTier,
-newTier)`), on whether a tier had arrived before (`hasReceivedTier()`, the retired `hadAnyTier`), or on the sign of the
-change, and do not compute the change any other way than the recompute's return value.
-
-**The consequence.** A first arrival reports `oldTier == newTier == 0` on a LAN wire, and its change is the fallback's
-(`max(floor, 4)`) to the tier's delay: −1 at floor 3, −2 at floor 2. The server made that same change at its first sample of
-the wire. Skip the payment and, if the server had parked any of the client's inputs at the fallback first, its drain stays
-that many ticks late for the session (`[Release] late=1` on every release, the shape og-simulation-tests' `Network/DelayTransitionTest.cpp` pins), and every
-relay stamp disagrees with the tick the authority applies. A gate on the sign brings back the pre-P6-2 defect for every
-lowered delay; a gate on the indices or on a prior arrival drops the first arrival, which at floors below 4 is the one
-transition every LAN join makes.
-
-**What breaks if it moves.** It must follow `applyReplicatedConnectionTier`, whose return value it pays; above it there is no
-change to pay. Nothing at compile time; og-simulation-tests' `Network/DelayTransitionTest.cpp` tier cases model the session's arithmetic
-(the consumer's delay before and after, the clock's request) but cannot reach this function, and the loopback smoke at floors
-3 and 2 shows the `DOWNWARD … skip` line.
-
----
 
 ## §R — Retired ids
 
@@ -993,3 +812,73 @@ G-05.
 (`readSessionKnobs`, `applySessionKnobs`, `applyResimTriggerPolicy`, `applyLatencyKnobs` and their helpers), the site with it.
 The entry moved with its text and its R0 history, re-verified. **Successor:** og-sim-session's `SessionKnobs-guards.md`
 G-04.
+
+### G-03 — RETIRED by og-session-runtime task 24 (2026-11-25): moved with its site to og-sim-session
+
+**Was:** *"`requestInputDelayTransition` keeps its `runsPrediction()` guard"*. Its tag sat in `UESimulationSession.h`, above the `runsPrediction()` early return in `requestInputDelayTransition`.
+
+**Why it retired.** Task 24 moved the clock routing and the schedule out of this class into og-sim-session's engine-free
+`SessionClock.h` (`SessionClock`: the tier and floor receipts, the effective-delay recompute and its payment, the clock
+feeds and the window line, the dilation stage, the authority's rate line, its step start and the server tick's publish),
+the site with it. The entry moved with its text and its R0 history, re-verified. **Successor:** og-sim-session's
+`SessionClock-guards.md` G-01.
+
+### G-04 — RETIRED by og-session-runtime task 24 (2026-11-25): moved with its site to og-sim-session
+
+**Was:** *"the relay-delay-floor advisory is ADVISORY: never an assert"*. Its tag sat in `UESimulationSession.h`, above the declaration of `logRelayDelayFloorAdvisory`.
+
+**Why it retired.** Task 24 moved the clock routing and the schedule out of this class into og-sim-session's engine-free
+`SessionClock.h` (`SessionClock`: the tier and floor receipts, the effective-delay recompute and its payment, the clock
+feeds and the window line, the dilation stage, the authority's rate line, its step start and the server tick's publish),
+the site with it. The entry moved with its text and its R0 history, re-verified. **Successor:** og-sim-session's
+`SessionClock-guards.md` G-02.
+
+### G-05 — RETIRED by og-session-runtime task 24 (2026-11-25): moved with its site to og-sim-session
+
+**Was:** *"ONE recompute publishes the effective input delay, over BOTH inputs"*. Its tag sat in `UESimulationSession.h`, above the declaration of `recomputeAndPublishEffectiveInputDelay`.
+
+**Why it retired.** Task 24 moved the clock routing and the schedule out of this class into og-sim-session's engine-free
+`SessionClock.h` (`SessionClock`: the tier and floor receipts, the effective-delay recompute and its payment, the clock
+feeds and the window line, the dilation stage, the authority's rate line, its step start and the server tick's publish),
+the site with it. The entry moved with its text and its R0 history, re-verified. **Successor:** og-sim-session's
+`SessionClock-guards.md` G-03.
+
+### G-09 — RETIRED by og-session-runtime task 24 (2026-11-25): moved with its site to og-sim-session
+
+**Was:** *"the relay-delay-floor advisory is a log line, never an assert"*. Its tag sat in `UESimulationSession.h`, above the classification `switch` in `logRelayDelayFloorAdvisory`.
+
+**Why it retired.** Task 24 moved the clock routing and the schedule out of this class into og-sim-session's engine-free
+`SessionClock.h` (`SessionClock`: the tier and floor receipts, the effective-delay recompute and its payment, the clock
+feeds and the window line, the dilation stage, the authority's rate line, its step start and the server tick's publish),
+the site with it. The entry moved with its text and its R0 history, re-verified. **Successor:** og-sim-session's
+`SessionClock-guards.md` G-04.
+
+### G-38 — RETIRED by og-session-runtime task 24 (2026-11-25): moved with its site to og-sim-session
+
+**Was:** *"the dilation stage's sensor clock is `FPlatformTime::Seconds()`, never the driver's `hostNowSeconds`"*. Its tag sat in `UESimulationSession.h`, above the sensor clock's read in `runClockDilation_GameThread` (`beforePredictionPump` since).
+
+**Why it retired.** Task 24 moved the clock routing and the schedule out of this class into og-sim-session's engine-free
+`SessionClock.h` (`SessionClock`: the tier and floor receipts, the effective-delay recompute and its payment, the clock
+feeds and the window line, the dilation stage, the authority's rate line, its step start and the server tick's publish),
+the site with it. The entry moved with its text and its R0 history, re-verified. **Successor:** og-sim-session's
+`SessionClock-guards.md` G-05.
+
+### G-39 — RETIRED by og-session-runtime task 24 (2026-11-25): moved with its site to og-sim-session
+
+**Was:** *"the SimClock server's tick is published with its step's start time, never a time read at the publish"*. Its tag sat in `UESimulationSession.h`, above the SimClock server's publish in `afterStep_Step` (`publishServerTick` since).
+
+**Why it retired.** Task 24 moved the clock routing and the schedule out of this class into og-sim-session's engine-free
+`SessionClock.h` (`SessionClock`: the tier and floor receipts, the effective-delay recompute and its payment, the clock
+feeds and the window line, the dilation stage, the authority's rate line, its step start and the server tick's publish),
+the site with it. The entry moved with its text and its R0 history, re-verified. **Successor:** og-sim-session's
+`SessionClock-guards.md` G-06.
+
+### G-40 — RETIRED by og-session-runtime task 24 (2026-11-25): moved with its site to og-sim-session
+
+**Was:** *"the tier receipt pays the recompute's change, either sign, its first arrival included"*. Its tag sat in `UESimulationSession.h`, above the tier receipt's pay call in `onConnectionTierReceived` (`onConnectionTier` since).
+
+**Why it retired.** Task 24 moved the clock routing and the schedule out of this class into og-sim-session's engine-free
+`SessionClock.h` (`SessionClock`: the tier and floor receipts, the effective-delay recompute and its payment, the clock
+feeds and the window line, the dilation stage, the authority's rate line, its step start and the server tick's publish),
+the site with it. The entry moved with its text and its R0 history, re-verified. **Successor:** og-sim-session's
+`SessionClock-guards.md` G-07.

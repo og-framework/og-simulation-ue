@@ -3,6 +3,7 @@
 
 #include "Modules/ModuleManager.h"
 
+#include "OGSimSession/SessionClock.h"
 #include "OGSimSession/SessionEngine.h"
 #include "OGSimSession/SessionGame.h"
 #include "OGSimSession/SessionKnobs.h"
