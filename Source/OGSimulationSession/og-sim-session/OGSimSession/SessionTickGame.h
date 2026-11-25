@@ -8,7 +8,7 @@
 #include <type_traits>
 
 #include "OGSimulation/OGAssert.h"
-#include "OGSimulation/TickDriverConcepts.h"
+#include "OGTickDriver/TickDriverConcepts.h"
 #include "OGSimulation/TickDriverGameTypes.h"
 #include "OGSimSession/SessionThreads.h"
 

@@ -5,8 +5,8 @@
 
 #include "CoreMinimal.h"
 #include "OGSimulation/CompilerControl.h"
-#include "OGSimulation/TickDriverConcepts.h"
-#include "OGSimulation/SimulationTickBackend.h"
+#include "OGTickDriver/TickDriverConcepts.h"
+#include "OGTickDriver/SimulationTickBackend.h"
 #include "OGSimulation/PhysicsEngineTraits.h"
 #include "OGSimulation/SimulationFrame.h"
 #include "OGSimulationUnreal/UEAuthorityRunner.h"

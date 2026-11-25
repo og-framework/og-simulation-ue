@@ -15,5 +15,6 @@ public class OGSimulation : ModuleRules
 		// og-simulation sits directly under this module directory (no extern/ or Source/ wrapper).
 		string PureLib = Path.Combine(ModuleDirectory, "og-simulation");
 		PublicIncludePaths.Add(Path.Combine(PureLib, "OGSimulation", ".."));
+		PublicIncludePaths.Add(Path.Combine(PureLib, "og-tickdriver"));
 	}
 }

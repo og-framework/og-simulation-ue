@@ -9,7 +9,7 @@
 #include <thread>
 
 #include "OGSimulation/OGAssert.h"
-#include "OGSimulation/TickDriverThreadContext.h"
+#include "OGTickDriver/TickDriverThreadContext.h"
 #include "OGSimSession/SessionTypes.h"
 
 namespace ogsession

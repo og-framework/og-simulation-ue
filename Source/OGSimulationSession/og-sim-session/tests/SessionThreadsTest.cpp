@@ -3,7 +3,7 @@
 
 #include "OGSimSession/SessionThreads.h"
 #include "OGSimSession/SessionTypes.h"
-#include "OGSimulation/TickDriverThreadContext.h"
+#include "OGTickDriver/TickDriverThreadContext.h"
 
 #include <array>
 #include <cstddef>

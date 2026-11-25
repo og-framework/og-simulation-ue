@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-#include "OGSimulation/TickDriverConcepts.h"
+#include "OGTickDriver/TickDriverConcepts.h"
 
 namespace ogsession
 {

@@ -8,9 +8,9 @@
 #include "OGSimulation/CorrectionStateBufferCodec.h"
 #include "OGSimulation/Network/SimPayloadBuffers.h"
 #include "OGSimulation/SimulationScheduler.h"
-#include "OGSimulation/TickDriverConcepts.h"
+#include "OGTickDriver/TickDriverConcepts.h"
 #include "OGSimulation/TickDriverGameTypes.h"
-#include "OGSimulation/TickDriverThreadContext.h"
+#include "OGTickDriver/TickDriverThreadContext.h"
 
 #include <cstdint>
 #include <cstdio>

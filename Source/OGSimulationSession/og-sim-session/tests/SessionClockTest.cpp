@@ -17,7 +17,7 @@
 #include "OGSimSession/SimulationDisplaySnapshot.h"
 #include "OGSimulation/SimulationScheduler.h"
 #include "OGSimulation/TickDriverGameTypes.h"
-#include "OGSimulation/TickDriverThreadContext.h"
+#include "OGTickDriver/TickDriverThreadContext.h"
 
 #include <algorithm>
 #include <array>

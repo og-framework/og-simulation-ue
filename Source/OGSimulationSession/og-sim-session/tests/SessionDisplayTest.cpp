@@ -13,7 +13,7 @@
 #include "OGSimulation/SimulationInputResolution.h"
 #include "OGSimulation/SimulationObjectStorage.h"
 #include "OGSimulation/SimulationReconciliation.h"
-#include "OGSimulation/TickDriverThreadContext.h"
+#include "OGTickDriver/TickDriverThreadContext.h"
 
 #include <atomic>
 #include <condition_variable>

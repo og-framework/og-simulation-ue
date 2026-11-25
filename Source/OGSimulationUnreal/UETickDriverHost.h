@@ -8,8 +8,8 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 
-#include "OGSimulation/TickDriverConcepts.h"
-#include "OGSimulation/TickDriverLog.h"
+#include "OGTickDriver/TickDriverConcepts.h"
+#include "OGTickDriver/TickDriverLog.h"
 
 #include <cstdint>
 #include <utility>
