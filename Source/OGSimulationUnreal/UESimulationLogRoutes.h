@@ -54,6 +54,7 @@ inline constexpr OGLogRouteEntry kOGAdapterLogRoutes[] = {
 	{ TEXT("[Dilation.Config]"),                 OGLogRoute::Net,             ELogVerbosity::Log },
 	{ TEXT("[ConnectionTier]"),                  OGLogRoute::Net,             ELogVerbosity::Log },
 	{ TEXT("[ClockSource.Window]"),              OGLogRoute::Net,             ELogVerbosity::Log },
+	{ TEXT("[ClockSource.Held]"),                OGLogRoute::Net,             ELogVerbosity::Log },
 	{ TEXT("[Dilation.Window]"),                 OGLogRoute::Net,             ELogVerbosity::Log },
 	{ TEXT("[Dilation.Authority]"),              OGLogRoute::Net,             ELogVerbosity::Log }
 };
@@ -335,6 +336,8 @@ constexpr const char* ogLevelLineBody(const char* line)
 {
 	if (ogLogRouteStartsWithNarrow(line, TEXT("[Verbose]")) || ogLogRouteStartsWithNarrow(line, TEXT("[Warning]")))
 		return line + 9;
+	if (ogLogRouteStartsWithNarrow(line, TEXT("[Error]")))
+		return line + 7;
 	return line;
 }
 
@@ -355,6 +358,8 @@ constexpr ELogVerbosity::Type ogLogLevelOfLevelLine(const char* line)
 		return ELogVerbosity::Verbose;
 	if (ogLogRouteStartsWithNarrow(line, TEXT("[Warning]")))
 		return ELogVerbosity::Warning;
+	if (ogLogRouteStartsWithNarrow(line, TEXT("[Error]")))
+		return ELogVerbosity::Error;
 	const OGLogRouteEntry* route = ogLogRouteForLevelLine(line);
 	return route != nullptr ? route->plainLevel : ELogVerbosity::Log;
 }
@@ -375,6 +380,11 @@ inline void RouteOGLevelLine(const char* line)
 		severity = ELogVerbosity::Warning;
 		body = text.RightChop(9);
 	}
+	else if (text.StartsWith(TEXT("[Error]")))
+	{
+		severity = ELogVerbosity::Error;
+		body = text.RightChop(7);
+	}
 
 	const OGLogRouteEntry* route = nullptr;
 	for (const OGLogRouteEntry& entry : kOGLogRoutes)
@@ -391,6 +401,7 @@ inline void RouteOGLevelLine(const char* line)
 #define EMIT_OG_BODY(cat) \
 	do { \
 		switch (severity) { \
+			case ELogVerbosity::Error:   UE_LOG(cat, Error,   TEXT("%s"), *body); break; \
 			case ELogVerbosity::Warning: UE_LOG(cat, Warning, TEXT("%s"), *body); break; \
 			case ELogVerbosity::Verbose: UE_LOG(cat, Verbose, TEXT("%s"), *body); break; \
 			default:                     UE_LOG(cat, Log,     TEXT("%s"), *body); break; \

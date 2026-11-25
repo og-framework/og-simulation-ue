@@ -1,5 +1,4 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
-<!-- lint-external-ref: onRelayDelayFloorReplayed -- deleted by og-input-latency task P5-9 (the session's two replay members); kept in the history -->
 <!-- lint-external-ref: UEConnectionHandle.h -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
 <!-- lint-external-ref: IndexOfByKey -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: UNetConnection::Close -- Unreal Engine symbol or file, outside every scan root -->
@@ -40,7 +39,7 @@ end (rationale §2).
 
 ## G-02 — the client's "no reading" RTT is the negative sentinel, never 0
 
-**Tag site:** `UESimNetHost.h`, `UESimNetClientHost::serverRttSeconds`, the line above `return kNoRttReadingSeconds;`.
+**Tag site:** `UESimNetHost.h`, `UESimNetLinkServices::serverRttSeconds`, the line above `return kNoRttReadingSeconds;`.
 
 **The prohibition.** Do not return `0.0`, or any other non-negative value, when the server connection's ping has no reading.
 
@@ -50,60 +49,6 @@ not seed it, og-input-latency P5-28), every `0.0` pulls the smoothed RTT toward 
 while every log says it is tracking the network.
 
 **What breaks if it moves.** Nothing at compile time and no test: the client host is only driven by a live server.
-
----
-
-## G-03 — a registered character is unregistered inside `onRosterRemoved`
-
-**Tag site:** `UESimNetHost.h`, `UESimNetClientHost::onRosterRemoved`, the line above `m_onRegisteredRemoved(simId)`.
-
-**The prohibition.** Do not defer this call: not to a queue, not to a later frame, not to the pawn's EndPlay.
-
-**The consequence.** og-sim-net's client calls `onRosterRemoved` while the character's channel still exists and destroys the
-channel as soon as the call returns. The registered simulatable holds that channel as its net-sync owner, and
-unregistration clears the callbacks bound on it, so an unregister that runs later runs against a destroyed channel. A host
-that does defer it must keep the channel alive itself first (og-sim-net's `SimNetClient-rationale.md` §5).
-
-**A client** (og-input-latency task P5-17) makes the call here, at once, inside the drain on the step's thread.
-og-sim-net has already unregistered a queue-registered character before it (`SimNetClient-guards.md` G-12), so the session's
-handler runs no og-sim unregistration; it posts the host's own game-thread work to the game thread
-(`UESimulationSession-rationale.md` §18.5). Since og-session-runtime task 12 every client registers through that queue (until
-then a frame-locked client's handler unregistered against the channel here, which a deferral broke).
-So the destroyed-channel consequence above has no path left. The call still stays here, at once: the handler erases the id from
-the session's step-thread set (`m_systemsNotified_Step`), which the step's thread owns while the steps run.
-
-**What breaks if it moves.** Nothing at compile time; at run time a use of a destroyed object on the first leave.
-
----
-
-## G-04 — the wire-format mismatch is reported with no session bound
-
-**Tag site:** `UESimNetHost.h`, `UESimNetClientHost::onWireMismatch`, the line above its `UE_LOG`.
-
-**The prohibition.** Do not make this function return early, or do nothing, when no session is bound.
-
-**The consequence.** og-sim-net's client calls `onWireMismatch` once, on the first correction whose version differs, latches
-the mismatch and from then on ignores every correction without calling the host again. A mismatch that arrives before the
-world binds (a correction can arrive in the join window) would then never be reported: no Error line and no toast, only a
-client whose corrections are all silently ignored.
-
-**What breaks if it moves.** Nothing at compile time and no test.
-
----
-
-## G-05 — a latched floor is applied as received: it pays for an increase
-
-**Tag site:** `SimNetLink.h`, `UESimNetLanesClientHost::onRelayFloor`, the line above `m_session->onRelayDelayFloorReceived(floorTicks);`.
-
-**The prohibition.** Do not route a replayed floor (`replayed == true`) to the session's `onRelayDelayFloorReplayed`, and do not
-make the call depend on `replayed`.
-
-**The consequence.** og-net delivers the floor on the server's attach, before the client's world exists, so every floor a client
-session hands over at its bind is a replay. Applied as a replay it never requests a prediction stall, so the client's join
-skips the stall today's client pays when its floor arrives after the bind (the rationale §6): the client's prediction lead at
-join changes, and Ph3's identical row `[RelayDelayFloor] floor = 6 ticks, UPWARD` is absent from every client log.
-
-**What breaks if it moves.** Nothing at compile time and no test; the gate's start-up comparison shows it.
 
 ---
 
@@ -260,6 +205,45 @@ the lookup still passes; a graceful-leave smoke shows the `no UE connection` war
 
 ---
 
-## R. Retired ids
+## G-13 — the loop's RTT publish asks the base host only from a connection's Join
 
-None.
+**Tag site:** `UESimNetHost.h`, `UESimNetLanesServerHost::publishedRttMs_GameThread`, the line above
+`if (connection.ClientLoginState == EClientLoginState::ReceivedJoin)`.
+
+**The prohibition.** Do not call `Base::rttMs` (the base host's warning path) for a connection whose `ClientLoginState` is not
+yet `ReceivedJoin`, and do not drop the gate to publish `Base::rttMs` for every connection. Before the Join read the round
+trip without a warning.
+
+**The consequence.** `publishRunnerRtt_GameThread` asks every frame from the frame og-net accepts a connection. Before the
+Join UE may have sampled no ack, so the base's read answers `AccumulatorEmpty`, and its warning is one-shot per cause: the
+server logs a false `[RttSample] SERVER tier RTT source unavailable (... accumulator is empty (no ack sampled yet))` line
+before the first login, and a later real `AccumulatorEmpty` outage is silent for the rest of the session.
+
+**What breaks if it moves.** Nothing at compile time, and the published values do not change. A dedicated server's log
+carries the false warning shortly before its first `Login request`.
+
+Was `UESimNetLanes-guards.md` G-04 (og-session-runtime task 28's step (a) moved the function unchanged from `UESimNetLanes.h`).
+
+---
+
+## §R — Retired ids
+
+⛔ **An id is never reused.** A retired id may be named in prose; it may never again appear as a `⛔G-nn` tag.
+
+### G-03 — RETIRED by og-session-runtime task 28 (2026-11-25): moved to `SimNetLink-guards.md` G-03 with the call (og-sim-net's
+`SimNetLinkClientHost::onRosterRemoved`)
+
+**Was:** *"a registered character is unregistered inside `onRosterRemoved`"*. Its tag sat in `UESimNetHost.h`'s client host's
+`onRosterRemoved`, above the unregister handler's call.
+
+### G-04 — RETIRED by og-session-runtime task 28 (2026-11-25): moved to `SimNetLink-guards.md` G-05 with the unconditional call
+(og-sim-net's `SimNetLinkClientHost::onWireMismatch`); the line and the toast stay in `UESimNetLinkServices::onWireMismatch`
+
+**Was:** *"the wire-format mismatch is reported with no session bound"*. Its tag sat in `UESimNetHost.h`'s client host's
+`onWireMismatch`, above its `UE_LOG`.
+
+### G-05 — RETIRED by og-session-runtime task 28 (2026-11-25): moved to `SimNetLink-guards.md` G-04 with the call (og-sim-net's
+`SimNetLinkClientHost::onRelayFloor`)
+
+**Was:** *"a latched floor is applied as received: it pays for an increase"*. Its tag sat in `UESimNetHost.h`'s client host's
+`onRelayFloor`, above the session's floor call.

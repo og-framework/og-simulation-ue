@@ -16,6 +16,7 @@
 #include "OGNetUnreal/OGNetDriver.h"
 #include "OGSimNet/SimNetBindings.h"
 #include "OGSimNet/SimNetHost.h"
+#include "OGSimNet/SimNetLink.h"
 #include "OGSimNet/SimNetRoster.h"
 #include "OGSimNet/SimNetTransport.h"
 #include "OGSimulation/LatencyBudgetProbe.h"
@@ -31,7 +32,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <mutex>
 
 template <typename TraitsT> class UESimulationSession;
 
@@ -292,8 +292,15 @@ inline void warnClientRttUnavailableOnce(FClientRttWarnings& warnings, EClientRt
 
 namespace ueSimNetHost
 {
-inline void noteDelivered(ognetunreal::SimLaneEndpoint& endpoint, SimLane lane, double recvSeconds);
-inline void routeLine(const char* line);
+inline void noteDelivered(ognetunreal::SimLaneEndpoint& endpoint, SimLane lane, double recvSeconds)
+{
+	ogsimnet::noteSimLaneDelivered(endpoint, lane, recvSeconds, FPlatformTime::Seconds());
+}
+
+inline void routeLine(const char* line)
+{
+	ogsimnet::routeSimNetHostLine(line, [](const char* routed) { RouteOGMessage(routed); });
+}
 } // namespace ueSimNetHost
 
 template <typename TraitsT>
@@ -371,29 +378,22 @@ private:
 	FServerRttWarnings m_rttWarnings;
 };
 
-template <typename TraitsT>
-class UESimNetClientHost
+class UESimNetLinkServices
 {
 public:
-	using Session = UESimulationSession<TraitsT>;
+	explicit UESimNetLinkServices(UOGNetDriver* ognetDriver) : m_driver(ognetDriver) {}
 
-	UESimNetClientHost(UOGNetDriver* ognetDriver)
-		: m_driver(ognetDriver)
-	{
-	}
-
-	UESimNetClientHost(const UESimNetClientHost&) = delete;
-	UESimNetClientHost& operator=(const UESimNetClientHost&) = delete;
-
-	void bindSession(Session& worldSession) { m_session = &worldSession; }
-	void unbindSession() { m_session = nullptr; }
+	UESimNetLinkServices(const UESimNetLinkServices&) = delete;
+	UESimNetLinkServices& operator=(const UESimNetLinkServices&) = delete;
 
 	double nowSeconds() { return FPlatformTime::Seconds(); }
+	void logRouted(const char* line) { RouteOGLevelLine(line); }
+	void logHost(const char* line) { RouteOGMessage(line); }
 
 	void publishServerRtt_GameThread()
 	{
 		checkf(IsInGameThread(),
-			TEXT("UESimNetClientHost::publishServerRtt_GameThread reads the driver's ServerConnection, which is game-thread "
+			TEXT("UESimNetLinkServices::publishServerRtt_GameThread reads the driver's ServerConnection, which is game-thread "
 				 "state; the step-thread drain reads only the published copy"));
 		double roundTripSeconds = kNoRttReadingSeconds;
 		const EClientRttUnavailable unavailable = readServerRoundTrip(roundTripSeconds);
@@ -404,8 +404,6 @@ public:
 
 	double serverRttSeconds()
 	{
-		if (m_session == nullptr)
-			return kNoRttReadingSeconds;
 		const double roundTripSeconds = m_publishedRttSeconds.load(std::memory_order_acquire);
 		EClientRttUnavailable unavailable = EClientRttUnavailable::None;
 		if (roundTripSeconds < 0.0)
@@ -421,7 +419,6 @@ public:
 
 	void onWireMismatch(uint8_t received, uint8_t expected)
 	{
-		// ⛔G-04  docs/UESimNetHost-guards.md
 		UE_LOG(LogOGNet, Error,
 			TEXT("Wire-format mismatch on CorrectionState: server version=%u, client expects=%u. Get matching builds from Saved/Archive/ — see PLAYTEST_PORTABLE_README.md."),
 			static_cast<unsigned>(received), static_cast<unsigned>(expected));
@@ -432,14 +429,11 @@ public:
 		}
 	}
 
-	void log(const char* line) { ueSimNetHost::routeLine(line); }
-
 	UOGNetDriver* driver() const { return m_driver; }
-	Session* session() const { return m_session; }
 
 private:
 	static_assert(std::atomic<double>::is_always_lock_free && std::atomic<EClientRttUnavailable>::is_always_lock_free,
-		"UESimNetClientHost publishes the server connection's round trip from the game thread to the client's "
+		"UESimNetLinkServices publishes the server connection's round trip from the game thread to the client's "
 		"step-thread drain through two lock-free atomics. Was the drain's own game-thread read of the ServerConnection "
 		"(og-input-latency task P5-17)");
 
@@ -463,12 +457,32 @@ private:
 	}
 
 	UOGNetDriver* m_driver;
-protected:
-	Session* m_session = nullptr;
-private:
 	FClientRttWarnings m_rttWarnings;
 	std::atomic<double> m_publishedRttSeconds{kNoRttReadingSeconds};
 	std::atomic<EClientRttUnavailable> m_publishedRttUnavailable{EClientRttUnavailable::NotPublished};
+};
+
+static_assert(ogsimnet::SimNetLinkServices<UESimNetLinkServices> && ogsimnet::kSimNetLinkNoRttSeconds == kNoRttReadingSeconds,
+	"UESimNetLinkServices is the og-sim-net link's engine services, and the link's no-reading round trip (an unattached "
+	"client's) is this file's sentinel. Was UESimNetClientHost's own session check (og-session-runtime task 28)");
+
+template <typename TraitsT>
+struct UESimNetLinkSession
+{
+	UESimulationSession<TraitsT>* session = nullptr;
+
+	void onTimingInfo(uint32_t authorityTick, double roundTripSeconds) { session->onTimingInfoReceived(authorityTick, roundTripSeconds); }
+	void onRelayFloor(uint8_t floorTicks) { session->onRelayDelayFloorReceived(floorTicks); }
+	void onConnectionTier(uint8_t oldTier, uint8_t newTier) { session->onConnectionTierReceived(oldTier, newTier); }
+	void onClockSample(const SimClockRttSample& sample) { session->onSimClockSample(sample); }
+	void onLifecycleUnregistering(uint8_t simId) { session->onSimNetLifecycleUnregistering(simId); }
+
+	void stampClientReceived(ogsimnet::SimNetStream stream, uint8_t simId, uint32_t tick, double recvSeconds)
+	{
+		const latencyBudget::Stream probeStream =
+			stream == ogsimnet::SimNetStream::State ? latencyBudget::Stream::State : latencyBudget::Stream::Input;
+		session->editLatencyBudgetDiagnostics().stampClientReceived_Internal(probeStream, simId, tick, recvSeconds);
+	}
 };
 
 inline constexpr size_t kRunnerRttSlots = 64u;
@@ -566,7 +580,7 @@ public:
 private:
 	double publishedRttMs_GameThread(UOGNetConnection& connection)
 	{
-		// ⛔G-04  docs/UESimNetLanes-guards.md
+		// ⛔G-13  docs/UESimNetHost-guards.md
 		if (connection.ClientLoginState == EClientLoginState::ReceivedJoin)
 			return Base::rttMs(connection.OGNetId);
 		double roundTripMs = kNoRttReadingMs;

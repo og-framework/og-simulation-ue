@@ -4,10 +4,12 @@
 
 `UESimNetLanes<TraitsT>` is the og-net driver's per-driver sim lanes object: the `IOGNetSimLanes` that `UOGNetDriver` creates at
 `InitBase` through the factory a game registers, and calls at six points: `ioMode` and the five frame points
-(`OGNetSimLanes-rationale.md`). It owns the sim transport over the driver's erased endpoint, on a server the SimClock server, and,
-on a client, the client session. It is a header-only template over the game's session traits. This file is the docs pointer of
-`UESimNetLanes.h`; its prohibitions are in `UESimNetLanes-guards.md`.
-The hosts it uses are in `UESimNetHost.h` (`UESimNetHost-rationale.md`).
+(`OGNetSimLanes-rationale.md`). Since og-session-runtime task 28 it is an adapter over og-sim-net's engine-free `SimNetLink`
+(`SimNetLink-rationale.md`), which holds the sim transport, the SimClock server or client, the roster bindings and, on a client,
+the client session and its host. The lanes keep what is Unreal's: the driver, the I/O mode, the refused knob, the two RTT
+publishes, the authority runner's functions and the stop handler. It is a header-only template over the game's session traits.
+This file is the docs pointer of `UESimNetLanes.h`; its prohibitions are in `UESimNetLanes-guards.md`. The engine services the
+link is handed, and the session hooks it attaches, are in `UESimNetHost.h` (`UESimNetHost-rationale.md`).
 
 **If this file and the source disagree, the source is authoritative and this file is stale.**
 
@@ -17,36 +19,27 @@ The hosts it uses are in `UESimNetHost.h` (`UESimNetHost-rationale.md`).
 
 | member | server | client |
 |---|---|---|
-| `Transport` = `ogsimnet::SimNetTransport<SimLaneEndpoint, kUESimNetInboxSlots>` | yes | yes |
-| `ClientHost` and `Client` = `ogsimnet::SimNetClient<Composition, ClientHost, Transport>` | no | yes |
-| `FLockedSimNetBindings` (`ogsimnet::SimNetBindings` behind a mutex, `UESimNetHost.h`) | unused | yes |
-| a client's refused `SimTrafficImmediate=0` (§11) and whether a client session is bound | no | the refused knob and the bind |
+| `m_link`: `ogsimnet::SimNetLink<Composition, SimLaneEndpoint, FUEPlatformClock, UESimNetLinkServices, UEFMutexLockableUImpl>` (`SimNetLink-rationale.md` §2: the transport, the clock server or client, the bindings, the client session) | yes | yes |
+| `m_services`: `UESimNetLinkServices` (`UESimNetHost.h`), the link's engine services, over the driver | yes | yes |
+| `m_sessionHooks`: `UESimNetLinkSession<TraitsT>`, the world session's hooks the link attaches | unused | yes |
+| a client's refused `SimTrafficImmediate=0` (§11) | no | yes |
 | whether the driver asked for host-serviced I/O (`hostServiced()`, §12) | true on a dedicated server | false |
-| the SimClock's end of the transport: `UESimNetClockServer` (§12) or `UESimNetClockClient` and the published og-net ack RTT (§13) | the server | the client |
-| the authority runner's RTT publish and join (§12) | while bound | no |
+| the published og-net ack RTT (§13) | no | yes |
+| the authority runner's RTT publish and join (§12), the session's stop handler (§5) | while bound | the stop handler |
 
-The inbox has 2,048 slots (`kUESimNetInboxSlots`). With og-net's default 16 connections, og-sim-net's own `static_assert`s size
-each server connection's quota from it: 124 undrained unreliable messages, and a Control ring of 7,296 slots
-(`SimNetTransport.h`). A client's inbox has one connection and no quota on the unreliable lanes.
+The role is the link's (`m_link.isServer()`), the driver the lanes' (`driver()`): one owner each. The inbox has 2,048 slots
+(`kUESimNetInboxSlots` is og-sim-net's `kSimNetLinkInboxSlots`). With og-net's default 16 connections, og-sim-net's own
+`static_assert`s size each server connection's quota from it: 124 undrained unreliable messages, and a Control ring of 7,296
+slots (`SimNetTransport.h`). A client's inbox has one connection and no quota on the unreliable lanes.
 
 ## §2 Ownership, and the join window
 
-The transport and the client session live with the **driver**; the server session lives with the **world**.
+The transport and the client session live with the **driver** (in the link); the server session lives with the **world**.
 
-- **Client.** og-sim-net's server attaches a client on og-net's `Connected`, which comes before Unreal's login, and from then
-  on sends it the roster, the floor, the tier, the clock and the relay rings. The client's world exists seconds later. So the
-  client session is created in `beforeStart`, with the transport, and drains from the driver's first `PostTickDispatch`:
-  - the roster mirror and the bindings follow every Add and Remove from the first drain;
-  - a floor or a tier is latched by the session, and `bindClientSession` replays it into the world's session
-    (`SimNetClient::bindListener`), as today's latch-and-replay does;
-  - a clock tick before the world binds is dropped by the host; the newest SimClock sample before it is held and fed to the
-    session just ahead of the first authority tick that reaches a bound session (§13, og-input-latency P3-11);
-  - a correction for a sim id with no channel yet counts `unknownSim` and is dropped; a relay ring for a character with no
-    channel yet is held per sim id and stored at the character's Add.
-  
-  A session created at bind would leave all of that in the inbox for the whole load (`UESimNetLanes-guards.md` G-01).
-  Only map load (the engine's LoadMap) itself is a gap in the draining: the unreliable lanes' overflow there is counted as `drops`, in windows
-  before steady state.
+- **Client.** The link creates the client session at the driver's start, before the world exists, so the roster, the floor,
+  the tier and a SimClock sample drained in the join window are held for the world (`SimNetLink-rationale.md` §3,
+  `SimNetLink-guards.md` G-01). Only map load (the engine's LoadMap) itself is a gap in the draining: the unreliable lanes'
+  overflow there is counted as `drops`, in windows before steady state.
 - **Server.** The server's world and its listen happen in one map load (the engine's LoadMap), so no frame passes between the driver's start and the
   world's BeginPlay in which a client could have sent anything (the P5 design's inference, K4; not measured here). The world's session creates `SimNetServer` (which owns the
   reception coordinator) on its authority runner and binds the runner's two functions here with `bindAuthorityRunner` (§12). The
@@ -55,50 +48,40 @@ The transport and the client session live with the **driver**; the server sessio
 ## §3 The six call points
 
 `ioMode` is the driver's sixth call, the first of them (og-input-latency task P5-18 added it with a default, so the five frame
-points below were the lanes' only calls until task P5-19 answered it).
+points below were the lanes' only calls until task P5-19 answered it). Each frame point forwards to one of the link's doors
+(`SimNetLink-rationale.md` §4), adding what is Unreal's.
 
 | driver point | server | client |
 |---|---|---|
 | `ioMode(bIsServer)` | `HostServiced` on a dedicated server, `OwnThread` on a listen server (§12) | `OwnThread` |
-| `beforeStart(endpoint)` | the transport, the SimClock server, the handlers, the forward target | the transport, the SimClock client (§13), the handlers, the forward target, then the client host and the client session |
-| `afterStart()` | `markEndpointStarted` | `markEndpointStarted` |
-| `afterDispatch()` | the authority runner's RTT publish, if bound (§12) | first the SimClock ping and the ack-RTT publish (§13), then the server-RTT publish (§11); then `drain` and a disconnect request (below) only while no session is bound (§11) |
-| `onTickFlush()` | nothing | `flushFrame` while no session is bound; with a bound session, nothing (§11) |
-| `beforeStop()` | the authority runner's join, if bound (G-03); the session's stop handler; then unbind the server session | the session's stop handler, then unbind the client session |
+| `beforeStart(endpoint)` | `m_link.start(endpoint)` | the refused knob's read (§11), then `m_link.start(endpoint)` |
+| `afterStart()` | `m_link.markStarted()` | the same |
+| `afterDispatch()` | the authority runner's RTT publish, if bound (§12) | `m_link.serviceFrame(...)`: the SimClock ping, then the ack-RTT and the server-RTT publishes (§13, §11), then the drain and a disconnect request only while no session is attached |
+| `onTickFlush()` | `m_link.flushFrame()`, which does nothing on a server | `m_link.flushFrame()` |
+| `beforeStop()` | the authority runner's join, if bound (G-03); the session's stop handler; unbind the server session; `m_link.stop()` | the session's stop handler, then `m_link.stop()` (it detaches the client session) |
 
 `afterDispatch` runs after `Super::PostTickDispatch` (every packet dispatched, before the first tick group), and `onTickFlush`
-after `Super::TickFlush` (after the engine's own send). `OGNetDriver-rationale.md` §13 has the verified engine order.
-
-**The disconnect request.** A client that refuses a roster message (P7's rule: a refused roster decode disconnects) latches a
-request. `afterDispatch` takes it after each drain, logs `[SimNet.Host] role=client disconnect conn= reason=` at Error to
-`LogOGNet`, and disconnects that og-net connection through the endpoint.
+after `Super::TickFlush` (after the engine's own send). `OGNetDriver-rationale.md` §13 has the verified engine order. The
+disconnect request is the link's (`SimNetLink-rationale.md` §6).
 
 ## §4 The transport is built inside `beforeStart`
 
-The transport's sizes come from its endpoint's config, `ogsimnet::simNetConfigFor(endpoint.config())`: a server's for
-its `maxConnections`, a client's for its one server, and the Control quota from the lane table. That config exists only once
-the driver has built its endpoint, and the driver hands the endpoint over in `beforeStart` and nowhere earlier. So the
-transport is an `std::optional` emplaced there (it can be neither copied nor moved), and so is the client session that holds
-a reference to it. `beforeStart` also `checkf`s that the endpoint's role is the role the lanes were made for. Until
-og-session-runtime task 15 the config also carried a flag that chose between sending at once and holding the frame's sends until
-the flush; every transport sends at once now, and the flag and its argument are gone (`SimNetTransport-rationale.md` §7).
+The transport's sizes come from its endpoint's config, which exists only once the driver has built its endpoint and hands it
+over in `beforeStart`. So `beforeStart` calls the link's `start`, which builds the transport, the clock server or client and the
+client session there and checks that the endpoint's role is the role the lanes were made for (`SimNetLink-rationale.md` §4).
 
 ## §5 The client session's binding
 
-- `bindClientSession(worldSession)`: binds the host to the session, replays the latched floor and tier (`bindListener`), and seeds
-  the bindings from the roster mirror (`SimNetBindings::seedFrom`). The bindings are also fed incrementally by the host from
-  the first drain, so the seed changes nothing then; it is there for a session that binds after entries exist, and it
-  `OG_CHECK`s that no sim id is registered yet. `SimNetBindings-rationale.md` §6 has the order: seed before the first
-  registration.
-- `unbindClientSession()`: stops the replays and unbinds the host. The client session itself stays, with its roster, latches
-  and channels, for the next world on the same driver.
-- `setOnRegisteredRemoved(onRegisteredRemoved)`: the world session's unregister of a registered sim id, which the host calls on a roster Remove
-  (`UESimNetHost-rationale.md` §7). A session sets it before it registers a character.
-- `bindings()` and `editBindings()` give the world session the gate it registers through (`SimNetBindings::verdict`,
-  `markRegistered`, `markUnregistered`, and since og-input-latency task P5-17 `markRegisteredIfReady`, the verdict and the mark
-  under one lock). Every call takes the bindings' mutex (`UESimNetHost-rationale.md` §12), because a client's drain
-  feeds them on the step's thread while the world session reads them on the game thread.
-- The bind and the unbind set and clear `clientSessionBound()`, which decides where a client drains (§11).
+- `bindClientSession(worldSession)`: points the lanes' `UESimNetLinkSession` at the world session and attaches it to the link
+  (`SimNetLink-rationale.md` §5: the listener bind that replays the latched floor and tier, the roster seed, the attached flag).
+- `unbindClientSession()`: the link's `detachSession`. The client session itself stays, with its roster, latches and channels,
+  for the next world on the same driver.
+- `setOnRegisteredRemoved(fn)`: forwards the world session's unregister of a registered sim id, which the link's client host calls
+  on a roster Remove (`SimNetLink-rationale.md` §8). A session sets it before it registers a character.
+- `bindings()` and `editBindings()` give the world session the link's bindings, the gate it registers through
+  (`SimNetBindings::verdict`, `markRegistered`, `markUnregistered`, and `markRegisteredIfReady`), behind
+  `UEFMutexLockableUImpl` (`SimNetLink-rationale.md` §8).
+- `clientSessionBound()` is the link's attached flag, which decides where a client drains (`SimNetLink-rationale.md` §6).
 - `setStopHandler(onStop)` (og-input-latency task P5-7): the world session's handler for the driver's stop, which `beforeStop`
   calls once, first, and clears. Unreal shuts a world's net driver down before it destroys the world's pawns and ends its
   play (its map load), and the lanes, with a client's channels, die with the driver. So the session unregisters every
@@ -125,23 +108,21 @@ and the concept test builds its lanes over a test endpoint of its own (§10).
 
 ## §8 Threads
 
-Every member function runs on the game thread: the driver's six points do (`InitBase`, `PostTickDispatch`, `TickFlush`,
-`LowLevelDestroy`), and so do the world session's binds. og-net's servicing thread runs only the transport's lane and
-connection handlers, which `beforeStart` installs before the endpoint starts. The exceptions: a bound client's
-`drainClient_Step`, which the world session calls on the step's thread (§11), with `clientSessionBound()` an atomic for that
-reader; and on a dedicated server the runner, which services the endpoint (so it runs the handlers and the SimClock
-server) and calls the server host (§12). The session's thread table is `UESimulationSession-rationale.md` §24.
+Every member function of the lanes runs on the game thread: the driver's six points do (`InitBase`, `PostTickDispatch`,
+`TickFlush`, `LowLevelDestroy`), and so do the world session's binds. The link records the thread that starts it, the game thread
+here, and checks every frame door against it (`SimNetLink-rationale.md` §4). The exceptions: a bound client's `drainClient_Step`,
+which the world session calls on the step's thread and which forwards to the link's `drainForStep` (its check: not the game
+thread); og-net's servicing thread, which runs only the transport's lane and connection handlers; and on a dedicated server the
+runner, which services the endpoint (so it runs the handlers and the SimClock server) and calls the server host (§12). The
+session's thread table is `UESimulationSession-rationale.md` §24.
 
 ## §9 Lifetime
 
 The driver destroys the lanes after its endpoint, so after og-net's thread has joined (`OGNetDriver-rationale.md` §13): no
-handler can run into a destroyed transport. Within the lanes, the client session is created after the transport and the host
-it references, and destroyed before them; none of their destructors calls another. A world session never keeps a pointer to
-lanes past `beforeStop`: the stop handler (§5) runs first in it and the session forgets the lanes there.
-
-The SimClock server holds the transport and the clock, and is the transport's SimClock lane handler, so it is declared after
-both and goes first; a member-order `static_assert` (`compositionContractsHold`, checked in the constructor) keeps it so. og-net
-calls it only until the endpoint is destroyed, which is before the lanes.
+handler can run into a destroyed transport. The link's own member order is `SimNetLink-rationale.md` §2. The link holds the
+lanes' services and session hooks by reference, so both are declared before it; a `static_assert` in the lanes' constructor
+keeps `m_services` and `m_sessionHooks` before `m_link`. A world session never keeps a pointer to lanes past `beforeStop`: the
+stop handler (§5) runs first in it and the session forgets the lanes there.
 
 ## §10 The switch, and the namespace aliases
 
@@ -176,25 +157,15 @@ sent at its `TickFlush`.
 
 A client whose knob is refused still has its lanes: they stay unbound and drain before a bind, below, for the world's life.
 
-**Where a client drains.**
-- **Before a world session binds**, at `afterDispatch` on the game thread, through `drain()`, the client's only drain
-  (`SimNetClient-rationale.md` §16). Nothing
-  steps yet, so the game thread is the drain's only caller. The disconnect request is acted on after it.
-- **Once a world session is bound**, at the start of each of its steps, on the step's thread, through `drainClient_Step()`,
-  which the session calls from the step's receive hook, before the step's resimulation check and collect (the step's send
-  comes later, after its capture; `UESimulationSession-rationale.md` §18.2). It `checkf`s that it is off the game thread (the AC's check at the drain) and
-  that the session is bound, drains, acts on the disconnect request, and calls `flushFrame()`:
-  that holds nothing (every send already went to the endpoint), but it emits the `[SimNet.Window]` line, whose counters the drain
-  writes, so it belongs to the drain's thread. `afterDispatch` then drains nothing (G-02) and `onTickFlush` does nothing.
-- **After the session unbinds**, back at `afterDispatch`. The session stops its steps before it unbinds
-  (`UESimulationSession-rationale.md` §18.6), so the two never overlap.
-- **At the session's teardown**, once, through `drainClientWhileStopped_GameThread()`: the steps have stopped, and the drain
-  applies the unregistrations the session queued last (`UESimulationSession-rationale.md` §18.6).
+**Where a client drains** is the link's rule (`SimNetLink-rationale.md` §6): before a world session binds, in `afterDispatch`
+on the game thread; once one is bound, at the start of each of its steps, on the step's thread, through `drainClient_Step()`,
+which the session calls from the step's receive hook and which forwards to the link's `drainForStep()`; at the session's
+teardown, once, through `drainClientWhileStopped_GameThread()` (the link's `drainWhileStopped()`).
 
-**The RTT.** Each client `afterDispatch` calls the host's `publishServerRtt_GameThread()` after the SimClock ping and the
-ack-RTT publish (§13) and before the unbound drain, so the step's clock delivery reads the server connection's round trip as of
-this frame (`UESimNetHost-rationale.md` §5). Until og-session-runtime task 12 a frame-locked client published nothing: its drain
-read the connection itself, on the game thread.
+**The RTT.** Each client `afterDispatch` hands the link a callable that calls the services' `publishServerRtt_GameThread()`
+after the ack-RTT publish (§13); the link runs it after the SimClock ping and before the unbound drain, so the step's clock
+delivery reads the server connection's round trip as of this frame (`UESimNetHost-rationale.md` §5). Until og-session-runtime
+task 12 a frame-locked client published nothing: its drain read the connection itself, on the game thread.
 
 ## §12 The authority loop's server lanes (og-input-latency task P5-19)
 
@@ -218,27 +189,18 @@ read the connection itself, on the game thread.
 - **The transport sends at once** (og-sim-net has one mode since og-session-runtime task 15): the session drains in
   `beforePump` and sends after each batch, on the runner.
 - **The SimClock server** (`UESimNetClockServer`, og-sim-net's `SimNetClockServer` over the transport and `FUEPlatformClock`) is
-  built on every server's transport, before `installHandlers`, because the transport hands the SimClock lane to
-  its clock handler only if one is set by then. It answers each client ping at receipt on og-net's servicing thread (the runner on a
-  dedicated server; og-net's own thread on a listen server's lanes, which no session binds). Its clock is `FPlatformTime::Seconds()`, the clock og-net's host stamps
-  receive times with (`OGNetUnrealHost.h`), so t1 and t2 are on one clock (og-input-latency P2-20 F2). The world session
-  publishes the server tick to it after every authority step. Every client pings it (§13).
-- **The hosts.** `ServerHost` and `ClientHost` are `UESimNetLanesServerHost` and `UESimNetLanesClientHost`, thin derivations of
-  `UESimNetHost.h`'s hosts:
-  - both answer og-sim-net's optional `onLifecycleUnregistering(simId)` (`SimNetHost-rationale.md` §4a) by forwarding it to the
-    world session, which notifies its systems while the character is still in storage;
-  - the client host also answers the optional `onClockSample(sample)` (`SimNetHost-rationale.md` §4b) by forwarding it to the
-    world session (`onSimClockSample`, §13); the client session holds the newest sample while its listener is unbound and
-    feeds it ahead of the first authority tick after the bind (`SimNetClient-rationale.md` §19; a clock tick with no session
-    is dropped by the base host). Its own `log` routes the session's `[ClockSource.Held]` line (§13) and hands every other
-    line to the base host's;
-  - the server host answers `rttMs` from `FRunnerRttTable` and posts its two probe stamps through the latency mailbox:
-    `stampServerReceived` through `stampServerReceived_Internal` and `stampHanded` through `stampHandedAndLeft_Internal` (the
-    hand-over is the send at once, on the runner; `UELatencyBudgetDiagnostics-rationale.md` §14). og-sim-net calls the
-    host from the runner. Until og-session-runtime task 14 the three forwarded to the base host's game-thread members (its
-    `rttMs` and its two stamps through the diagnostics' game-thread doors) until the session switched the host to the runner,
-    for the in-frame server; task 14 deleted the switch and the base's two stamps (`UESimNetHost-rationale.md`), and kept the
-    base `rttMs`, which the RTT publish below calls.
+  the link's, built in its `start` before `installHandlers` (`SimNetLink-rationale.md` §4). It answers each client ping at
+  receipt on og-net's servicing thread (the runner on a dedicated server; og-net's own thread on a listen server's lanes, which
+  no session binds). Its clock is `FPlatformTime::Seconds()`, the clock og-net's host stamps receive times with
+  (`OGNetUnrealHost.h`), so t1 and t2 are on one clock (og-input-latency P2-20 F2). The world session publishes the server tick
+  to it after every authority step. Every client pings it (§13).
+- **The hosts.** The client's host is og-sim-net's `SimNetLinkClientHost`, inside the link (`SimNetLink-rationale.md` §7).
+  The server's, `ServerHost`, is `UESimNetLanesServerHost`, which og-session-runtime task 28 moved unchanged into
+  `UESimNetHost.h` (`UESimNetHost-rationale.md` §13): it answers og-sim-net's optional `onLifecycleUnregistering(simId)` by
+  forwarding it to the world session, answers `rttMs` from `FRunnerRttTable`, and posts its two probe stamps through the
+  latency mailbox: `stampServerReceived` through `stampServerReceived_Internal` and `stampHanded` through
+  `stampHandedAndLeft_Internal` (the hand-over is the send at once, on the runner;
+  `UELatencyBudgetDiagnostics-rationale.md` §14). og-sim-net calls the host from the runner.
 - **The RTT table.** `FRunnerRttTable` is 64 lock-free 64-bit words, each an og-net id and a `float` round trip in
   milliseconds, so the runner never reads one connection's id with another's reading. The game thread fills it in `afterDispatch`
   (`publishRunnerRtt_GameThread`): one word per og-net client connection, its value the base host's `rttMs` (which also feeds
@@ -256,7 +218,7 @@ read the connection itself, on the game thread.
   the warning a later outage needs. So until UE sets the connection's `ClientLoginState` to `ReceivedJoin` (`UWorld`'s
   `NMT_Join` handler, once the player controller exists) the publish reads `readRoundTripMs` itself and publishes what it
   reads, with no warning and no WIRE sample (the in-frame server took none before the Join either), and a closing connection
-  reads `kNoRttReadingMs`, as in the base. From the Join it asks the base (G-04), so every warning there means what it says;
+  reads `kNoRttReadingMs`, as in the base. From the Join it asks the base (`UESimNetHost-guards.md` G-13), so every warning there means what it says;
   a configuration fault (`NoNetPing`, `RoundTripNotEnabled`) is warned at the Join instead of at the accept. The base `rttMs` is
   untouched.
 - **A word of 0 is an empty slot.** The high half is the og-net id, and og-net never assigns 0 (`ognet::kInvalidConnection`, a
@@ -275,42 +237,23 @@ read the connection itself, on the game thread.
 
 ## §13 The client's SimClock (og-input-latency task P3-10)
 
-- **Built with the transport.** `beforeStart` emplaces `UESimNetClockClient` (og-sim-net's `SimNetClockClient` over the transport
-  and `FUEPlatformClock`) on a client's transport before `installHandlers`, as the server's clock server is (§12): the transport
-  gives the SimClock lane to its clock handler only if one is set by then. Its clock is `FPlatformTime::Seconds()`, the clock
-  og-net's host stamps receive times with, so the ping's t0 and the pong's receive time t3 are on one clock.
-- **Pinged from the driver's first frame.** `afterDispatch` calls `servicePing()` first on every client frame, before the drain: og-sim-net's clock pings at 20 Hz from the previous ping (`kClockPingIntervalSeconds`), and a frame point at
-  the game thread's rate is at or above that. It sends nothing until the transport knows its server connection (the drain's
-  `Connected`), so the first ping leaves one frame after the connection is drained, before the client's world exists. That is
-  what lets the clock switch to SimClock before the join's re-centre decision (og-input-latency P3-10 part A F1): a source
-  switched after the decision does not move the decided lead.
-- **The pong is a sample, not a message.** The clock's lane handler turns each pong into a clockSample record on og-net's
-  servicing thread and pushes it into the inbox; the client session reads it ahead of its envelope decode
-  (`SimNetClient-rationale.md` §4) and calls the client host's `onClockSample`, which forwards it to the world session on the
-  drain's thread, the step's thread once a session is bound: the estimator's writer. The sample is og-simulation's
-  `SimClockRttSample`, the estimator's type, so the session passes it through (og-session-runtime task 20).
-- **Held while no session is bound, fed ahead of the first tick** (og-input-latency P3-11, from P3-10 part B F1; in og-sim-net's
-  client session since og-session-runtime task 20). Pongs come back from the driver's first frames, long before the world. The
-  client session keeps the newest sample while its listener is unbound and hands it to `onClockSample` just before the first
-  authority tick after the bind (`SimNetClient-rationale.md` §19 has the why, the threads and the measurements; its G-14
-  guards the order). The lanes bind the listener together with the world session (`bindClientSession`, §5), so "unbound" is
-  "no world session", which is what the host's own latch keyed on until task 20. The client host's `onClockSample` only
-  forwards, and its `onTimingInfo` is the base host's. A `static_assert` in the lanes' constructor checks that the client host
-  has the hook (it checked the host's own `onTimingInfo` while the latch lived here).
-  - **The line.** When the session feeds a held sample it formats `[ClockSource.Held] fed the SimClock sample held while no
-    world session was bound, ahead of authority tick <t>: rttMs=<r> heldMs=<h>` (`heldMs` the time since the pong arrived, on
-    `FPlatformTime::Seconds()`, the clock og-net stamps receive times with) and hands it to the host's `log`. The client host's
-    own `log` (`ueSimNetLanes::routeClientLine`) logs a line that begins with `kClockSourceHeldTag` at `Warning` under
-    `LogOGNet`, the category and level of the `UE_LOG` that wrote it here until task 20, and hands every other line to the base
-    host's (`ueSimNetHost::routeLine`). The base host's route would not keep them: no og-sim prefix row matches the tag, so the
-    line would land in `LogOG` at `Log`, and a `[Warning]` token would stay in its text. A second `static_assert` in the
-    constructor checks that the client host declares its own `log`. The automation test `OGBrawler.SimNet.ClockHeldLine` (the
-    brawler's `UESimNetClockHeldLineTest.cpp`) formats nine value sets both ways and compares the bytes, then logs each the old
-    way and through the route and compares the text, the category and the level. A join with none held logs nothing.
+- **Built with the transport**, in the link's `start` (`SimNetLink-rationale.md` §4): `UESimNetClockClient` (og-sim-net's
+  `SimNetClockClient` over the transport and `FUEPlatformClock`). Its clock is `FPlatformTime::Seconds()`, the clock og-net's host
+  stamps receive times with, so the ping's t0 and the pong's receive time t3 are on one clock.
+- **Pinged from the driver's first frame.** The link's `serviceFrame` pings first on every client frame, before the drain:
+  og-sim-net's clock pings at 20 Hz from the previous ping (`kClockPingIntervalSeconds`), and a frame point at the game thread's
+  rate is at or above that. It sends nothing until the transport knows its server connection (the drain's `Connected`), so the
+  first ping leaves one frame after the connection is drained, before the client's world exists. That is what lets the clock
+  switch to SimClock before the join's re-centre decision (og-input-latency P3-10 part A F1): a source switched after the
+  decision does not move the decided lead.
+- **The pong is a sample, not a message**, held by the client session while no world session is bound and fed ahead of the first
+  authority tick after the bind (`SimNetClient-rationale.md` §19; `SimNetLink-rationale.md` §3). The link's client host forwards
+  each sample to the world session through `UESimNetLinkSession::onClockSample` (`onSimClockSample`), on the drain's thread. The
+  held line, `[ClockSource.Held] ...`, keeps `LogOGNet` at `Warning` through the link's log routing
+  (`SimNetLink-rationale.md` §9) and the route table's `[ClockSource.Held]` row; the automation test
+  `OGBrawler.SimNet.ClockHeldLine` (`UESimNetClockHeldLineTest.cpp`) compares it with the old `UE_LOG` (text, category, level).
 - **The ack RTT.** `afterDispatch` also publishes og-net's smoothed ack RTT to the server connection
   (`UOGNetDriver::GetSmoothedRttSeconds`, game-thread only) into one relaxed atomic (`ackSrttSeconds()`), which the session's
   `[ClockSource.Window]` line reads on the drain's thread as a cross-check (`UESimulationSession-rationale.md` §20). It reads
   `kNoRttReadingSeconds` before og-net has a sample or without a server connection.
-- **Lifetime.** The clock client holds the transport and the clock by reference and is the transport's SimClock handler, so
-  it is declared after both and destructs first; a `static_assert` in `compositionContractsHold` checks the member order, as
-  for the clock server. The driver destroys the lanes after og-net's endpoint, so the handler outlives every call og-net can make.
+- **Lifetime.** The clock client is the link's, and its member order is `SimNetLink-rationale.md` §2.

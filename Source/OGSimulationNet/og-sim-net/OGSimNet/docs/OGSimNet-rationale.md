@@ -90,6 +90,12 @@ it yet, and later tasks keep it. It is not a wire version. The bytes on the wire
   ConditionalAddModuleDirectory, depends on `OGNet` and `OGSimulationNet`, and adds og-net's `tests/` directory as a private
   include path, for `VirtualNetwork.h`.
 - `SimNetVersionTest.cpp` pins the wire-token fragment of §7 (tag `[NetTransport][SimNetVersion]`).
+- `SimNetLinkTest.cpp` drives `SimNetLink` over a `VirtualNetwork` (tag `[NetTransport][SimNetLink]`;
+  `SimNetLink-rationale.md` §10).
+- `SimNetAuthorityLoopTest.cpp` includes og-simulation-tests' `TickDriver/TickDriverFakes.h` through an include path, as
+  og-sim-session's tests do: `OGSimulationTests.Build.cs` adds og-simulation-tests' `Source/OGSimulationTests`, and og-sim-net's
+  CMake adds the same directory under `OG_SIMULATION_TESTS_DIR` (which the plugin's `standalone/` project sets). Until
+  og-session-runtime task 28 it reached the header by a relative path out of the plugin.
 - `SimNetSkeletonTest.cpp` proves both include paths in one translation unit. It includes `SimTransport.h` (og-simulation),
   `SimNetVersion.h` (og-sim-net) and `VirtualNetwork.h` (og-net's tests), connects an og-net client and server endpoint over a
   `VirtualNetwork`, and checks that one message sent on the lane numbered by `SimLane::SimInput` arrives on og-net's SimInput

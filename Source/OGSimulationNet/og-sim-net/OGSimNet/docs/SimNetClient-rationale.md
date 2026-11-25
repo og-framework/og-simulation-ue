@@ -531,7 +531,7 @@ client host; og-session-runtime task 20 moved it here, beside the floor and tier
 - **An unbind holds again.** Samples drained after it are kept, and the next bind's first tick feeds the newest.
 - **Threads.** The hold is written by the drains before the bind and read by the first drain after it, which is where every
   other piece of the session's state changes hands when a host's drain moves threads at the bind (the Unreal client drains
-  on the game thread until its world session binds, then on the step's thread: `UESimNetLanes-guards.md` G-02).
+  on the game thread until its world session binds, then on the step's thread: `SimNetLink-guards.md` G-02).
 - **Equivalent to the latch it replaced.** The latch held while the host had no world session; the session holds while its
   listener is unbound. The Unreal lanes bind the two together (`bindClientSession`: the host's session, then `bindListener`)
   and unbind them together, on the game thread between drains, so every drain sees the same state either way. The

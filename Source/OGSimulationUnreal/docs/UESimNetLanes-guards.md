@@ -14,45 +14,6 @@ number is spent forever.
 
 ---
 
-## G-01 — a client's session is created at driver start, not when the world binds
-
-**Tag site:** `UESimNetLanes.h`, `beforeStart`, the line above `m_client.emplace(*m_clientHost, *m_transport)`.
-
-**The prohibition.** Do not move the client session's creation out of `beforeStart`: not into `bindClientSession`, not into
-the world's BeginPlay, not behind any later event.
-
-**The consequence.** The server attaches a client on og-net's `Connected`, before Unreal's login, and from then on sends it
-the roster, the floor, the tier, the clock and the relay rings. A client whose session does not exist yet drains nothing,
-so all of it waits in the transport's inbox until the world binds. Past 1,984 undrained messages the inbox refuses the
-newest one (counted as `drops`), so the oldest relays and clocks are kept and the fresh ones lost; and past 456 undrained
-Control messages the transport disconnects the server itself. The latched floor and tier that `bindClientSession` replays
-are only latched by a session that drained them.
-
-**What breaks if it moves.** Nothing at compile time, and no test before the switch (no factory is registered). After it,
-a slow world load shows `drops=` in the first `[SimNet.Window]` lines and, at the worst, a client that disconnects during
-its own load.
-
----
-
-## G-02 — a client's game thread does not drain once a world session is bound
-
-**Tag site:** `UESimNetLanes.h`, `afterDispatch`, the line above `if (m_clientSessionBound.load(std::memory_order_relaxed))`,
-the early return before the client's game-thread `drain()`.
-
-**The prohibition.** Do not drop this early return, do not make it depend on anything but the session's bind, and do not move
-the game-thread `drain()` above it. Once a world session is bound, the session's steps drain the client from the step's
-thread (`drainClient_Step`, rationale §11).
-
-**The consequence.** A game-thread drain then runs every consumer the drain reaches (the correction inject, the relay ingest, the
-estimator feed, the tier receipt, the roster with its registrations) on the game thread while a step runs the same objects on a
-worker, and the lifecycle queue's registrations land in the middle of a step. og-sim-net's in-drain flag catches two drains that
-overlap in time (an `OG_CHECK`); one that does not overlap is caught by nothing and is a data race on every structure the step
-reads.
-
-**What breaks if it moves.** Nothing at compile time; a smoke stays healthy on most runs.
-
----
-
 ## G-03 — `beforeStop` joins the authority runner before anything else
 
 **Tag site:** `UESimNetLanes.h`, `beforeStop`, the line above `if (joinRunner)`.
@@ -73,26 +34,24 @@ servers bound no join and were unaffected.
 
 ---
 
-## G-04 — the loop's RTT publish asks the base host only from a connection's Join
+## §R — Retired ids
 
-**Tag site:** `UESimNetLanes.h`, `UESimNetLanesServerHost::publishedRttMs_GameThread`, the line above
-`if (connection.ClientLoginState == EClientLoginState::ReceivedJoin)`.
+⛔ **An id is never reused.** A retired id may be named in prose; it may never again appear as a `⛔G-nn` tag.
 
-**The prohibition.** Do not call `Base::rttMs` (the base host's warning path) for a connection whose `ClientLoginState` is not
-yet `ReceivedJoin`, and do not drop the gate to publish `Base::rttMs` for every connection. Before the Join read the round
-trip without a warning.
+### G-01 — RETIRED by og-session-runtime task 28 (2026-11-25): moved to `SimNetLink-guards.md` G-01 with the client session's
+creation (og-sim-net's `SimNetLink::start`)
 
-**The consequence.** `publishRunnerRtt_GameThread` asks every frame from the frame og-net accepts a connection. Before the
-Join UE may have sampled no ack, so the base's read answers `AccumulatorEmpty`, and its warning is one-shot per cause: the
-server logs a false `[RttSample] SERVER tier RTT source unavailable (... accumulator is empty (no ack sampled yet))` line
-before the first login, and a later real `AccumulatorEmpty` outage is silent for the rest of the session.
+**Was:** *"a client's session is created at driver start, not when the world binds"*. Its tag sat in `UESimNetLanes.h`'s
+`beforeStart`, above the client session's `emplace`.
 
-**What breaks if it moves.** Nothing at compile time, and the published values do not change. A dedicated server's log
-carries the false warning shortly before its first `Login request` (until og-session-runtime task 14 the in-frame servers never
-called the publish).
+### G-02 — RETIRED by og-session-runtime task 28 (2026-11-25): moved to `SimNetLink-guards.md` G-02 with the frame drain's early
+return (og-sim-net's `SimNetLink::serviceFrame`)
 
----
+**Was:** *"a client's game thread does not drain once a world session is bound"*. Its tag sat in `UESimNetLanes.h`'s
+`afterDispatch`, above the bound check before the game thread's drain.
 
-## R. Retired ids
+### G-04 — RETIRED by og-session-runtime task 28 (2026-11-25): moved to `UESimNetHost-guards.md` G-13 with its function, which
+step (a) moved unchanged into `UESimNetHost.h`
 
-None.
+**Was:** *"the loop's RTT publish asks the base host only from a connection's Join"*. Its tag sat in `UESimNetLanes.h`'s
+`UESimNetLanesServerHost::publishedRttMs_GameThread`, above the `ReceivedJoin` gate.

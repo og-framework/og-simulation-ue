@@ -2,8 +2,8 @@
 #include "catch_amalgamated.hpp"
 
 #include "SimNetTestRig.h"
+#include "TickDriver/TickDriverFakes.h"
 #include "VirtualNetwork.h"
-#include "../../../../../../Source/OGSimulationTests/extern/og-simulation-tests/Source/OGSimulationTests/TickDriver/TickDriverFakes.h"
 
 #include "OGNet/Backend/BsdDatagramBackend.h"
 #include "OGNet/Endpoint/NetEndpoint.h"
