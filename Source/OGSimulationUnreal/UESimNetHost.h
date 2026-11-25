@@ -350,10 +350,6 @@ public:
 		return m_session != nullptr ? m_session->getServerReceptionTick() : 0;
 	}
 
-	void log(const char* line) { ueSimNetHost::routeLine(line); }
-
-	void noteDelivered(SimLane lane, double recvSeconds) { ueSimNetHost::noteDelivered(m_endpoint, lane, recvSeconds); }
-
 	UOGNetDriver* driver() const { return m_driver; }
 	ognetunreal::SimLaneEndpoint& endpoint() const { return m_endpoint; }
 	Session* session() const { return m_session; }
@@ -372,7 +368,9 @@ private:
 	}
 
 	UOGNetDriver* m_driver;
+protected:
 	ognetunreal::SimLaneEndpoint& m_endpoint;
+private:
 	Session* m_session;
 	FServerConnectionLookup m_connections;
 	FServerRttWarnings m_rttWarnings;
@@ -539,25 +537,6 @@ public:
 
 	double rttMs(SimConnectionId conn) { return m_runnerRtt.read(conn); }
 
-	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds)
-	{
-		if (this->session() == nullptr)
-			return;
-		this->session()->editLatencyBudgetDiagnostics().stampServerReceived_Internal(simId, captureTick, recvSeconds);
-	}
-
-	void stampHanded(uint8_t simId, uint32_t captureTick)
-	{
-		if (this->session() != nullptr)
-			this->session()->editLatencyBudgetDiagnostics().stampHandedAndLeft_Internal(simId, captureTick);
-	}
-
-	void onLifecycleUnregistering(uint8_t simId)
-	{
-		if (this->session() != nullptr)
-			this->session()->onSimNetLifecycleUnregistering(simId);
-	}
-
 	void publishRunnerRtt_GameThread()
 	{
 		checkf(IsInGameThread(),
@@ -591,3 +570,5 @@ private:
 
 	FRunnerRttTable m_runnerRtt;
 };
+
+#include "OGSimNet/SimNetServerHost.h"

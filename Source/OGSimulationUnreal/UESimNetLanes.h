@@ -63,7 +63,7 @@ public:
 	using Link             = ogsimnet::SimNetLink<typename TraitsT::Composition, ognetunreal::SimLaneEndpoint, FUEPlatformClock,
 		UESimNetLinkServices, UEFMutexLockableUImpl>;
 	using Transport        = typename Link::Transport;
-	using ServerHost       = UESimNetLanesServerHost<TraitsT>;
+	using ServerHost       = ogsimnet::SimNetLinkServerHost<TraitsT>;
 	using Client           = typename Link::Client;
 	using Session          = UESimulationSession<TraitsT>;
 	using FFrameFn         = TFunction<void()>;
