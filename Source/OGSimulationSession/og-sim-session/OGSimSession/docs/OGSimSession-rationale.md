@@ -58,7 +58,8 @@ is the module's generated definitions header.
 - **`OGSimulation` and `OGSimulationNet` are public dependencies.** og-sim-session's headers include og-simulation headers,
   and the runtime will include og-sim-net's (design §3.1), so a module that includes an og-sim-session header needs both
   include roots. og-net is reached only through og-sim-net: the tier lint forbids og-sim-session from including og-net,
-  og-simulation-jolt or any engine module (`module_tiers.psd1`, the `OGSimSession` row).
+  og-simulation-jolt or any engine module (`module_tiers.psd1`, the `OGSimSession` row). Since og-session-runtime task 35
+  `SessionKnobs.h` includes og-simulation's `Config/KnobTable.h` (the knob table, `KnobTable-rationale.md`).
 - **`Core` is a private dependency**, for the module macro in `OGSimulationSessionModule.cpp`.
 - **`OGSimulationSessionModule.cpp` includes the eleven library headers** (`SessionClock.h` since og-session-runtime task 24,
   `SessionDisplay.h` and `SimulationDisplaySnapshot.h` since task 25, `SessionEngine.h`, `SessionGame.h`, `SessionKnobs.h` since

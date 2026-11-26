@@ -41,10 +41,10 @@ Unreal session calls at the positions they had as its members:
 
 | function | what it holds | where the Unreal session calls it |
 |---|---|---|
-| `readSessionKnobs(config, worldIsAuthority)` | the intakes (`⛔G-01`, `⛔G-02`, `⛔G-03`, `⛔G-04`); it reaches no session state and returns the requests in a `SessionKnobs` value | after the latency member's begin, before the backend builds its world: both roles |
+| `readSessionKnobs(config, worldIsAuthority)` | the intakes (`⛔G-01`, `⛔G-02`, `⛔G-03`, `⛔G-04`), `RecentreSettleSamples` through its knob row's intake (§2.5); it reaches no session state and returns the requests in a `SessionKnobs` value | after the latency member's begin, before the backend builds its world: both roles |
 | `applySessionKnobs(engine, manager, floorServer, knobs, logRelayDelayFloorAdvisory)` | the floor's clamp, set, ini line and advisory; the rotation width's clamp and set; the rotation width's proof line; the floor's publish through og-sim-net's server (`publishFloor`) | in the authority branch, after the neutral input and the og-sim-net server's start, before the tier consumer's start |
 | `applyResimTriggerPolicy(engine, manager, knobs)` | the policy's parse, apply and proof line (`⛔G-05`) | after both role branches |
-| `applyLatencyKnobs(engine, manager, knobs, clockDilation, clockDilationWindow)` | the two latency knobs' clamp and set, and their one proof line; the re-centre window's clamp, set and proof line; the clock's jitter multiplier, then `applyClockRttSource` (§3); last, `applyClockDilation` (§4), which applies the dev doors through `applyClockDilationDoor` (§5) | after both role branches, directly after `applyResimTriggerPolicy` |
+| `applyLatencyKnobs(engine, manager, knobs, clockDilation, clockDilationWindow)` | the two latency knobs' clamp and set, and their one proof line; the re-centre window's clamp, set and proof line, through its knob row (§2.5); the clock's jitter multiplier, then `applyClockRttSource` (§3); last, `applyClockDilation` (§4), which applies the dev doors through `applyClockDilationDoor` (§5) | after both role branches, directly after `applyResimTriggerPolicy` |
 
 **Every knob takes the same four steps:**
 
@@ -151,6 +151,33 @@ One integer key, applied after the two latency knobs; it feeds `TimeConfig::rece
 `[ClockRecentre.Config] recentreSettleSamples=… (ini|compiled)`, is unconditional, at `Warning`; its tag is not the clock's
 `[Clock.Recentre]`, which a client logs once per arm.
 
+**Since og-session-runtime task 35 this key is a knob row** (og-simulation's `Config/KnobTable.h`, `KnobTable-rationale.md`),
+`sessionKnobRows::kRecentreSettleSamples` in this header: tag `ClockRecentre.Config`, name `recentreSettleSamples`, clamp
+`clockRecentre::clampSettleSamples` (og-simulation's `TimeConfig.h`, the hand-written `std::max(requested, 0)` it replaced),
+apply `setRecentreSettleSamples`, read-back `getTimeConfig().recentreSettleSamples` as an `int32_t` (a `static_assert` in
+`TimeConfig.h` keeps the compiled default inside `int32_t`; the ini path stores only clamped `int32_t` values, so `%d` and the
+old `%u` print the same digits). `readSessionKnobs` reads it through the row's intake (`kRecentreSettleSamplesIntake`,
+`knobTable::readKnob`) at the old read's position and keeps the reading in the same two `SessionKnobs` fields;
+`applyLatencyKnobs` applies it with `knobTable::applyKnob` at the old block's position. The table's two lines are the old
+lines byte for byte: `[<tag>] ini [<section>] <key>=<value> out of range, clamped to <clamped>` and
+`[<tag>] <name>=<stored> (<ini|compiled>)`, `Warning` both. The two formats the block used, `kRecentreClamped` and
+`kRecentreSession`, stay in `sessionKnobsLines` as the reference the row is checked against (§8); the intake no longer
+formats them.
+
+**The other thirteen keys stay hand-written**, because no generic row prints their lines (`KnobTable-rationale.md` §5):
+
+| key | kept as written because |
+|---|---|
+| `RelayDelayFloorTicks` | its proof line is `[RelayDelayFloor] session floor = <n> ticks (ini override)`, at `Log`, printed only when the key was read, and followed by the caller's advisory |
+| `CorrectionRotationK` | its proof line is `[StateRotation] session K = <k> (ini override\|compiled default)`, and `-1` is its absence sentinel |
+| `ResimTriggerPolicy` | a word (`FrontierExact\|OnDisagreement`) with an `unrecognised` Warning, and a proof line that also carries `depthPolicy` and `rateLimit` |
+| `RedundancyFrames`, `RelayResendEntries` | two keys share one proof line, `[LatencyKnobs] redundancyFrames=… relayResendEntries=… (ini\|compiled)`, with one token for both |
+| `ClockRttSource` | a word (`Engine\|SimClock`), and its value shares the `[ClockSource.Config]` line with the jitter multiplier |
+| `JitterMultiplier` | one value sets two fields, both printed on the `[ClockSource.Config]` line; its not-finite line says "defaults" |
+| `ClockDilation` | a word (`Off\|Shadow\|On`), applied only on a client (the authority prints `mode=n/a`), its proof line carrying the setpoint, gain and deviation |
+| `ClockDilationGainPerTick`, `ClockDilationMaxPercent`, `ClockDilationTargetOffsetTicks`, `ClockDilationCommonLeadTicks` | the doors: one `doors` line carries all five values with their tokens; `ClockDilationMaxPercent` is a percent stored as a fraction |
+| `ClockDilationSetpoint` | a word (`OwnRtt\|Common`) whose `unrecognised` Warning names the setpoint it runs, and a field of the doors line |
+
 ### 2.6 The order of the four functions' lines
 
 On the authority: the floor's lines and advisory (when the key is present), the rotation width's clamp line, `[StateRotation]
@@ -233,7 +260,9 @@ window are built from. They apply in `Shadow` as in `On`; `Off` never calls the 
 ## §6 The lines: one format each, a level token, a sized buffer
 
 - **The formats are named constants** in `sessionKnobsLines` (22 lines and the depth text), so the Unreal parity test can
-  format each one beside its old `UE_LOG` format.
+  format each one beside its old `UE_LOG` format. Since og-session-runtime task 35 two of them, `kRecentreClamped` and
+  `kRecentreSession`, are the reference shapes of the `RecentreSettleSamples` row (§2.5): the row composes those two lines, and
+  `SessionKnobRowsTest.cpp` checks they equal these formats (§8).
 - **A line carries its level.** A line logged at `Warning` before task 23 starts with the token `[Warning]`; the floor's ini line,
   at `Log`, carries none. That is og-sim-session's `logRouted` contract (`SessionEngine-rationale.md`): one sink for lines that
   carry their own `[Level][Tag]` prefix. The Unreal adapter's sink reads the token for the level, picks the category from the
@@ -279,3 +308,9 @@ optionals. They are template parameters constrained only by the calls made on th
   level.
 - `Source/OGBrawlerUnreal/UESessionKnobsLineRouteTest.cpp` (`OGBrawler.Session.KnobLineRoute`, automation): each of the 22 lines
   logged the old way and through `UESessionLogSink`, captured from `GLog`: equal text, category and level.
+- `og-sim-session/tests/SessionKnobRowsTest.cpp` (`[Session][SessionKnobs]`, og-session-runtime task 35): the
+  `RecentreSettleSamples` row's lines, on both roles, absent and for ten values from `INT32_MIN` to `INT32_MAX`, equal
+  `formatLine(kRecentreClamped, …)` and `formatLine(kRecentreSession, …)` byte for byte, so the parity test's pins on those two
+  formats still describe the lines the session prints; and a dummy key read through `MapConfigSource` by a test-local table
+  (`KnobTable-rationale.md` §6), with its negative: without the row the key is not read. The transcription test above is
+  unchanged and passes, so the moved key's lines, their order and the stored values are the transcription's.

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // docs/SessionKnobs-rationale.md · docs/SessionKnobs-guards.md
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -10,8 +9,10 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "OGSimulation/OGAssert.h"
+#include "OGSimulation/Config/KnobTable.h"
 #include "OGSimulation/Network/ConnectionTierTable.h"
 #include "OGSimulation/Network/CorrectionRotation.h"
 #include "OGSimulation/PCTimeManagement/ClockDilationController.h"
@@ -169,6 +170,16 @@ void logLine(EngineT& engine, const char* pattern, ArgsT... args)
 	engine.logRouted(line.c_str());
 }
 
+template <SessionLogSink EngineT>
+auto knobRowSink(EngineT& engine)
+{
+	return [&engine](knobTable::KnobLevel level, const char* line)
+	{
+		const std::string routed = level == knobTable::KnobLevel::Warning ? std::string("[Warning]") + line : std::string(line);
+		engine.logRouted(routed.c_str());
+	};
+}
+
 constexpr bool equalsIgnoringCase(std::string_view text, std::string_view word)
 {
 	if (text.size() != word.size())
@@ -188,6 +199,31 @@ static_assert(equalsIgnoringCase("ONdisagreement", "OnDisagreement") && !equalsI
 	"equalsIgnoringCase folds ASCII letters only, as FString::Equals(ESearchCase::IgnoreCase) does (FGenericPlatformStricmp: "
 	"two characters that are not both ASCII must be equal); was the UE session's FString::Equals");
 } // namespace sessionKnobsLines
+
+namespace sessionKnobRows
+{
+inline constexpr knobTable::KnobIntake<int32_t> kRecentreSettleSamplesIntake{
+	.section = "OGNetcode",
+	.key     = "RecentreSettleSamples",
+	.role    = knobTable::KnobRole::Both,
+};
+
+template <typename ManagerT>
+inline constexpr knobTable::KnobRow<ManagerT, int32_t> kRecentreSettleSamples{
+	.intake     = kRecentreSettleSamplesIntake,
+	.tag        = "ClockRecentre.Config",
+	.name       = "recentreSettleSamples",
+	.proofLevel = knobTable::KnobLevel::Warning,
+	.clamp      = &clockRecentre::clampSettleSamples,
+	.apply      = [](ManagerT& manager, int32_t samples) { manager.setRecentreSettleSamples(static_cast<uint32_t>(samples)); },
+	.stored     = [](const ManagerT& manager) { return static_cast<int32_t>(manager.getTimeConfig().recentreSettleSamples); },
+};
+
+constexpr knobTable::KnobWorld worldOf(bool worldIsAuthority)
+{
+	return worldIsAuthority ? knobTable::KnobWorld::Authority : knobTable::KnobWorld::Prediction;
+}
+} // namespace sessionKnobRows
 
 template <ConfigSource ConfigT>
 SessionKnobs readSessionKnobs(const ConfigT& config, bool worldIsAuthority)
@@ -234,13 +270,8 @@ SessionKnobs readSessionKnobs(const ConfigT& config, bool worldIsAuthority)
 		configuredRelayResendEntries = *iniEntries;
 	}
 
-	bool    hasIniRecentreSettleSamples = false;
-	int32_t configuredRecentreSettleSamples = 0;
-	if (const std::optional<int32_t> iniSamples = config.readInt("RecentreSettleSamples"))
-	{
-		hasIniRecentreSettleSamples = true;
-		configuredRecentreSettleSamples = *iniSamples;
-	}
+	const std::optional<int32_t> iniRecentreSettleSamples = knobTable::readKnob(sessionKnobRows::kRecentreSettleSamplesIntake,
+		config, sessionKnobRows::worldOf(worldIsAuthority));
 
 	bool        hasIniClockRttSource = false;
 	std::string configuredClockRttSource;
@@ -276,7 +307,7 @@ SessionKnobs readSessionKnobs(const ConfigT& config, bool worldIsAuthority)
 		hasIniResimTriggerPolicy, std::move(configuredResimTriggerPolicy),
 		hasIniRedundancyFrames, configuredRedundancyFrames,
 		hasIniRelayResendEntries, configuredRelayResendEntries,
-		hasIniRecentreSettleSamples, configuredRecentreSettleSamples,
+		iniRecentreSettleSamples.has_value(), iniRecentreSettleSamples.value_or(0),
 		hasIniClockRttSource, std::move(configuredClockRttSource),
 		hasIniJitterMultiplier, configuredJitterMultiplier,
 		hasIniClockDilation, std::move(configuredClockDilation),
@@ -523,19 +554,9 @@ void applyLatencyKnobs(EngineT& engine, ManagerT& manager, const SessionKnobs& k
 		sessionTimeConfig.relayResendEntries,
 		(knobs.hasIniRedundancyFrames || knobs.hasIniRelayResendEntries) ? "ini" : "compiled");
 
-	if (knobs.hasIniRecentreSettleSamples)
-	{
-		const int32_t clampedSamples = std::max(knobs.configuredRecentreSettleSamples, int32_t{ 0 });
-		if (clampedSamples != knobs.configuredRecentreSettleSamples)
-		{
-			sessionKnobsLines::logLine(engine, sessionKnobsLines::kRecentreClamped, knobs.configuredRecentreSettleSamples,
-				clampedSamples);
-		}
-		manager.setRecentreSettleSamples(static_cast<uint32_t>(clampedSamples));
-	}
-	sessionKnobsLines::logLine(engine, sessionKnobsLines::kRecentreSession,
-		manager.getTimeConfig().recentreSettleSamples,
-		knobs.hasIniRecentreSettleSamples ? "ini" : "compiled");
+	knobTable::applyKnob(sessionKnobRows::kRecentreSettleSamples<ManagerT>,
+		knobs.hasIniRecentreSettleSamples ? std::optional<int32_t>(knobs.configuredRecentreSettleSamples) : std::nullopt, manager,
+		sessionKnobRows::worldOf(!manager.runsPrediction()), sessionKnobsLines::knobRowSink(engine));
 
 	bool jitterFromIni = false;
 	if (knobs.hasIniJitterMultiplier)
