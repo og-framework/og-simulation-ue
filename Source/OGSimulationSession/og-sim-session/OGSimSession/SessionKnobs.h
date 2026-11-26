@@ -18,6 +18,7 @@
 #include "OGSimulation/PCTimeManagement/ClockDilationController.h"
 #include "OGSimulation/PCTimeManagement/TimeConfig.h"
 #include "OGSimSession/SessionEngine.h"
+#include "OGSimSession/SessionLogRoutes.h"
 
 namespace ogsession
 {
@@ -223,6 +224,12 @@ constexpr knobTable::KnobWorld worldOf(bool worldIsAuthority)
 {
 	return worldIsAuthority ? knobTable::KnobWorld::Authority : knobTable::KnobWorld::Prediction;
 }
+
+static_assert(sessionLogRoutes::rowOf(sessionKnobsLines::kRecentreClamped) != nullptr
+		&& sessionLogRoutes::rowOf(sessionKnobsLines::kRecentreSession) != nullptr,
+	"kRecentreSettleSamples: the lines its row prints ([ClockRecentre.Config]) have no row in ogsession::kComposedLogRoutes, "
+	"so an engine would print them in its default category; a knob row's tag needs a route in this module's "
+	"kSessionLogRoutes");
 } // namespace sessionKnobRows
 
 template <ConfigSource ConfigT>

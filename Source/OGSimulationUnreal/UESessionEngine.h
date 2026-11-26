@@ -63,6 +63,7 @@ public:
 	using Runner = UESessionRunner;
 
 	void logRouted(const char* line);
+	bool wants(SimulationLogRoute route, HostLogLevel level) const { return ogLogWants(route, level); }
 
 	template <typename F>
 	std::unique_ptr<Runner> startRunner(F&& body, bool highResolutionWait)

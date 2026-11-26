@@ -103,6 +103,8 @@ public:
 		m_routedLines.emplace_back(line);
 	}
 
+	bool wants(SimulationLogRoute, HostLogLevel) const { return true; }
+
 	template <typename F>
 	std::unique_ptr<Runner> startRunner(F&& body, bool highResolutionWait)
 	{

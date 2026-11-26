@@ -213,6 +213,7 @@ struct TestPort
 	void    publishPresentation();
 	double  nowSeconds() const { return 1.0; }
 	void    logRouted(const char* line);
+	bool    wants(SimulationLogRoute, HostLogLevel) const { return true; }
 };
 
 using NetHooks = ogsession::SessionNetHooks<TestPort, FakeManager, FakeNetSync, FakeStorage, FakeDiagnostics>;

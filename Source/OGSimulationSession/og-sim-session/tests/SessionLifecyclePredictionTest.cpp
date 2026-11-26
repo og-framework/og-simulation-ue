@@ -806,6 +806,7 @@ struct NetPort
 	void    publishPresentation() {}
 	double  nowSeconds() const { return 0.0; }
 	void    logRouted(const char*) {}
+	bool    wants(SimulationLogRoute, HostLogLevel) const { return true; }
 };
 
 struct PredictingManager

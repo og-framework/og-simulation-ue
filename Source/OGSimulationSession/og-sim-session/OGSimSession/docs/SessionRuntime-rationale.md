@@ -72,7 +72,7 @@ configuration lines and gates (`bindDiagnosticGates`, `afterPredictionConfigured
 `RouteOGMessage`), the bodies' engine facts (`makeBodyRequest`, `bodyKeyOf`), the input provider's wrap, and the component
 bookkeeping (`teardownComponents`, `forgetComponents`, `onLinkStopping`, `forEachRegisteredId`). The concept is checked in
 `start`, where the host is complete (the host holds the runtime as a member). Lines that carry their own `[Level][Tag]` go to the
-engine's `logRouted` (Unreal: `RouteOGLevelLine`): `[SimHost.Backend]` (the route table's `[SimHost.` row, task 31) and
+engine's `logRouted` (Unreal: `RouteOGLevelLine`): `[SimHost.Backend]` (the `[SimHost.` row, task 31; og-sim-session's own since task 36, `SessionLogRoutes.h`) and
 `SimulationManager: … initialized` keep the category and level their `UE_LOG`s had.
 
 Since og-session-runtime task 33b the header holds the concept's reference shape and one negative per requirement

@@ -210,8 +210,8 @@ and the host calls through plain pointers. The session object must outlive its a
 
 **Log routing** (`routeSimNetClientLine`, the client host's `log`):
 - a line that begins with `kClockSourceHeldTag` (`[ClockSource.Held]`, formatted by the client session) gets a `[Warning]` token
-  and goes to `logRouted`, so it is printed without the token at Warning; Unreal's route table has a `[ClockSource.Held]` row on the
-  Net route, so the line keeps `LogOGNet` at `Warning`, the category and level of the `UE_LOG` that wrote it until og-session-runtime
+  and goes to `logRouted`, so it is printed without the token at Warning; og-sim-net's own route rows (`SimNetLogRoutes.h`, since
+  og-session-runtime task 36; Unreal's table until then) have a `[ClockSource.Held]` row on the Net route, so the line keeps `LogOGNet` at `Warning`, the category and level of the `UE_LOG` that wrote it until og-session-runtime
   task 20;
 - every other line goes through `routeSimNetHostLine` to `logHost`: a line that begins with `[Roster.` gets a `[Warning]` token
   first (og-input-latency task P5-7, from P5-4's F1: a token-less roster refusal or mismatch must reach an operator under

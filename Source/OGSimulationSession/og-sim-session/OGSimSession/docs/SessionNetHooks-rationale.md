@@ -25,7 +25,10 @@ header unchanged; step (b) made them this engine-free class. What changed in (b)
 - `[ReleaseBatch] first=%d numSteps=%d` was `OG_LOG_ROUTED(LogOGNet, …)`; it is formatted with `snprintf` and sent through the
   port's `logRouted`, which in Unreal reaches LogOGNet at Verbose through the route table's `[ReleaseBatch]` row. The format is
   `sessionNetHooksLines::kReleaseBatch`; the Unreal session asserts its route and level, and a parity test compares the two
-  formattings byte for byte.
+  formattings byte for byte. Since og-session-runtime task 36 the row is og-sim-session's (`SessionLogRoutes.h`), and
+  `releaseForTick` first asks the port's `wants` with the row's route and level (`kReleaseBatchRoute`, which a
+  `static_assert` requires to exist): with Net `Verbose` off the line is neither formatted nor sent, as the old `UE_LOG` skipped
+  it. `SessionLogRoutes.ReleaseBatchIsFormattedOnlyWhenItsRouteLevelIsWanted` counts the lines.
 - `afterAuthorityBatch`'s `checkf` is an `OG_CHECK` at the same place, its message naming the check it replaced.
 - `FPlatformTime::Seconds()` (the corrections-handed time) is the port's `nowSeconds()`; the Unreal port returns the same call.
 - `m_latencyBudgetDiagnostics.stampCorrectionHanded_Internal` is the diagnostics parameter's.
@@ -34,7 +37,7 @@ header unchanged; step (b) made them this engine-free class. What changed in (b)
 
 | | what | the runtime (`SessionRuntime::NetPort`; the Unreal session's until og-session-runtime task 31) |
 |---|---|---|
-| `SessionNetHooksPort` | `Lanes` (a `SessionNetLanes`: `client()`, a const `clientSessionBound()`, `drainClient_Step()`), `Server`, `Idle`, `Simulatable`; `lanes()` (const), `server()`, `idle()` (each a pointer, null when absent), `runRunnerRequests()`, `applyUnregisterRequests(client)`, `publishPresentation()`, `nowSeconds()` (const), `logRouted(line)` | the session's `m_simNetLanes`, `m_simNetServer`, `m_simNetIdle`; `runRunnerRequests_Owner`, `applyUnregisterRequests_Step`, `publishAuthorityPresentation_Runner`; `FPlatformTime::Seconds()`; `RouteOGLevelLine` |
+| `SessionNetHooksPort` | `Lanes` (a `SessionNetLanes`: `client()`, a const `clientSessionBound()`, `drainClient_Step()`), `Server`, `Idle`, `Simulatable`; `lanes()` (const), `server()`, `idle()` (each a pointer, null when absent), `runRunnerRequests()`, `applyUnregisterRequests(client)`, `publishPresentation()`, `nowSeconds()` (const), `logRouted(line)`, `wants(route, level)` (const; task 36) | the session's `m_simNetLanes`, `m_simNetServer`, `m_simNetIdle`; `runRunnerRequests_Owner`, `applyUnregisterRequests_Step`, `publishAuthorityPresentation_Runner`; `FPlatformTime::Seconds()`; `RouteOGLevelLine` |
 | `ManagerT` | `runsPrediction()`, `currentIntegratedTick()`, `getTimeConfig()`, `onPostSimulationGameThread()`, `getServerClock()` | the `SimulationManager` |
 | `NetSyncT`, `StorageT` | the capture's sender; `forEachSimulatable<Simulatable>(fn)` | the session's `m_netSync`, `m_storage` |
 | `DiagnosticsT` | a `SessionCorrectionStamps` (`stampCorrectionHanded_Internal(lane, tick, seconds)`) | `UELatencyBudgetDiagnostics<TraitsT>` |

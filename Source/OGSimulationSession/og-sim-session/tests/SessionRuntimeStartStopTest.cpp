@@ -297,6 +297,7 @@ public:
 	using Runner = RtRunner;
 
 	void logRouted(const char* line) { g_recorder.add("routed " + tagOf(line)); }
+	bool wants(SimulationLogRoute, HostLogLevel) const { return true; }
 
 	template <typename F>
 	std::unique_ptr<Runner> startRunner(F&& body, bool highResolutionWait)

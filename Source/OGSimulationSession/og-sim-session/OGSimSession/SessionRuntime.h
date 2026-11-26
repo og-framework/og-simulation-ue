@@ -631,6 +631,7 @@ private:
 		void    publishPresentation() { runtime->publishAuthorityPresentation_Runner(); }
 		double  nowSeconds() const { return runtime->m_frameEngine.nowSeconds(); }
 		void    logRouted(const char* line) { runtime->m_frameEngine.logRouted(line); }
+		bool    wants(SimulationLogRoute route, HostLogLevel level) const { return runtime->m_frameEngine.wants(route, level); }
 	};
 
 	using NetHooks = SessionNetHooks<NetPort, ManagerType, NetSync, Storage, Diagnostics>;

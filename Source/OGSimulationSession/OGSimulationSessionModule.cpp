@@ -9,6 +9,7 @@
 #include "OGSimSession/SessionGame.h"
 #include "OGSimSession/SessionKnobs.h"
 #include "OGSimSession/SessionLifecycle.h"
+#include "OGSimSession/SessionLogRoutes.h"
 #include "OGSimSession/SessionNetHooks.h"
 #include "OGSimSession/SessionRuntime.h"
 #include "OGSimSession/SessionThreads.h"

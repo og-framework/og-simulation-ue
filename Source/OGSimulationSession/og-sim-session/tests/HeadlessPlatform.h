@@ -153,6 +153,7 @@ public:
 	bool     logEnabled(HostLogLevel) const { return true; }
 	void     log(HostLogLevel, const char* line) { logLine(line); }
 	void     logRouted(const char* line) { logLine(line); }
+	bool     wants(SimulationLogRoute, HostLogLevel) const { return true; }
 	bool     isPending(const Handle& handle) const { return m_executor.isPending(handle); }
 	void     waitFor(const Handle& handle) { m_executor.waitFor(handle); }
 

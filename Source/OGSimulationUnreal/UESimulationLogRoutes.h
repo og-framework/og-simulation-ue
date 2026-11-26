@@ -4,6 +4,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "OGSimSession/SessionLogRoutes.h"
+#include "OGSimulation/HostLog.h"
 #include "OGSimulation/SimulationLogRoutes.h"
 #include "OGSimulationUnreal/OGSimulationUnreal.h"
 
@@ -37,16 +39,11 @@ inline constexpr OGLogRouteEntry kOGAdapterLogRoutes[] = {
 	{ TEXT("[ClientPrediction]"),                OGLogRoute::SimTick,         ELogVerbosity::Verbose },
 	{ TEXT("[ServerReceive]"),                   OGLogRoute::Net,             ELogVerbosity::Verbose },
 	{ TEXT("[SendRemoteInputToClients]"),        OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[ReceiveCorrectionState]"),          OGLogRoute::Net,             ELogVerbosity::Verbose },
 	{ TEXT("[ReceiveCorrectionInput]"),          OGLogRoute::Net,             ELogVerbosity::Log },
 	{ TEXT("[InjectCorrectionInput]"),           OGLogRoute::Net,             ELogVerbosity::Log },
 	{ TEXT("[DrainOutOfOrder]"),                 OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[ReleaseBatch]"),                    OGLogRoute::Net,             ELogVerbosity::Verbose },
 	{ TEXT("[RelayProbe"),                       OGLogRoute::RelayProbe,      ELogVerbosity::Log },
-	{ TEXT("SimulationManager:"),                OGLogRoute::Mgmt,            ELogVerbosity::Log },
-	{ TEXT("tryRegister:"),                      OGLogRoute::Mgmt,            ELogVerbosity::Log },
-	{ TEXT("NewFramework:"),                     OGLogRoute::Mgmt,            ELogVerbosity::Log },
-#include "OGSimSession/SessionLogRoutes.h"
+	{ TEXT("NewFramework:"),                     OGLogRoute::Mgmt,            ELogVerbosity::Log }
 };
 
 inline constexpr OGLogRoute kOGLogRouteUnmapped = static_cast<OGLogRoute>(0xFF);
@@ -59,6 +56,8 @@ constexpr OGLogRoute ogLogRouteOf(SimulationLogRoute route)
 	case SimulationLogRoute::Sim:             return OGLogRoute::Sim;
 	case SimulationLogRoute::Net:             return OGLogRoute::Net;
 	case SimulationLogRoute::DivergenceProbe: return OGLogRoute::DivergenceProbe;
+	case SimulationLogRoute::Mgmt:            return OGLogRoute::Mgmt;
+	case SimulationLogRoute::SimHost:         return OGLogRoute::SimHost;
 	}
 	return kOGLogRouteUnmapped;
 }
@@ -74,7 +73,9 @@ constexpr ELogVerbosity::Type ogLogVerbosityOf(HostLogLevel level)
 	return ELogVerbosity::NoLogging;
 }
 
-constexpr std::size_t ogSimulationLogRoutePrefixLength(const char* prefix)
+inline constexpr std::size_t kOGEngineFreeLogRouteCount = std::size(ogsession::kComposedLogRoutes);
+
+constexpr std::size_t ogEngineFreeLogRoutePrefixLength(const char* prefix)
 {
 	std::size_t length = 0;
 	while (prefix[length] != 0)
@@ -82,20 +83,20 @@ constexpr std::size_t ogSimulationLogRoutePrefixLength(const char* prefix)
 	return length;
 }
 
-constexpr std::size_t ogLongestSimulationLogRoutePrefix()
+constexpr std::size_t ogLongestEngineFreeLogRoutePrefix()
 {
 	std::size_t longest = 0;
-	for (const SimulationLogRouteEntry& entry : kSimulationLogRoutes)
+	for (const SimulationLogRouteEntry& entry : ogsession::kComposedLogRoutes)
 	{
-		if (ogSimulationLogRoutePrefixLength(entry.prefix) > longest)
-			longest = ogSimulationLogRoutePrefixLength(entry.prefix);
+		if (ogEngineFreeLogRoutePrefixLength(entry.prefix) > longest)
+			longest = ogEngineFreeLogRoutePrefixLength(entry.prefix);
 	}
 	return longest;
 }
 
-constexpr bool ogSimulationLogRoutePrefixesArePrintableAscii()
+constexpr bool ogEngineFreeLogRoutePrefixesArePrintableAscii()
 {
-	for (const SimulationLogRouteEntry& entry : kSimulationLogRoutes)
+	for (const SimulationLogRouteEntry& entry : ogsession::kComposedLogRoutes)
 	{
 		for (const char* c = entry.prefix; *c != 0; ++c)
 		{
@@ -106,47 +107,45 @@ constexpr bool ogSimulationLogRoutePrefixesArePrintableAscii()
 	return true;
 }
 
-static_assert(ogSimulationLogRoutePrefixesArePrintableAscii(),
-	"kSimulationLogRoutes: a prefix holds a character outside printable ASCII. Each prefix is widened "
-	"to TCHAR one char at a time, which is exact for ASCII only.");
+static_assert(ogEngineFreeLogRoutePrefixesArePrintableAscii(),
+	"ogsession::kComposedLogRoutes: a prefix holds a character outside printable ASCII. Each prefix is widened to TCHAR one "
+	"char at a time, which is exact for ASCII only.");
 
-struct OGSimulationLogRouteWidePrefix
+struct OGEngineFreeLogRouteWidePrefix
 {
-	TCHAR text[ogLongestSimulationLogRoutePrefix() + 1];
+	TCHAR text[ogLongestEngineFreeLogRoutePrefix() + 1];
 };
 
-constexpr std::array<OGSimulationLogRouteWidePrefix, std::size(kSimulationLogRoutes)> ogWidenSimulationLogRoutePrefixes()
+constexpr std::array<OGEngineFreeLogRouteWidePrefix, kOGEngineFreeLogRouteCount> ogWidenEngineFreeLogRoutePrefixes()
 {
-	std::array<OGSimulationLogRouteWidePrefix, std::size(kSimulationLogRoutes)> wide{};
-	for (std::size_t row = 0; row < std::size(kSimulationLogRoutes); ++row)
+	std::array<OGEngineFreeLogRouteWidePrefix, kOGEngineFreeLogRouteCount> wide{};
+	for (std::size_t row = 0; row < kOGEngineFreeLogRouteCount; ++row)
 	{
-		const char* prefix = kSimulationLogRoutes[row].prefix;
+		const char* prefix = ogsession::kComposedLogRoutes[row].prefix;
 		for (std::size_t i = 0; prefix[i] != 0; ++i)
 			wide[row].text[i] = static_cast<TCHAR>(prefix[i]);
 	}
 	return wide;
 }
 
-inline constexpr std::array<OGSimulationLogRouteWidePrefix, std::size(kSimulationLogRoutes)> kOGSimulationLogRoutePrefixes =
-	ogWidenSimulationLogRoutePrefixes();
+inline constexpr std::array<OGEngineFreeLogRouteWidePrefix, kOGEngineFreeLogRouteCount> kOGEngineFreeLogRoutePrefixes =
+	ogWidenEngineFreeLogRoutePrefixes();
 
-inline constexpr std::size_t kOGSimulationLogRouteCount = std::size(kSimulationLogRoutes);
-
-constexpr std::array<OGLogRouteEntry, kOGSimulationLogRouteCount + std::size(kOGAdapterLogRoutes)> ogConcatenateLogRoutes()
+constexpr std::array<OGLogRouteEntry, kOGEngineFreeLogRouteCount + std::size(kOGAdapterLogRoutes)> ogConcatenateLogRoutes()
 {
-	std::array<OGLogRouteEntry, kOGSimulationLogRouteCount + std::size(kOGAdapterLogRoutes)> routes{};
-	for (std::size_t row = 0; row < kOGSimulationLogRouteCount; ++row)
+	std::array<OGLogRouteEntry, kOGEngineFreeLogRouteCount + std::size(kOGAdapterLogRoutes)> routes{};
+	for (std::size_t row = 0; row < kOGEngineFreeLogRouteCount; ++row)
 	{
-		routes[row] = { kOGSimulationLogRoutePrefixes[row].text,
-			ogLogRouteOf(kSimulationLogRoutes[row].route),
-			ogLogVerbosityOf(kSimulationLogRoutes[row].plainLevel) };
+		routes[row] = { kOGEngineFreeLogRoutePrefixes[row].text,
+			ogLogRouteOf(ogsession::kComposedLogRoutes[row].route),
+			ogLogVerbosityOf(ogsession::kComposedLogRoutes[row].plainLevel) };
 	}
 	for (std::size_t row = 0; row < std::size(kOGAdapterLogRoutes); ++row)
-		routes[kOGSimulationLogRouteCount + row] = kOGAdapterLogRoutes[row];
+		routes[kOGEngineFreeLogRouteCount + row] = kOGAdapterLogRoutes[row];
 	return routes;
 }
 
-inline constexpr std::array<OGLogRouteEntry, kOGSimulationLogRouteCount + std::size(kOGAdapterLogRoutes)> kOGLogRoutes =
+inline constexpr std::array<OGLogRouteEntry, kOGEngineFreeLogRouteCount + std::size(kOGAdapterLogRoutes)> kOGLogRoutes =
 	ogConcatenateLogRoutes();
 
 constexpr bool ogLogRoutesAreAllMapped()
@@ -160,8 +159,8 @@ constexpr bool ogLogRoutesAreAllMapped()
 }
 
 static_assert(ogLogRoutesAreAllMapped(),
-	"kOGLogRoutes: an og-simulation row's SimulationLogRoute has no OGLogRoute in ogLogRouteOf, so "
-	"RouteOGMessage would drop its lines. Map the new route to a LogOG* category.");
+	"kOGLogRoutes: an engine-free row's SimulationLogRoute has no OGLogRoute in ogLogRouteOf, so RouteOGLine would drop "
+	"its lines. Map the new route to a LogOG* category.");
 
 constexpr TCHAR ogLogRouteFoldCase(TCHAR c)
 {
@@ -180,12 +179,12 @@ constexpr bool ogLogRouteStartsWith(const TCHAR* text, const TCHAR* prefix)
 
 constexpr bool ogLogRouteBlocksAreDisjoint()
 {
-	for (std::size_t simRow = 0; simRow < kOGSimulationLogRouteCount; ++simRow)
+	for (std::size_t engineFreeRow = 0; engineFreeRow < kOGEngineFreeLogRouteCount; ++engineFreeRow)
 	{
-		for (std::size_t gameRow = kOGSimulationLogRouteCount; gameRow < std::size(kOGLogRoutes); ++gameRow)
+		for (std::size_t adapterRow = kOGEngineFreeLogRouteCount; adapterRow < std::size(kOGLogRoutes); ++adapterRow)
 		{
-			if (ogLogRouteStartsWith(kOGLogRoutes[simRow].prefix, kOGLogRoutes[gameRow].prefix)
-				|| ogLogRouteStartsWith(kOGLogRoutes[gameRow].prefix, kOGLogRoutes[simRow].prefix))
+			if (ogLogRouteStartsWith(kOGLogRoutes[engineFreeRow].prefix, kOGLogRoutes[adapterRow].prefix)
+				|| ogLogRouteStartsWith(kOGLogRoutes[adapterRow].prefix, kOGLogRoutes[engineFreeRow].prefix))
 				return false;
 		}
 	}
@@ -193,10 +192,10 @@ constexpr bool ogLogRouteBlocksAreDisjoint()
 }
 
 static_assert(ogLogRouteBlocksAreDisjoint(),
-	"kOGLogRoutes: a prefix in the og-simulation block and a prefix in this module's block BEGIN WITH "
-	"one another (compared ignoring case, as FString::StartsWith compares), so one line can match a "
-	"row in each block and the block order decides its route. The og-simulation block comes first only "
-	"because no line can match both; give the new row a tag no prefix in the other block begins with.");
+	"kOGLogRoutes: a prefix in the engine-free block (ogsession::kComposedLogRoutes) and a prefix in this module's block "
+	"BEGIN WITH one another (compared ignoring case, as FString::StartsWith compares), so one line can match a row in each "
+	"block and the block order decides its route. The engine-free block comes first only because no line can match both; "
+	"give the new row a tag no prefix in the other block begins with.");
 
 constexpr bool ogLogRoutesAreAllReachable()
 {
@@ -211,7 +210,7 @@ constexpr bool ogLogRoutesAreAllReachable()
 	return true;
 }
 static_assert(ogLogRoutesAreAllReachable(),
-	"RouteOGMessage: a route's prefix BEGINS WITH an earlier route's prefix, so the earlier "
+	"RouteOGLine: a route's prefix BEGINS WITH an earlier route's prefix, so the earlier "
 	"route always wins and the later one can never be taken. FString::StartsWith ignores "
 	"case and so does this check. Was the ORDER IS LOAD-BEARING fence: [Resim.Input] must be "
 	"matched ahead of the [Resim. catch-all, and widening that catch-all to [Resim would "
@@ -259,57 +258,121 @@ constexpr const OGLogRouteEntry* ogLogRouteFor(const TCHAR* line)
 		} \
 	} while (0)
 
-inline void RouteOGMessage(const char* msg)
+#define OG_LOG_ACTIVE_AT(Category, Level) \
+	((Level) == ELogVerbosity::Error     ? UE_LOG_ACTIVE(Category, Error) \
+		: (Level) == ELogVerbosity::Warning ? UE_LOG_ACTIVE(Category, Warning) \
+		: (Level) == ELogVerbosity::Verbose ? UE_LOG_ACTIVE(Category, Verbose) \
+		: UE_LOG_ACTIVE(Category, Log))
+
+inline bool ogLogWants(const OGLogRoute* route, ELogVerbosity::Type level)
 {
-	FString fmsg(msg);
+	if (route == nullptr)
+		return OG_LOG_ACTIVE_AT(LogOG, level);
+	switch (*route)
+	{
+	case OGLogRoute::SimTick:          return OG_LOG_ACTIVE_AT(LogOGSimTick, level);
+	case OGLogRoute::ResimProbe:       return OG_LOG_ACTIVE_AT(LogOGResimProbe, level);
+	case OGLogRoute::Sim:              return OG_LOG_ACTIVE_AT(LogOGSim, level);
+	case OGLogRoute::Net:              return OG_LOG_ACTIVE_AT(LogOGNet, level);
+	case OGLogRoute::RelayProbe:       return OG_LOG_ACTIVE_AT(LogOGRelayProbe, level);
+	case OGLogRoute::DivergenceProbe:  return OG_LOG_ACTIVE_AT(LogOGDivergenceProbe, level);
+	case OGLogRoute::Mgmt:             return OG_LOG_ACTIVE_AT(LogOGMgmt, level);
+	case OGLogRoute::SimHost:          return OG_LOG_ACTIVE_AT(LogOGSimHost, level);
+	}
+	return OG_LOG_ACTIVE_AT(LogOG, level);
+}
+
+#undef OG_LOG_ACTIVE_AT
+
+inline bool ogLogWants(SimulationLogRoute route, HostLogLevel level)
+{
+	const OGLogRoute mapped = ogLogRouteOf(route);
+	return ogLogWants(mapped == kOGLogRouteUnmapped ? nullptr : &mapped, ogLogVerbosityOf(level));
+}
+
+enum class OGLevelToken : uint8
+{
+	Printed,
+	Read,
+};
+
+inline void RouteOGLine(const char* line, OGLevelToken token)
+{
+	const FString text = token == OGLevelToken::Read ? FString(UTF8_TO_TCHAR(line)) : FString(line);
 
 	ELogVerbosity::Type severity = ELogVerbosity::Log;
-	FString body = fmsg;
-	if (fmsg.StartsWith(TEXT("[Verbose]")))
+	int32 tokenLength = 0;
+	if (text.StartsWith(TEXT("[Verbose]")))
 	{
 		severity = ELogVerbosity::Verbose;
-		body = fmsg.RightChop(9);
+		tokenLength = 9;
 	}
-	else if (fmsg.StartsWith(TEXT("[Warning]")))
+	else if (text.StartsWith(TEXT("[Warning]")))
 	{
 		severity = ELogVerbosity::Warning;
-		body = fmsg.RightChop(9);
+		tokenLength = 9;
 	}
+	else if (token == OGLevelToken::Read && text.StartsWith(TEXT("[Error]")))
+	{
+		severity = ELogVerbosity::Error;
+		tokenLength = 7;
+	}
+	const FString body = text.RightChop(tokenLength);
 
-#define EMIT_OG(cat) \
-	do { \
-		switch (severity) { \
-			case ELogVerbosity::Warning: UE_LOG(cat, Warning, TEXT("%s"), *fmsg); break; \
-			case ELogVerbosity::Verbose: UE_LOG(cat, Verbose, TEXT("%s"), *fmsg); break; \
-			default:                     UE_LOG(cat, Log,     TEXT("%s"), *fmsg); break; \
+	const OGLogRouteEntry* route = nullptr;
+	for (const OGLogRouteEntry& entry : kOGLogRoutes)
+	{
+		if (body.StartsWith(entry.prefix))
+		{
+			route = &entry;
+			break;
+		}
+	}
+	if (route != nullptr && severity == ELogVerbosity::Log)
+		severity = route->plainLevel;
+
+	const FString& printed = token == OGLevelToken::Printed ? text : body;
+
+#define OG_EMIT_ROUTED_LINE(Category) \
+	do \
+	{ \
+		switch (severity) \
+		{ \
+		case ELogVerbosity::Error:   UE_LOG(Category, Error,   TEXT("%s"), *printed); break; \
+		case ELogVerbosity::Warning: UE_LOG(Category, Warning, TEXT("%s"), *printed); break; \
+		case ELogVerbosity::Verbose: UE_LOG(Category, Verbose, TEXT("%s"), *printed); break; \
+		default:                     UE_LOG(Category, Log,     TEXT("%s"), *printed); break; \
 		} \
 	} while (0)
 
-	for (const OGLogRouteEntry& entry : kOGLogRoutes)
+	if (route == nullptr)
 	{
-		if (!body.StartsWith(entry.prefix))
-			continue;
-
-		if (severity == ELogVerbosity::Log)
-			severity = entry.plainLevel;
-
-		switch (entry.route)
-		{
-		case OGLogRoute::SimTick:          EMIT_OG(LogOGSimTick); break;
-		case OGLogRoute::ResimProbe:       EMIT_OG(LogOGResimProbe); break;
-		case OGLogRoute::Sim:              EMIT_OG(LogOGSim); break;
-		case OGLogRoute::Net:              EMIT_OG(LogOGNet); break;
-		case OGLogRoute::RelayProbe:       EMIT_OG(LogOGRelayProbe); break;
-		case OGLogRoute::DivergenceProbe:  EMIT_OG(LogOGDivergenceProbe); break;
-		case OGLogRoute::Mgmt:             EMIT_OG(LogOGMgmt); break;
-		case OGLogRoute::SimHost:          EMIT_OG(LogOGSimHost); break;
-		}
+		OG_EMIT_ROUTED_LINE(LogOG);
 		return;
 	}
+	switch (route->route)
+	{
+	case OGLogRoute::SimTick:          OG_EMIT_ROUTED_LINE(LogOGSimTick); break;
+	case OGLogRoute::ResimProbe:       OG_EMIT_ROUTED_LINE(LogOGResimProbe); break;
+	case OGLogRoute::Sim:              OG_EMIT_ROUTED_LINE(LogOGSim); break;
+	case OGLogRoute::Net:              OG_EMIT_ROUTED_LINE(LogOGNet); break;
+	case OGLogRoute::RelayProbe:       OG_EMIT_ROUTED_LINE(LogOGRelayProbe); break;
+	case OGLogRoute::DivergenceProbe:  OG_EMIT_ROUTED_LINE(LogOGDivergenceProbe); break;
+	case OGLogRoute::Mgmt:             OG_EMIT_ROUTED_LINE(LogOGMgmt); break;
+	case OGLogRoute::SimHost:          OG_EMIT_ROUTED_LINE(LogOGSimHost); break;
+	}
 
-	EMIT_OG(LogOG);
+#undef OG_EMIT_ROUTED_LINE
+}
 
-#undef EMIT_OG
+inline void RouteOGMessage(const char* msg)
+{
+	RouteOGLine(msg, OGLevelToken::Printed);
+}
+
+inline void RouteOGLevelLine(const char* line)
+{
+	RouteOGLine(line, OGLevelToken::Read);
 }
 
 constexpr bool ogLogRouteStartsWithNarrow(const char* text, const TCHAR* prefix)
@@ -355,71 +418,8 @@ constexpr ELogVerbosity::Type ogLogLevelOfLevelLine(const char* line)
 	return route != nullptr ? route->plainLevel : ELogVerbosity::Log;
 }
 
-inline void RouteOGLevelLine(const char* line)
-{
-	const FString text(UTF8_TO_TCHAR(line));
-
-	ELogVerbosity::Type severity = ELogVerbosity::Log;
-	FString body = text;
-	if (text.StartsWith(TEXT("[Verbose]")))
-	{
-		severity = ELogVerbosity::Verbose;
-		body = text.RightChop(9);
-	}
-	else if (text.StartsWith(TEXT("[Warning]")))
-	{
-		severity = ELogVerbosity::Warning;
-		body = text.RightChop(9);
-	}
-	else if (text.StartsWith(TEXT("[Error]")))
-	{
-		severity = ELogVerbosity::Error;
-		body = text.RightChop(7);
-	}
-
-	const OGLogRouteEntry* route = nullptr;
-	for (const OGLogRouteEntry& entry : kOGLogRoutes)
-	{
-		if (body.StartsWith(entry.prefix))
-		{
-			route = &entry;
-			break;
-		}
-	}
-	if (route != nullptr && severity == ELogVerbosity::Log)
-		severity = route->plainLevel;
-
-#define EMIT_OG_BODY(cat) \
-	do { \
-		switch (severity) { \
-			case ELogVerbosity::Error:   UE_LOG(cat, Error,   TEXT("%s"), *body); break; \
-			case ELogVerbosity::Warning: UE_LOG(cat, Warning, TEXT("%s"), *body); break; \
-			case ELogVerbosity::Verbose: UE_LOG(cat, Verbose, TEXT("%s"), *body); break; \
-			default:                     UE_LOG(cat, Log,     TEXT("%s"), *body); break; \
-		} \
-	} while (0)
-
-	if (route == nullptr)
-	{
-		EMIT_OG_BODY(LogOG);
-		return;
-	}
-	switch (route->route)
-	{
-	case OGLogRoute::SimTick:          EMIT_OG_BODY(LogOGSimTick); break;
-	case OGLogRoute::ResimProbe:       EMIT_OG_BODY(LogOGResimProbe); break;
-	case OGLogRoute::Sim:              EMIT_OG_BODY(LogOGSim); break;
-	case OGLogRoute::Net:              EMIT_OG_BODY(LogOGNet); break;
-	case OGLogRoute::RelayProbe:       EMIT_OG_BODY(LogOGRelayProbe); break;
-	case OGLogRoute::DivergenceProbe:  EMIT_OG_BODY(LogOGDivergenceProbe); break;
-	case OGLogRoute::Mgmt:             EMIT_OG_BODY(LogOGMgmt); break;
-	case OGLogRoute::SimHost:          EMIT_OG_BODY(LogOGSimHost); break;
-	}
-
-#undef EMIT_OG_BODY
-}
-
 struct UESessionLogSink
 {
 	void logRouted(const char* line) { RouteOGLevelLine(line); }
+	bool wants(SimulationLogRoute route, HostLogLevel level) const { return ogLogWants(route, level); }
 };

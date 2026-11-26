@@ -10,7 +10,10 @@
 #include "OGSimulation/CorrectionStateBufferCodec.h"
 #include "OGSimulation/Network/SimPayloadBuffers.h"
 #include "OGSimulation/OGAssert.h"
+#include "OGSimulation/SimulationLogRoutes.h"
 #include "OGSimulation/TickDriverGameTypes.h"
+#include "OGSimSession/SessionEngine.h"
+#include "OGSimSession/SessionLogRoutes.h"
 #include "OGSimSession/SessionThreads.h"
 
 namespace ogsession
@@ -18,6 +21,11 @@ namespace ogsession
 namespace sessionNetHooksLines
 {
 inline constexpr char kReleaseBatch[] = "[ReleaseBatch] first=%d numSteps=%d";
+inline constexpr const SimulationLogRouteEntry* kReleaseBatchRoute = sessionLogRoutes::rowOf(kReleaseBatch);
+
+static_assert(kReleaseBatchRoute != nullptr,
+	"kReleaseBatch: the line's tag has no row in ogsession::kComposedLogRoutes, so wants() has no route and level to ask "
+	"about and a host would print the line in its default category");
 } // namespace sessionNetHooksLines
 
 template <typename L>
@@ -30,7 +38,7 @@ concept SessionNetLanes = requires(L& lanes, const L& constLanes)
 };
 
 template <typename P>
-concept SessionNetHooksPort = SessionNetLanes<typename P::Lanes>
+concept SessionNetHooksPort = SessionNetLanes<typename P::Lanes> && SessionLogFilter<P>
 	&& requires(P& p, const P& cp, typename P::Lanes::Client& client, const char* line)
 {
 	typename P::Server;
@@ -110,6 +118,7 @@ struct ConformingPort
 	void    publishPresentation();
 	double  nowSeconds() const;
 	void    logRouted(const char*);
+	bool    wants(SimulationLogRoute, HostLogLevel) const;
 };
 
 struct PortWithoutSimulatable
@@ -126,6 +135,29 @@ struct PortWithoutSimulatable
 	void    publishPresentation();
 	double  nowSeconds() const;
 	void    logRouted(const char*);
+	bool    wants(SimulationLogRoute, HostLogLevel) const;
+};
+
+struct PortWithoutWants
+{
+	using Lanes       = ConformingLanes;
+	using Server      = sessionNetHooksSelfCheck::Server;
+	using Idle        = sessionNetHooksSelfCheck::Idle;
+	using Simulatable = sessionNetHooksSelfCheck::Simulatable;
+
+	Lanes*  lanes() const;
+	Server* server();
+	Idle*   idle();
+	void    runRunnerRequests();
+	void    applyUnregisterRequests(Client&);
+	void    publishPresentation();
+	double  nowSeconds() const;
+	void    logRouted(const char*);
+};
+
+struct PortWantsOnlyWhenMutable : ConformingPort
+{
+	bool wants(SimulationLogRoute, HostLogLevel);
 };
 
 struct PortWithLanesWithoutClient : ConformingPort
@@ -224,6 +256,10 @@ static_assert(!SessionNetHooksPort<PortWithAFloatClock>,
 	"the corrections-handed stamp is such a time");
 static_assert(!SessionNetHooksPort<PortLogReturnsBool>,
 	"SessionNetHooksPort self-check: logRouted(line) returns void");
+static_assert(!SessionNetHooksPort<PortWithoutWants>,
+	"SessionNetHooksPort self-check: wants(route, level) is required; the [ReleaseBatch] line asks it before it formats");
+static_assert(!SessionNetHooksPort<PortWantsOnlyWhenMutable>,
+	"SessionNetHooksPort self-check: wants(route, level) must be callable on a const port");
 static_assert(SessionCorrectionStamps<ConformingStamps>,
 	"SessionCorrectionStamps self-check: the reference shape must satisfy the concept");
 static_assert(!SessionCorrectionStamps<StampsWithoutTime>,
@@ -296,9 +332,13 @@ public:
 		if (server == nullptr)
 			return;
 
-		char line[64];
-		std::snprintf(line, sizeof(line), sessionNetHooksLines::kReleaseBatch, firstTick, numSteps);
-		m_port.logRouted(line);
+		constexpr const SimulationLogRouteEntry& route = *sessionNetHooksLines::kReleaseBatchRoute;
+		if (m_port.wants(route.route, route.plainLevel))
+		{
+			char line[64];
+			std::snprintf(line, sizeof(line), sessionNetHooksLines::kReleaseBatch, firstTick, numSteps);
+			m_port.logRouted(line);
+		}
 
 		server->releaseForStep(firstTick, numSteps, stepSeconds);
 	}

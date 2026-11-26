@@ -40,7 +40,8 @@ host log), plus:
 | requirement | negative in `sessionEngineSelfCheck` |
 |---|---|
 | it is a `TickDriverEngine` | `NotATickDriverEngine` (no `deferUntil`) |
-| `logRouted(const char*)`: one sink for lines that carry their own `[Level][Tag]` prefix (design §3.3; today `RouteOGMessage`) | `MissingLogRouted` |
+| `logRouted(const char*)`: one sink for lines that carry their own `[Level][Tag]` prefix (design §3.3; Unreal: `RouteOGLevelLine`) | `MissingLogRouted` |
+| `wants(route, level)`, const, returns `bool` (`SessionLogFilter`, §3.2; og-session-runtime task 36) | `MissingWants` |
 | a `Runner` type that models `SessionRunner` | `RunnerIsNoSessionRunner` |
 | `startRunner(body, highResolutionWait)` returns `std::unique_ptr<Runner>` | `StartRunnerReturnsRunner` |
 
@@ -62,6 +63,20 @@ takes a `SessionLogSink`, not a whole engine: `SessionKnobs.h`'s functions do, a
 
 `SessionEngine`'s own negative for the requirement, `sessionEngineSelfCheck::MissingLogRouted`, still fails it through the
 refinement.
+
+### 3.2 `SessionLogFilter` (og-session-runtime task 36)
+
+`wants(route, level)` on a const engine returns whether a line of that `SimulationLogRoute` and `HostLogLevel` would be
+printed, so that a line written on every step can skip its formatting when its level is off (`SessionNetHooks`'
+`[ReleaseBatch]`; og-sim-session's `SessionLogRoutes-rationale.md` §5). It is its own concept, as `SessionLogSink` is, and
+`SessionEngine` requires both. The knob intake takes a `SessionLogSink` only: its lines are start-up lines. Unreal's is
+`ogLogWants` (`UESimulationLogRoutes.h`).
+
+| requirement | negative in `sessionLogFilterSelfCheck` |
+|---|---|
+| `wants(SimulationLogRoute, HostLogLevel)` | `MissingWants` |
+| callable on a const engine | `WantsNotConst` |
+| it returns `bool` | `WantsReturnsALevel` |
 
 ## §4 `ConfigSource`
 

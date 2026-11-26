@@ -10,6 +10,8 @@
 #include <string>
 #include <utility>
 
+#include "OGSimulation/HostLog.h"
+#include "OGSimulation/SimulationLogRoutes.h"
 #include "OGTickDriver/TickDriverConcepts.h"
 
 namespace ogsession
@@ -148,7 +150,45 @@ static_assert(!SessionLogSink<LogRoutedReturnsAStatus>,
 } // namespace sessionLogSinkSelfCheck
 
 template <typename E>
-concept SessionEngine = TickDriverEngine<E> && SessionLogSink<E>
+concept SessionLogFilter = requires(const E& e, SimulationLogRoute route, HostLogLevel level)
+{
+	{ e.wants(route, level) } -> std::same_as<bool>;
+};
+
+namespace sessionLogFilterSelfCheck
+{
+struct Conforming
+{
+	bool wants(SimulationLogRoute, HostLogLevel) const;
+};
+
+struct MissingWants
+{
+	void logRouted(const char*);
+};
+
+struct WantsNotConst
+{
+	bool wants(SimulationLogRoute, HostLogLevel);
+};
+
+struct WantsReturnsALevel
+{
+	HostLogLevel wants(SimulationLogRoute, HostLogLevel) const;
+};
+
+static_assert(SessionLogFilter<Conforming>,
+	"SessionLogFilter self-check: the reference shape must satisfy the concept");
+static_assert(!SessionLogFilter<MissingWants>,
+	"SessionLogFilter self-check: wants(route, level) is required; a per-step line asks it before it formats");
+static_assert(!SessionLogFilter<WantsNotConst>,
+	"SessionLogFilter self-check: wants is const; asking whether a route's level is on changes nothing");
+static_assert(!SessionLogFilter<WantsReturnsALevel>,
+	"SessionLogFilter self-check: wants returns a bool, whether a line at that route and level would be printed");
+} // namespace sessionLogFilterSelfCheck
+
+template <typename E>
+concept SessionEngine = TickDriverEngine<E> && SessionLogSink<E> && SessionLogFilter<E>
 	&& requires(E& e, sessionEngineConceptProbe::RunnerBody body, bool highResolutionWait)
 {
 	typename E::Runner;
@@ -163,6 +203,7 @@ struct Conforming : tickDriverEngineSelfCheck::Conforming
 	using Runner = sessionRunnerSelfCheck::Conforming;
 
 	void logRouted(const char*);
+	bool wants(SimulationLogRoute, HostLogLevel) const;
 	template <typename F> std::unique_ptr<Runner> startRunner(F&&, bool);
 };
 
@@ -171,6 +212,7 @@ struct NotATickDriverEngine : tickDriverEngineSelfCheck::MissingDeferUntil
 	using Runner = sessionRunnerSelfCheck::Conforming;
 
 	void logRouted(const char*);
+	bool wants(SimulationLogRoute, HostLogLevel) const;
 	template <typename F> std::unique_ptr<Runner> startRunner(F&&, bool);
 };
 
@@ -178,6 +220,15 @@ struct MissingLogRouted : tickDriverEngineSelfCheck::Conforming
 {
 	using Runner = sessionRunnerSelfCheck::Conforming;
 
+	bool wants(SimulationLogRoute, HostLogLevel) const;
+	template <typename F> std::unique_ptr<Runner> startRunner(F&&, bool);
+};
+
+struct MissingWants : tickDriverEngineSelfCheck::Conforming
+{
+	using Runner = sessionRunnerSelfCheck::Conforming;
+
+	void logRouted(const char*);
 	template <typename F> std::unique_ptr<Runner> startRunner(F&&, bool);
 };
 
@@ -199,6 +250,8 @@ static_assert(!SessionEngine<NotATickDriverEngine>,
 	"SessionEngine self-check: it refines TickDriverEngine, so logRouted and startRunner alone are not an engine");
 static_assert(!SessionEngine<MissingLogRouted>,
 	"SessionEngine self-check: logRouted (the one sink for lines that carry their own level and tag) is required");
+static_assert(!SessionEngine<MissingWants>,
+	"SessionEngine self-check: wants(route, level) is required; the session skips a line's formatting when its level is off");
 static_assert(!SessionEngine<RunnerIsNoSessionRunner>,
 	"SessionEngine self-check: the engine's Runner is a SessionRunner");
 static_assert(!SessionEngine<StartRunnerReturnsRunner>,
