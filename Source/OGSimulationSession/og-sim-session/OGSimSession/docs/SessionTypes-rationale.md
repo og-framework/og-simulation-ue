@@ -13,8 +13,9 @@ states no prohibition (its two rules are `static_assert`s), so there is no guard
 
 og-session-runtime design §3.3 lists the ports an engine adapter provides, and §3.4 what the runtime owns. The types here
 are the parts of both that are data rather than behaviour, so that the ports (`SessionEngine.h`, `SessionGame.h`) and the
-thread table (`SessionThreads.h`) can name them. og-session-runtime task 22 added them with no caller: today's Unreal session
-(`UESimulationSession.h`) keeps its own types until the tasks that move its responsibilities here (tasks 23 to 31).
+thread table (`SessionThreads.h`) can name them. og-session-runtime task 22 added them with no caller; tasks 23 to 31 gave
+them their callers, and since task 31 the Unreal adapter (`UESimulationSession.h`) builds a `SessionStart` with a
+`SessionRole` for the runtime's `start`.
 
 ## §2 `SessionRole`
 

@@ -31,6 +31,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -225,6 +226,11 @@ using Server = ogsimnet::SimNetServer<LinkGame, ServerHost, ServerTransport>;
 
 static_assert(ogsimnet::SimNetLinkServices<LinkServices> && ogsimnet::SimNetLinkLock<LinkLock>
 	&& ogsimnet::SimNetLinkSession<RecordingSession> && ogsimnet::SimNetLinkEndpoint<LinkEndpoint>);
+static_assert(!std::is_constructible_v<Server, ServerHost&, ServerTransport&, TimeConfig, std::size_t>
+		&& std::is_constructible_v<Server, ServerHost&, ServerTransport&, TimeConfig&, std::size_t>,
+	"SimNetServer holds its TimeConfig by reference, so a temporary one is refused at compile time (its TimeConfig&& "
+	"constructor is deleted). Was this rig's TimeConfig{} argument, a dangling reference (og-session-runtime task 32, "
+	"impl_notes_SR5_31a step (b))");
 
 constexpr std::uint8_t kServerHostIndex = 1u;
 constexpr std::uint8_t kClientHostIndex = 10u;
@@ -263,7 +269,7 @@ struct LinkRig
 		serverEndpoint->setConnectionHandler(serverTransport->connectionHandler());
 		REQUIRE(serverEndpoint->start(serverConfig));
 		serverTransport->markEndpointStarted();
-		server = std::make_unique<Server>(serverHost, *serverTransport, TimeConfig{}, std::size_t{1u << 20});
+		server = std::make_unique<Server>(serverHost, *serverTransport, timeConfig, std::size_t{1u << 20});
 
 		clientNetHost = std::make_unique<TestHost>(network.clock(), 200);
 		clientNet = std::make_unique<NetEndpoint>(*clientNetHost, network.addHost(kClientHostIndex));
@@ -368,6 +374,7 @@ struct LinkRig
 
 	VirtualNetwork network;
 	LinkClock clock;
+	TimeConfig timeConfig;
 	ServerHost serverHost;
 	LinkServices services;
 	std::unique_ptr<ServerTransport> serverTransport;

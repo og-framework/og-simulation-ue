@@ -50,7 +50,7 @@ the consequence of ignoring it.
 - **Site:** the `m_transport.relay(character.owner, …)` call in `flushRelays`.
 - **Prohibition:** do not pass anything but the character's owner as the connection to skip.
 - **Consequence:** with `kInvalidSimConnection` (or another id) the owner receives the relay of its own input every frame.
-  The relay this replaces is never sent to its owner (the UE relay actor replicates its ring with `COND_SkipOwner`), so no
+  The relay this replaces is never sent to its owner (the UE relay actor, until og-input-latency task P5-9 deleted it, replicated its ring with `COND_SkipOwner`), so no
   client path has ever received its own character's ring; the owner's SimRelay budget pays for it either way.
 
 ## G-05 — the flush reads a correction through the const accessor

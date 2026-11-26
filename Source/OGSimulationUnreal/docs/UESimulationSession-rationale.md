@@ -63,83 +63,225 @@
 <!-- lint-external-ref: TickFlush -- Unreal Engine method, outside every scan root (§9.9) -->
 # `UESimulationSession` — rationale
 
-Companion to `Plugins/OGSimulation/Source/OGSimulationUnreal/UESimulationSession.h` and, since task 27a, its one `.cpp`,
+Companion to `Plugins/OGSimulation/Source/OGSimulationUnreal/UESimulationSession.h` and its one `.cpp`,
 `UESimulationSession.cpp`. The source carries no prose: a two-line docs pointer, code, assertion messages, and one-line
 tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has none).
 
 > **Licence.** This tier is **MPL-2.0**, matching the code it describes. The class and the text of §2 and §3 moved here
 > from the brawler's session actor and its rationale (BUSL-1.1); the user ruled the re-licensing on 2026-10-20.
 
-* **Since og-session-runtime task 31** the class is the thin Unreal adapter over og-sim-session's `SessionRuntime`
-  (`SessionRuntime-rationale.md`): it holds the runtime, the diagnostics, the frame host and its engine, the bodies, the
-  presentation, the registry and the component maps, models the runtime's `SessionRuntimeHost` port, and keeps the
-  refusals (`UESessionRefusal.h`) and the doors a game reads. The composition, `beginPlay`'s configuration and
-  `endPlay`'s order are the runtime's `start` and `stop`. §2 to §22 record the members and sequences as this class held
-  them, under the names they had (the runtime keeps most of them); the names task 31 deleted or renamed are escaped at
-  the top of this file.
-* **§1** says what the class is, as of og-ue-simulationcomponentandmanagersplit task 24a, and what it does not hold yet.
-* **§2** is the member order: construction, destruction, and the assertions that keep it.
-* **§3** is the backend's two members.
-* **§4** is who reaches the private members, and the interim path to the owner.
-* **§5** is the `HasAuthority` poison.
-* **§6** is how it is built, and what that changed (lead ruling F1).
-* **§7** is the provenance.
-* **§8** is the composition reads, the visualization doors and the post-simulation pass (task 24b), and how a game's
-  parts and UI reach them.
-* **§9** is the transport (task 25 onward): the owner registry, the relay listeners, the effective input delay, the stall
-  and the timing relay, and the seam that keeps it ready for the type-free transport; since task 26a the input
-  reception (§9.7), which the seam exempts; and since task 26b the session knobs (§9.8) and the frame probes, PROBE A and
-  PROBE 6 (§9.9; PROBE 6 retired by og-session-runtime task 14). One contiguous section.
-* **§10** is the teardown and the post-physics pass (task 27a): `endPlay`, `onPostPhysicsStep`, the game's
-  post-visualization hook, and the test hitch cvars in the `.cpp` (since og-input-latency task P5-32 with its delay and
-  its marker).
-* **§11** is the start-up (task 27b): `beginPlay`, the game's six start-up hooks and their inline check, the neutral input
-  on both roles, the field-diff gate, the step-length check and the backend line.
-* **§12** is the registration sequences (task 28): `tryRegister` and `unregisterFromNewFramework`, the pending record, the
-  game's four registration hooks and their inline checks, and the name-clash row over all ten hooks.
-* **§13** is the core systems' spellings (task 34): the five aliases spelled with og-simulation's own templates, the
-  user's ruling behind them, and the rows that check them against the game's composition.
-* **§14** is the executors and the engine contract (task 35): `IntegrationExec` and `SystemsExec` spelled with
-  og-simulation's executors, the composition's systems list, the `PhysicsEngineTraits` assertion, and the rename of the
-  backend's type and members to `PhysicsBackend`, `m_physicsBackend` and `m_physicsBackendWorlds`.
-* **§15** is og-input-latency task P5-5: the seams the switch to og-net re-points, the reap `afterAuthorityBatch`, the slot
-  doors `physicsSlotFor` and `recordAuthoritativeSlot`, and the correction-tick walk (deleted by og-session-runtime task 14).
-* **§16** is og-input-latency task P5-7, the switch: the sim traffic on og-net's sim lanes (frame-locked until og-session-runtime
-  tasks 12 and 14); og-sim-net's server in this session and the lanes' client session; registration through the roster; and
-  the two early unregistration paths.
-  Where an earlier section describes the relays, the listeners, the session's own coordinator or its component map, §16 is
-  what replaced it.
-* **§17** is og-input-latency task P5-16: the display snapshot the game thread draws from, where it is published (after
-  each client batch, on the step's thread, since og-input-latency task P5-36), the game-thread view of it, and the doors
-  that read it.
-* **§18** is og-input-latency task P5-17: the client's one mode (immediate; the frame-locked client was retired by
-  og-session-runtime task 12), its lines, the step hooks, registration through og-sim-net's lifecycle queue, unregistration,
-  teardown, and what frame-locked kept.
-* **§19** is og-input-latency task P5-19: the authority loop, every authority since og-session-runtime task 14, the dedicated
-  server stepping on its runner: its I/O mode, start, og-sim-net and registration on the runner, the game thread, and stop; and
-  task P5-37's step time on the runner's `[AuthoritySimulation]` and `[Release]` lines (§19.7); and og-time-dilation task
-  2b's publish of the server tick to the SimClock server with that same step time (§19.8).
-* **§20** is og-input-latency task P3-10: the clock's RTT source, its two feeds, the `ClockRttSource` knob and the shadow line;
-  and task P3-13's `JitterMultiplier` knob, on the same proof line.
-* **§21** is og-input-latency task P5-20: the game-thread paths off the authority on the loop: PROBE A per stepping wake,
-  PROBE 6 retired, the authority presentation snapshot, the visualization gate, the probe stamps, and what the game thread
-  still does.
-* **§22** is og-time-dilation task 8: clock dilation on a client in `Off` and `Shadow`: the server tick on the SimClock sample,
-  the `ClockDilation` knob and its `[Dilation.Config]` line, `beforePump_Owner` and its two roles, the stage's threading and its
-  two clocks, the `[Dilation.Window]` line, and why `Shadow` cannot change the rate; og-time-dilation task 11 accepts `On`
-  (§22.6), adds the four dev doors and their clamps (§22.8) and the authority's `[Dilation.Authority]` line (§22.9);
-  og-time-dilation task 14 accepts the `Common` setpoint and adds its lead's door (§22.8) and the smoke (§22.11).
-* **§23** is og-session-runtime tasks 11 and 14: a world without a session: the start rule (task 14: a standalone, listen-server
-  or foreign-driver world starts none), the retired knobs' refusals (task 11), the registered instance slot, the registration
-  line, every public member with no session, and what a refused client and its server do.
-* **§24** is og-session-runtime task 16: the threads, who calls what on which thread for both roles, the per-step
-  order and what crosses; og-simulation's `ThreadingCrossings.md` points here for the callers. og-session-runtime
-  task 22 moved its text to og-sim-session's `SessionThreads-rationale.md` §7; §24 keeps the pointers and the
-  no-session world's note.
+**How to read this file (og-session-runtime task 33).** §0 is the class as it is: the thin Unreal adapter over og-sim-session's
+`SessionRuntime` that task 31 left. §R lists the guard ids this class and its Unreal neighbours retired while tasks 23 to 31a
+moved the session out, each with its successor. §1 to §25 are **the record**: the members and sequences as this class held them
+before they moved, under the names they had. Nothing in the record describes today's adapter except where §0 says so (§5, §23);
+each record section opens with a line naming where its subject lives now. Other files cite the record's section numbers, so the
+numbers stay.
 
 ---
 
+## §0 The adapter today (og-session-runtime task 31)
+
+### 0.1 What it holds, and in what order
+
+`UESimulationSession<TraitsT>` is the session's Unreal half. Everything that is not Unreal (the composition, the knobs, the clock,
+the lifecycle's ordering, the net hooks, the display, the tick driver's game, start and stop) is og-sim-session's
+`SessionRuntime` (`SessionRuntime-rationale.md`), which this class holds as `m_runtime` and whose `SessionRuntimeHost` port it
+models (§0.3). Its members, in declaration order:
+
+| member | type | what it is |
+|---|---|---|
+| `m_owner`, `m_game` | references | the owner actor (the game's session owner) and the game's instance hooks |
+| `m_latencyBudgetDiagnostics` | `UELatencyBudgetDiagnostics<TraitsT>` | the latency probes; the runtime's net hooks and tick game stamp it |
+| `m_frameHost` | `UETickDriverHost` | the two tick functions, the executor and the engine (`SimulationEngineUImpl`, `UESessionEngine.h`) |
+| `m_presentation` | `UESessionPresentation` | the render-target table and the present call |
+| `m_runtime` | `ogsession::SessionRuntime<UESessionRuntimeTraits<TraitsT>>` | the session |
+| `m_bodies` | `TickDriverBackendUImpl` (the traits' `Bodies`) | the Unreal bodies: slot requests, body creation, the visualization volumes, render targets |
+| `m_noSession` | `UESessionNoSession` | the no-session world's state (§23) |
+| `m_registeredComponentsById`, `m_simUnregisteredIds` | maps | the registered components, and the ids a roster Remove or the link's stop already unregistered (G-30) |
+| `m_registry` | `UESessionRegistry<UESimulationSession>` | this session's slot in the process's instance table (`instanceFor`) |
+| `m_pendingUnregisters` | `ogsession::SessionHeldForUnregister<TStrongObjectPtr<Component>>` | a client's components held until their unregistration is applied |
+| `m_componentsHeldForRunner` | map | an authority's components held while the runner creates their bodies |
+
+`UESessionRuntimeTraits<TraitsT>` (`TickDriverBackendUImpl.h`) names the runtime's Unreal parts: the host (this class), the
+engine (`SimulationEngineUImpl`), the clock engine (`UESessionClockEngine`), the link (`UESimNetLanes<TraitsT>`), og-sim-net's
+server over the link's host and transport, the idle over og-net's `SimLaneEndpoint`, the diagnostics, the game binding (the
+traits' `SessionHooks`) and the bodies.
+
+The constructor asserts `adapterContractsHold()`:
+
+- **the order:** the diagnostics, the frame host and the presentation are declared before the runtime, and the runtime before
+  the bodies. Members destruct in reverse order; the runtime holds the diagnostics and the frame host's engine by reference and
+  its presenter writes the render table, and the bodies hold the runtime;
+- **the channel:** the runtime's channel is `UESimNetChannel<Simulatable>`;
+- **the game's hooks:** `TraitsT::Game` has the six instance and static hooks this class calls
+  (`ueSimulationSessionHookNames::GameInstanceHooks`), and no member of this class shares a hook's name
+  (`ueSimulationSessionHookNames::SharesNoHookName`).
+
+The runtime asserts the rest (`SessionRuntime.h`'s `compositionContractsHold()`). No class is a friend of this one.
+
+### 0.2 Start and stop
+
+`beginPlay` (the owner's `BeginPlay` calls it):
+
+1. the world check, then **the start rule**, `refuseToStart` (§23, current): a refused world builds nothing;
+2. the game's `beforeWorldBuild(world, netMode, m_runtime.configured(), m_runtime.editStaticData())`;
+3. the step length: `UPhysicsSettings::AsyncFixedTimeStepSize`, checked (a `checkf`) to be one tick of
+   `TraitsT::NetConfig::tickFrequencyHz`;
+4. the latency diagnostics' `begin`;
+5. the link (`findDriverSimNetLanes`: the og-net driver's sim lanes, checked to be this world's role), and a
+   `ogsession::SessionStart`: the role (`worldIsAuthority` is the net mode not being a client), `stepSeconds`,
+   `requestedMaxCatchUpSteps` (`UETickDriverHost::requestedMaxCatchUpSteps`), on an authority `authorityIdleSlackSeconds`
+   (`readAuthorityIdleSlackSeconds`, `UEAuthorityRunner.h`) and `highResolutionWait` (the link's endpoint); `netIoThread` is
+   left empty (`SessionThreads-rationale.md` §4);
+6. the static geometry, `ueSessionEngine::importStatics`, through the engine binding's category channels;
+7. `m_runtime.start(std::move(start), UEConfigSource{}, lanes)`, which runs the rest in `beginPlay`'s old order
+   (`SessionRuntime-rationale.md` §2).
+
+`endPlay` calls `m_runtime.stop()` first (`SessionRuntime-rationale.md` §3; its first statement stops the steps,
+`SessionRuntime-guards.md` G-07). A session that never started only clears its registry slot; one that did also ends the
+latency diagnostics. The destructor clears the registry slot and detaches the runtime from the link, and touches no
+`UObject` (G-10).
+
+### 0.3 The runtime's port: what each hook does in Unreal
+
+| `SessionRuntimeHost` hook | here |
+|---|---|
+| `onConfigure` | takes this session's registry slot (`registerInstance`) |
+| `bindDiagnosticGates` | `ueSessionEngine::bindDiagnosticGates` (`UESessionEngine-rationale.md`) |
+| `afterPredictionConfigured` | `ueSessionEngine::logResimProbeSession` |
+| `onSessionConfigured` | the game's `afterSessionConfigured(netMode)` |
+| `beginFrames(driver)` | `m_frameHost.begin` on the world's persistent level |
+| `endFrames` | `m_frameHost.unregisterTickFunctions()` |
+| `sampleInput` | the game binding's `sampleInput(*this)` |
+| `onPostPhysics` | §0.5 |
+| `logHost(line)` | `RouteOGMessage` |
+| `makeBodyRequest`, `bodyKeyOf` | the bodies' `makeRequest` and `bodyKeyOf` |
+| `wrapInputProvider` | the latency diagnostics' `wrapInputProvider` |
+| `teardownComponents`, `forgetComponents`, `onLinkStopping` | §0.4 |
+| `forEachRegisteredId` | the registered map's ids |
+
+### 0.4 Registration and unregistration
+
+`tryRegister(id, simulatable, owner, inputProvider, isAuthority)` answers `TryRegisterStatus` (`Pending`, `Ready`,
+`Refused`), the runtime's `ogsession::RegisterStatus` one to one, which the component's retry loop reads:
+
+- **no session** (no manager): `ueSessionRefusal::refuseRegistrationWithoutSession` and `Refused` (§23);
+- **an authority** (`tryRegisterOnRunner`): the outcomes are collected first, then the authority lifecycle's `tryRegister`
+  with the bodies' request (`Bodies::requestFor(…, /*withEntityFacts=*/true)`);
+- **a client:** the runtime's `tryRegisterPrediction` with the request without the entity facts and the input provider;
+- on `Ready`, both: the registered map, the game's `afterRegistered`, the bodies' registration hook (`onRegisteredHost_GameThread`
+  on an authority, `onRegistered_GameThread` on a client).
+
+`RegisterHooks` is what the lifecycle calls back: `bodiesRequested` holds the component strongly in
+`m_componentsHeldForRunner` until the outcome `BodiesBound` or `BodiesPending` releases it; `createBodies` casts the owner
+to `TraitsT::Character` (a `checkf`) and creates the bodies; `bodiesCreated` checks the fold's body ids (`DO_CHECK` only)
+and runs the game's `afterBodiesCreated`; `collectOutcomes` polls them.
+
+`clientBindStep(id, engineSaysLocal)` refuses without a session and otherwise maps the runtime's `bindStep` to `Wait`,
+`Ready` or `Abandon` (no answer, or `RoleMismatch`).
+
+`unregisterFromNewFramework(id, owner, isAuthority)`, from the pawn's `EndPlay`: nothing without a session; at once for an
+id already unregistered (G-30); on a client, the lifecycle's `requestUnregister` decides when the bodies go
+(`UnregisterRelease::Now`, or `AfterApplied`, when the component is held until the outcome `Unregistered`), then the
+host's share (`unregisterCharacterHostOnly`: the map, `markUnregistered`, the game's `onUnregistered`, the latency forget,
+the bodies if now, the `NewFramework: unregistered simulatable id=` line on `LogOGMgmt`); on an authority,
+`requestRunnerUnregister_GameThread` does the same through the authority lifecycle. A client's roster Remove arrives as the
+outcome `RosterRemoved`, which runs the host's share and records the id.
+
+`teardownComponents` (a client's, through the lifecycle's `teardown`) releases every held component, unregisters every
+registered id with its bodies, records the ids and forgets the queued registrations. `onLinkStopping` runs it on a client
+(and `checkf`s the map is empty after), then unregisters through the runner whatever an authority still has.
+`forgetComponents` clears the four maps.
+
+### 0.5 The frame: `onPostPhysics`
+
+The runtime's tick game calls this hook through the runtime's tick host (`SessionTickGame-rationale.md`): in a non-shipping build the test hitch first
+(`consumeTestGameThreadHitchMs` and `sleepTestGameThreadHitch`, the `.cpp`'s three cvars `og.Sim.TestGameThreadHitchMs`,
+`og.Sim.TestGameThreadHitchAfterSeconds` and `og.Sim.TestGameThreadHitchEverySeconds`, with the `[SimHost.TestHitch]`
+marker); then the present (`m_presentation.present`, with the engine binding's park snap), the lifecycle outcomes, and per
+role: an authority applies the presentation slices (`m_runtime.presentAuthority` → the game's `presentAuthoritySlice`), a
+client refreshes its display view (`m_runtime.refreshDisplayView`) and runs the game's `afterVisualization`; both then tick
+the latency diagnostics.
+
+### 0.6 The doors a game reads
+
+`owner()`, `runtime()`, the latency diagnostics (`getLatencyBudgetDiagnostics`, `editLatencyBudgetDiagnostics`),
+`runsPrediction()`, the visualization query and reader (`editVizQuery`, `getVizReader`, the runtime's),
+`registerVizVolume` (the bodies'), `hasGameThreadVizWorld` (a manager on a predicting peer), `getVizSlice<SliceT>(id)` (the
+held display's state, G-02), `getRegisteredComponentsById`, `forEachRegisteredId` and the static `instanceFor(world,
+isAuthority)` (the registry's lookup, G-11).
+
+### 0.7 What else stays as it was
+
+- **The `HasAuthority` poison** (§5) is current: the header defines it after its includes and undefines it at its end.
+- **A world without a session** (§23) is current: the start rule, the refusals (`UESessionRefusal.h`,
+  `UESessionRefusal-rationale.md`), the registry slot and what each public member does with no session.
+- **Codegen:** the out-of-class members sit inside one `OGSIM_OPTIMIZE_OFF` … `OGSIM_OPTIMIZE_ON` pair
+  (`SessionRuntime-rationale.md` §9 for the runtime's).
+- **Threads:** the table of who calls what is og-sim-session's (`SessionThreads-rationale.md` §7, and `SessionThreads.h`, which
+  checks it). This class's members run on the game thread: the owner's `BeginPlay` and `EndPlay`, the components'
+  registration and `EndPlay`, and the frame host's tick functions.
+
+---
+
+## §R The retired ids and their successors (tasks 23 to 31a)
+
+Every guard id of this plugin's Unreal docs that og-session-runtime tasks 23 to 31a retired, from the `§R` section of each
+guards file, with its live successor (checked: each retired line names the task in the first column, and each successor is a
+live entry of its file). Ids stay retired; none is reused. Task 31a retired none (the members it moved carried no tag). The
+game's two (task 26) are listed in `SimulationArchitecture.md`'s copy of this table in the game's docs.
+
+| Task | Retired id | Successor |
+|---|---|---|
+| 23 | `UESimulationSession-guards.md` G-14 | `SessionKnobs-guards.md` G-01 |
+| 23 | `UESimulationSession-guards.md` G-15 | `SessionKnobs-guards.md` G-02 |
+| 23 | `UESimulationSession-guards.md` G-16 | `SessionKnobs-guards.md` G-03 |
+| 23 | `UESimulationSession-guards.md` G-27 | `SessionKnobs-guards.md` G-04 |
+| 23 | `UESimulationSession-guards.md` G-17 | `SessionKnobs-guards.md` G-05 |
+| 24 | `UESimulationSession-guards.md` G-03 | `SessionClock-guards.md` G-01 |
+| 24 | `UESimulationSession-guards.md` G-04 | `SessionClock-guards.md` G-02 |
+| 24 | `UESimulationSession-guards.md` G-05 | `SessionClock-guards.md` G-03 |
+| 24 | `UESimulationSession-guards.md` G-09 | `SessionClock-guards.md` G-04 |
+| 24 | `UESimulationSession-guards.md` G-38 | `SessionClock-guards.md` G-05 |
+| 24 | `UESimulationSession-guards.md` G-39 | `SessionClock-guards.md` G-06 |
+| 24 | `UESimulationSession-guards.md` G-40 | `SessionClock-guards.md` G-07 |
+| 28 | `UESimNetLanes-guards.md` G-01 | `SimNetLink-guards.md` G-01 |
+| 28 | `UESimNetLanes-guards.md` G-02 | `SimNetLink-guards.md` G-02 |
+| 28 | `UESimNetLanes-guards.md` G-04 | `UESimNetHost-guards.md` G-13 |
+| 28 | `UESimNetHost-guards.md` G-03 | `SimNetLink-guards.md` G-03 |
+| 28 | `UESimNetHost-guards.md` G-05 | `SimNetLink-guards.md` G-04 |
+| 28 | `UESimNetHost-guards.md` G-04 | `SimNetLink-guards.md` G-05 |
+| 29 | `UESimulationSession-guards.md` G-31 | `SessionLifecycle-guards.md` G-01 |
+| 29 | `UESimulationSession-guards.md` G-32 | `SessionLifecycle-guards.md` G-02 |
+| 29 | `UESimulationSession-guards.md` G-33 | `SessionLifecycle-guards.md` G-03 |
+| 29 | `UESimulationSession-guards.md` G-34 | `SessionLifecycle-guards.md` G-04 |
+| 29 | `UESimulationSession-guards.md` G-35 | `SessionLifecycle-guards.md` G-05 (the client's half) and, through the authority's half `UESimulationSession-guards.md` G-41 (task 29), G-08 |
+| 30 | `UESimulationSession-guards.md` G-36 | `SessionLifecycle-guards.md` G-06 |
+| 30 | `UESimulationSession-guards.md` G-37 | `SessionLifecycle-guards.md` G-07 |
+| 30 | `UESimulationSession-guards.md` G-41 | `SessionLifecycle-guards.md` G-08 |
+| 31 | `UESimulationSession-guards.md` G-01 | `SessionRuntime-guards.md` G-01 |
+| 31 | `UESimulationSession-guards.md` G-23 | `SessionRuntime-guards.md` G-02 |
+| 31 | `UESimulationSession-guards.md` G-06 | `SessionRuntime-guards.md` G-03 |
+| 31 | `UESimulationSession-guards.md` G-24 | `SessionRuntime-guards.md` G-04 |
+| 31 | `TickDriverBackendUImpl-guards.md` G-01 | `SessionRuntime-guards.md` G-05 |
+| 31 | `UESimulationSession-guards.md` G-20 | `SessionRuntime-guards.md` G-07 |
+| 31 | `UESimulationSession-guards.md` G-21 | `SessionRuntime-guards.md` G-08 |
+| 31 | `UESimulationSession-guards.md` G-22 | `UESessionEngine-guards.md` G-01 |
+| 31 | `UESimulationSession-guards.md` G-28 | `UESessionEngine-guards.md` G-02 |
+
+The record's own guard references (G-01 to G-41 below) name the ids as they were; this table and each file's `§R` give their
+successors.
+
+---
+
+## The record (§1 to §25)
+
+The sections below are the class as it was before og-session-runtime task 31, kept because other files cite them. Each opens
+with where its subject is now.
+
 ## §1 What the class is
+
+*Now:* §0.1 (the class today).
 
 `UESimulationSession<TraitsT>` is a game's simulation session, the game-agnostic half of what was one session actor. A
 game's session owner (`TraitsT::SessionOwner`, an `AActor`) holds it as a member and names its game's types through the
@@ -178,6 +320,8 @@ the backend holds the session by reference.
 ---
 
 ## §2 Member order
+
+*Now:* the adapter's order is §0.1; the composition's is `SessionRuntime-rationale.md` §1 (`compositionContractsHold()` in `SessionRuntime.h`).
 
 C++ constructs members in declaration order and destroys them in reverse, whatever the initializer lists say. The order
 is today's relative order from the owner, where these members lived until task 24a, with the two references first:
@@ -275,6 +419,8 @@ emplaced in the role branches.
 
 ## §3 The backend's two members
 
+*Now:* deleted by og-session-runtime task 31: the tick backend is the runtime's member; `TickDriverBackendUImpl` is the Unreal bodies (§0.1).
+
 `typename TraitsT::PhysicsBackendWorlds m_physicsBackendWorlds` and `typename TraitsT::template PhysicsBackend<UESimulationSession> m_physicsBackend{
 *this, m_physicsBackendWorlds }`. The traits pick the host:
 
@@ -301,6 +447,8 @@ game asserts it beside its traits, on the type this class holds (`BrawlerSession
 ---
 
 ## §4 Access: the friends, the accessors and the interim path
+
+*Now:* no friend since og-session-runtime task 31; the doors are §0.6.
 
 **The friends (ruled, Q-G).** The class befriends `typename TraitsT::template PhysicsBackend<UESimulationSession>`, the tick
 host template `UESessionTickHost` (since og-session-runtime task 26, §25, in place of the game's tick-driver binding
@@ -398,14 +546,18 @@ the only one left since og-session-runtime task 3 deleted the former self-schedu
 
 ## §5 The `HasAuthority` poison
 
-The header defines `HasAuthority` to an undeclared name after its includes and undefines it at its end, as
-`TickDriverBackendUImpl.h` does around its bodies. A session's role is its world's net mode (`worldIsAuthority`) or the
+*Now:* current (§0.7).
+
+The header defines `HasAuthority` to an undeclared name after its includes and undefines it at its end
+(`TickDriverBackendUImpl.h` did the same around its bodies until og-session-runtime task 31). A session's role is its world's net mode (`worldIsAuthority`) or the
 manager's `runsPrediction()`, never the owner actor's `HasAuthority()`, which the actor's own `.cpp` poisons the same
 way. A call typed anywhere in the header is a compile error; task 24a saw one fail.
 
 ---
 
 ## §6 How it is built
+
+*Now:* the out-of-class members' one `OGSIM_OPTIMIZE_OFF` pair (§0.7); the runtime's codegen, `SessionRuntime-rationale.md` §9.
 
 * **Header-only.** The class and its constructor are in the header; the game instantiates it, as a member of its owner.
   The constructor is defined after the class inside one `OGSIM_OPTIMIZE_OFF` / `OGSIM_OPTIMIZE_ON` pair, and since task
@@ -466,6 +618,8 @@ way. A call typed anywhere in the header is a compile error; task 24a saw one fa
 
 ## §7 Provenance
 
+*Now:* the record only.
+
 Created by og-ue-simulationcomponentandmanagersplit task 24a (2026-10-21) from `AOGBrawlerSimulationManager`'s members and
 its `compositionContractsHold()` rows (`OGBrawlerSimulationManager.h`, the brawler's session actor). The member declarations
 and their initializers moved unchanged except: the owner's cvar member and its static-data initializer became the game
@@ -525,6 +679,8 @@ them (`OGBrawlerSimulationManager-guards.md` G-69 and G-73 → G-25 and G-26 her
 ---
 
 ## §8 The composition reads, the visualization doors and the post-simulation pass (task 24b)
+
+*Now:* the doors are §0.6; the composition's reads are the runtime's (`SessionRuntime-rationale.md`), the display's `SessionDisplay-rationale.md`.
 
 Task 24b moved these members from the owner, statement for statement; only the spellings changed (the owner's
 m_session.m_X became the session's m_X, the game's simulatable type became `TraitsT::Simulatable`, and a member
@@ -610,6 +766,8 @@ mutable, beside its `roster()` and `inputHistoryFeed()`); the hosts reach it as 
 ---
 
 ## §9 Transport
+
+*Now:* og-sim-session: the clock and the effective input delay (`SessionClock-rationale.md` §4, §5), the knobs (`SessionKnobs-rationale.md`), the input reception and the reap (`SessionNetHooks-rationale.md`), the frame probe (`SessionRuntime.h`'s `onFrameStepsDue_Step`).
 
 The session's transport is its link to the replicated relays and the client's input-delay bookkeeping: the owner
 registry, the three relay listeners, the tier consumer and the effective input delay, the stall request, and the timing
@@ -1029,6 +1187,8 @@ its packet-budget literal stayed in its §7 and §8.*
 
 ## §10 The teardown and the post-physics pass (task 27a)
 
+*Now:* start and stop §0.2, the post-physics pass §0.5; the runtime's stop, `SessionRuntime-rationale.md` §3.
+
 **What moved.** The owner's `EndPlay` statements before its `Super` call became `endPlay`, and the owner's post-physics
 step became `onPostPhysicsStep`, each one straight-line sequence in the owner's order. Task 27a's `transcribe.py` compares
 both, statement by statement, with the owner's two functions as they stood before task 25, the hook inlined at its call
@@ -1155,6 +1315,8 @@ push stayed in its docs.*
 ---
 
 ## §11 The start-up (task 27b)
+
+*Now:* §0.2; the runtime's start, `SessionRuntime-rationale.md` §2.
 
 **What moved.** The owner's `BeginPlay` statements after its `Super` call became `beginPlay`, one straight-line sequence in
 the owner's order, with the owner's file-local `bindCorrectionFieldDiffGate` as a private static member (§11.4). A game's
@@ -1349,6 +1511,8 @@ are `BrawlerSessionGameUImpl-rationale.md` §6, in OGBrawlerUnreal's docs.*
 
 ## §12 The registration sequences (task 28)
 
+*Now:* §0.4; the sequences are `SessionLifecycle-rationale.md` (§4, §5, and §10 for the authority).
+
 **What moved.** The owner's `tryRegister` and `unregisterFromNewFramework`, after their first statements, became the
 session's `tryRegister` and `unregisterFromNewFramework`; the owner's pending record, `PendingRegistration`, and its map
 became the session's, and `TryRegisterStatus` moved to the session's header, at namespace scope, so a game's component
@@ -1510,6 +1674,8 @@ game-neutral, with the R0 lines above. The brawler's hooks, its statements and t
 
 ## §13 The core systems' spellings (task 34)
 
+*Now:* the composition's spellings are the runtime's (`SessionRuntime-rationale.md` §1, §5).
+
 **What changed.** Until task 34 the session took its five core-system aliases from its game's composition:
 `using Storage = typename Composition::Storage;`, and the same for `Reconciliation`, `InputResolution` and `NetSync`, and
 `using ManagerType = typename Composition::Manager;`, where `Composition` is `typename TraitsT::Composition`. Go To
@@ -1562,6 +1728,8 @@ all four through its composition header.
 ---
 
 ## §14 The executors, the engine contract and `PhysicsBackend` (task 35)
+
+*Now:* the executors are the runtime's (`SessionRuntime-rationale.md` §1); the backend selector was deleted by task 31.
 
 **What changed.** Until task 35 the session took its two executors from its game's composition:
 `using SystemsExec = typename Composition::SystemsExec;` and `using IntegrationExec = typename Composition::IntegrationExec;`.
@@ -1629,6 +1797,8 @@ this header through `SimulationManager.h` (task 34); the other two are new to th
 
 ## §15 The seams for the switch (og-input-latency task P5-5)
 
+*Now:* og-sim-net's link (`SimNetLink-rationale.md`) and the runtime's net hooks (`SessionNetHooks-rationale.md`).
+
 > Since og-session-runtime task 26 the release, the reap and the net-hook bodies this section names are og-sim-session's (`SessionNetHooks`, `SessionTickGame`; §25). The text below records them as the Unreal session's, where they were until then.
 
 og-input-latency's switch to og-net (its task P5-7, P5 design §3.4) changes what the reap, the slot and the server's
@@ -1676,6 +1846,8 @@ which moves only the `__LINE__` a failed check reports.
 ---
 
 ## §16 The switch: sim traffic on og-net, frame-locked (og-input-latency task P5-7)
+
+*Now:* og-sim-net's link (`SimNetLink-rationale.md`), the runtime's attach (`SessionRuntime-rationale.md` §2), the lanes (`UESimNetLanes-rationale.md`).
 
 Task P5-7 moved every sim payload off Unreal's replication onto og-net's sim lanes, in one build: inputs, corrections, relay
 rings, the server clock, the connection tier, the relay-delay floor and (new) the roster. og-sim-net's sessions carry them
@@ -1846,6 +2018,8 @@ object only, never a `UObject`.
 
 ## §17 The display snapshot: what the game thread reads (og-input-latency task P5-16)
 
+*Now:* `SessionDisplay-rationale.md`; the doors are §0.6.
+
 The game thread draws the client's simulation from a snapshot, never from the storage, the input resolution or the
 reconciliation. The snapshot type is og-sim-session's (`SimulationDisplaySnapshot-rationale.md`, in og-sim-session's docs;
 og-simulation's until og-session-runtime task 25). Since that task the publish, the held view and the doors' answers are
@@ -1952,6 +2126,8 @@ A game reads all of this through the doors, never the snapshot's channel: the se
 bound is the session's to keep.
 
 ## §18 Immediate mode on a client (og-input-latency task P5-17)
+
+*Now:* `SessionLifecycle-rationale.md` §1 to §7 and `SessionNetHooks-rationale.md`.
 
 A client's og-sim-net session is drained on the step's thread at each step and sends its inputs at capture, and its
 registrations go through og-sim-net's lifecycle queue (`SimNetClient-rationale.md` §16–§18). Since og-session-runtime
@@ -2098,6 +2274,8 @@ On a frame-locked client the only differences P5-17 made were the lock around th
 12 retired the mode: every client is immediate, and `SimTrafficImmediate=0` is refused (§23).
 
 ## §19 The authority loop: the server on its runner (og-input-latency task P5-19)
+
+*Now:* `SessionRuntime-rationale.md` §2, §3, `SessionLifecycle-rationale.md` §10, og-sim-net's `SimNetServerHost-rationale.md`, `UEAuthorityRunner-rationale.md`.
 
 Every dedicated server's authority steps on its own thread, `OGSimAuthority`, which also services og-net's server endpoint
 (P11, design K14; `UEAuthorityRunner-rationale.md` §1). Since og-session-runtime task 14 it is the only server: a listen,
@@ -2249,6 +2427,8 @@ tasks 3–6) never called `afterStep_Step` (§19.7), so it published nothing.
 
 ## §20 The clock's RTT source: SimClock samples, the knob, the shadow line (og-input-latency task P3-10)
 
+*Now:* `SessionClock-rationale.md` §5 and `SessionKnobs-rationale.md` §3.
+
 - **The feeds and the shadow line** are og-sim-session's `SessionClock` since og-session-runtime task 24
   (`SessionClock-rationale.md` §5, moved from here: the engine's round trip in `onAuthorityTick`, the SimClock sample in
   `onClockSample`, one estimator on the drain's thread, and the `[ClockSource.Window]` line's due rule and fields). This
@@ -2260,6 +2440,8 @@ tasks 3–6) never called `afterStep_Step` (§19.7), so it published nothing.
   line. The setters run where this class calls `applyLatencyKnobs`, in `configureSession`, before `startStepping`, so before any
   sample reaches the estimator (og-simulation `SimulationManager-rationale.md` §16 and §17).
 ## §21 The game-thread paths off the authority (og-input-latency task P5-20)
+
+*Now:* `SessionDisplay-rationale.md` §5; the adapter's part is §0.5.
 
 The game thread of a dedicated server touches no simulation state (§19): every read of storage, the systems, og-sim-net's
 channels or the probe's step-side state is on the runner, and what the game thread needs it reads from a copy the runner
@@ -2349,6 +2531,8 @@ the pending stamps and the window lines. The lanes' `afterDispatch` publishes th
 reads only `UObject`s and the session's own maps (§19.4).
 
 ## §22 Clock dilation on a client: `Off`, `Shadow` and `On` (og-time-dilation tasks 8, 11 and 14)
+
+*Now:* `SessionClock-rationale.md` §7 and `SessionKnobs-rationale.md` §4, §5.
 
 og-simulation's `ClockDilationController.h` holds the rate controller (`ClockDilationController`), its per-frame stage
 (`clockDilation::beforeClientPump`) and its window statistics (`ClockDilationWindow`); its rationale has the law, the sensor and
@@ -2506,6 +2690,8 @@ task 13 per-direction table (`e2e_join`'s late share, B ← A = B receiving A's 
 
 ## §23 A world without a session (og-session-runtime tasks 11 and 14)
 
+*Now:* current (§0.7).
+
 **When: the start rule** (og-session-runtime task 14). `beginPlay` asks `refuseToStart` first, after the world check and
 before it builds anything. Its answers, in the order it tests them (the first refusal wins):
 
@@ -2626,6 +2812,8 @@ the runs and their lines are in the task's notes).
 
 ## §24 Threads: who calls what, on which thread (og-session-runtime task 16)
 
+*Now:* `SessionThreads-rationale.md` §7.
+
 og-session-runtime task 22 moved this section's table and its notes, verbatim, to og-sim-session's
 `SessionThreads-rationale.md` §7, so that the thread table is kept in one place: who calls what on which thread for both
 roles (§24.1, now its §7.1), the per-step order (§24.2, now §7.2) and what crosses (§24.3, now §7.3). The runtime's own
@@ -2648,6 +2836,8 @@ Moved: `SessionThreads-rationale.md` §7.2.
 Moved: `SessionThreads-rationale.md` §7.3.
 
 ## §25 The tick driver's game and the per-step net hooks, og-sim-session's (og-session-runtime task 26)
+
+*Now:* `SessionTickGame-rationale.md`.
 
 og-session-runtime task 26 moved the session's per-step net hooks out of this class and replaced the brawler's tick-driver
 binding with og-sim-session's tick game:

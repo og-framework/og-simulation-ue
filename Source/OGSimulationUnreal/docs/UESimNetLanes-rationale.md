@@ -86,7 +86,14 @@ client session there and checks that the endpoint's role is the role the lanes w
   calls once, first, and clears. Unreal shuts a world's net driver down before it destroys the world's pawns and ends its
   play (its map load), and the lanes, with a client's channels, die with the driver. So the session unregisters every
   registered character there, while the channels and the endpoint still live, and forgets the lanes
-  (`UESimulationSession-rationale.md` §16.5). A session that ends first clears the handler (its `detachFromSimNetLanes`).
+  (`UESimulationSession-rationale.md` §16.5, the record). A session that ends first clears the handler: og-sim-session's
+  `SessionRuntime::detachLink` (`setStopHandler(nullptr)`; the Unreal session's `detachFromSimNetLanes` until
+  og-session-runtime task 31).
+- **Who binds (og-session-runtime task 31).** The world session is og-sim-session's `SessionRuntime`, which the lanes name as
+  `Session` (`UESessionRuntime<TraitsT>`, `UESimNetHost.h`). Its `attachClientLink` sets the registered-removed handler and the
+  stop handler and binds the client session; its `attachServerLink` binds the authority runner's two functions and the stop
+  handler; `detachLink` undoes both (`SessionRuntime-rationale.md` §2, §3). Its net hooks call `drainClient_Step` on the
+  step (`SessionNetHooks.h`) and its lifecycle's teardown `drainClientWhileStopped_GameThread`.
 
 ## §6 The server session's binding
 
@@ -114,7 +121,8 @@ here, and checks every frame door against it (`SimNetLink-rationale.md` §4). Th
 which the world session calls on the step's thread and which forwards to the link's `drainForStep` (its check: not the game
 thread); og-net's servicing thread, which runs only the transport's lane and connection handlers; and on a dedicated server the
 runner, which services the endpoint (so it runs the handlers and the SimClock server) and calls the server host (§12). The
-session's thread table is `UESimulationSession-rationale.md` §24.
+session's thread table is og-sim-session's `SessionThreads-rationale.md` §7 (`UESimulationSession-rationale.md` §24 until
+og-session-runtime task 22).
 
 ## §9 Lifetime
 
@@ -127,7 +135,8 @@ stop handler (§5) runs first in it and the session forgets the lanes there.
 ## §10 The switch, and the namespace aliases
 
 Since og-input-latency task P5-7 the brawler registers its factory (`makeBrawlerSimNetLanes`) at module start-up, so every
-og-net driver makes a lanes object at `InitBase`, and the world session binds to it (`UESimulationSession-rationale.md` §16).
+og-net driver makes a lanes object at `InitBase`, and the world session binds to it (`UESimulationSession-rationale.md` §16,
+the record; since og-session-runtime task 31 the runtime's attach, §5).
 `UESimNetTransport` and `UESimNetChannel<SimT>` name the transport and the per-character channel at namespace scope, without
 the session traits, so a game's `SimulatableOwnerTraits` can name the channel where the traits are not complete yet; the class's
 `Transport` is `UESimNetTransport`, and the session asserts its channel type equals `UESimNetChannel<Simulatable>`. Before the

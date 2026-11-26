@@ -3,7 +3,7 @@
 
 UE plugin shell wrapping [og-simulation](https://github.com/og-framework/og-simulation).
 
-This repo contains the Unreal Engine integration layer: the `.uplugin`, the module rules, a GLM module stub, and the two Unreal modules `OGSimulationUnreal` and `OGSimulationJoltUnreal` (below; in og-brawler-unreal's `Source/` until og-tickdriver task 16). The pure C++ simulation source lives in the `og-simulation` and `og-simulation-jolt` submodules. No source is duplicated — UBT compiles it from the submodule paths.
+This repo contains the Unreal Engine integration layer: the `.uplugin`, the module rules, a GLM module stub, the three Unreal modules `OGNetUnreal`, `OGSimulationUnreal` and `OGSimulationJoltUnreal` (the last two in og-brawler-unreal's `Source/` until og-tickdriver task 16), and two engine-free libraries kept in this repo's own folders: og-sim-net (`Source/OGSimulationNet/og-sim-net/`) and og-sim-session (`Source/OGSimulationSession/og-sim-session/`). The other pure C++ sources live in submodules: `og-simulation` (with og-tickdriver in it), `og-net` and `og-simulation-jolt`. No source is duplicated — UBT compiles it from those paths.
 
 ## Position in the og-framework graph
 
@@ -46,7 +46,7 @@ The plugin exposes ten UE modules, all `Runtime` with loading phase `Default`, i
 - `OGSimulationSession` — og-sim-session, the engine-free session runtime (source at `Source/OGSimulationSession/og-sim-session/`)
 - `glm` — the vendored GLM math library (header-only, from `Source/OGSimulation/og-simulation/glm/`)
 - `OGSimulationJolt` — the Jolt physics backend, engine-free (source from the `og-simulation-jolt` submodule at `Source/OGSimulationJolt/og-simulation-jolt/`, with Jolt vendored there)
-- `OGSimulationUnreal` — the Unreal adapter, game-agnostic: the simulation session, its og-sim-net lanes and hosts and the authority's runner, the tick driver's engine port and backend template, the latency diagnostics, the input translator, the static-geometry importer and the startup timer-resolution honour (until og-session-runtime tasks 3–6 also the Chaos adapters and engine traits; the replication relays went in og-input-latency task P5-9)
+- `OGSimulationUnreal` — the Unreal adapter, game-agnostic: the thin session adapter over og-sim-session's `SessionRuntime` (og-session-runtime task 31), the og-net driver's sim lanes and the hosts over og-sim-net's link, the authority's runner, the engine port (`SimulationEngineUImpl`) and the Unreal bodies, the latency diagnostics, the input translator, the static-geometry importer and the startup timer-resolution honour (until og-session-runtime tasks 3–6 also the Chaos adapters and engine traits; the replication relays went in og-input-latency task P5-9)
 - `OGSimulationJoltUnreal` — the Unreal side of the Jolt engine: the Jolt engine traits
 
 `OGSimulationUnreal` uses Enhanced Input, so `OGSimulation.uplugin` declares a dependency on the engine's `EnhancedInput` plugin; enabling this plugin enables it. Chaos and PhysicsCore are engine modules and need no entry.
@@ -57,6 +57,10 @@ The plugin exposes ten UE modules, all `Runtime` with loading phase `Default`, i
 OGSimulation.uplugin                   Plugin descriptor
 Source/OGSimulation/                   UE module rules + og-simulation/ (submodule — pure simulation source, og-tickdriver/ in it)
 Source/OGTickDriver/                   UE module rules for og-tickdriver (source in og-simulation/og-tickdriver/)
+Source/OGNet/                          UE module rules + og-net/ (submodule — engine-free network transport)
+Source/OGNetUnreal/                    og-net's Unreal net driver and sim-lane endpoint (code and docs/)
+Source/OGSimulationNet/                UE module rules + og-sim-net/ (engine-free sim traffic over og-net; this repo's own folder)
+Source/OGSimulationSession/            UE module rules + og-sim-session/ (engine-free session runtime; this repo's own folder)
 Source/glm/                            UE module stub for GLM (header-only)
 Source/OGSimulationJolt/               UE module rules + og-simulation-jolt/ (submodule — Jolt backend source)
 Source/OGSimulationUnreal/             Unreal adapter module (code and docs/)

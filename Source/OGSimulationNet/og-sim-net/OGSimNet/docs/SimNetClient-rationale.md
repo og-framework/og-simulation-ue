@@ -137,25 +137,27 @@ A refused roster message is §10.
 
 A ring for a sim id with a channel is stored in it (`storeRing`, which calls the bound relay callback: NetSync's arrival path
 for a remote character), then each of its entries with a capture tick is stamped `ClientReceived` on the Input stream with
-og-net's receive time. Today's Unreal component stamps before it calls the callback; the stamp's value does not depend on
-the order, because it carries the message's receive time, not the time of the call.
+og-net's receive time. The Unreal component this replaced (deleted by og-input-latency task P5-8) stamped before it called
+the callback; the stamp's value does not depend on the order, because it carries the message's receive time, not the time of the call.
 
 **A ring for a sim id with no channel is held** (rule for relays that arrive before the Snapshot or before the character's
 Add). og-net's Control lane, which carries the roster, and the relay lane are separate, and the server broadcasts relays to
 every connection og-net has, including one it has not yet sent a Snapshot. So a ring can arrive before the client knows the
 character. The session keeps the newest such ring per sim id (counted `ringsHeld`) and stores it in the channel when the
-character is added (counted `heldRingsApplied`), before the host registers it (§5). This is today's latch: the Unreal relay
-actor keeps the last ring it received while no consumer is bound, and the consumer reads it when it binds. Two limits:
+character is added (counted `heldRingsApplied`), before the host registers it (§5). This is the latch the Unreal relay
+actor had until og-input-latency task P5-9 deleted it: it kept the last ring it received while no consumer was bound, and the
+consumer read it when it bound. Two limits:
 - a ring for a sim id the roster has listed before (a character already removed) is dropped and counted `unknownSim`, since a
   server never reuses a sim id (G-07);
 - at most `kRosterMaxEntries` rings are held; a ring for another sim id beyond that is dropped and counted `unknownSim`.
 
-A held ring is not stamped, at arrival or when it is applied: it reached no character's arrival path, as today's unrouted ring
-reaches none.
+A held ring is not stamped, at arrival or when it is applied: it reached no character's arrival path, as the relay actor's unrouted ring
+reached none (until og-input-latency task P5-9).
 
-**No replay when the relay callback is bound.** Today's component calls the relay callback with the current ring when the
-callback is set and the ring's host is linked, and again when a host links after the callback. That replay exists because
-the component's ring lives on a separate replicated actor, whose arrivals before the link find no consumer. Here the channel
+**No replay when the relay callback is bound.** Until og-input-latency task P5-8 the Unreal component called the relay
+callback with the current ring when the callback was set and the ring's host was linked, and again when a host linked after
+the callback. That replay existed because the component's ring lived on a separate replicated actor (deleted by P5-9),
+whose arrivals before the link found no consumer. Here the channel
 owns the ring, every arrival reaches it, and registration's own bind-time read ingests it. The replay's only other effect is
 one call of the arrival path at registration, with a ring that did not arrive then, which adds a relay-probe line and sample
 that is not an arrival; NetSync keeps its bind-time read out of that probe on purpose. The channel does not replay
@@ -174,8 +176,8 @@ In order:
    a sim id the client does not know never advances the filter. It is not held: a correction is sent again at the
    character's next rotation turn.
 3. **The stale filter** (R1; G-02). A tick at or below the newest one delivered for that sim id is dropped and counted
-   (`staleDropped`, `duplicateDropped`). og-net's SimState lane keeps no order between datagrams, and today's replication
-   delivered a property's values in order, so the filter is what keeps order. The filter reads nothing of the correction cache.
+   (`staleDropped`, `duplicateDropped`). og-net's SimState lane keeps no order between datagrams, and the replication it
+   replaced (until og-input-latency task P5-7) delivered a property's values in order, so the filter is what keeps order. The filter reads nothing of the correction cache.
 4. **`[ReceiveCorrectionState] id=<simId> tick=<tick>`** through `log`: today's text, without a severity prefix, so the host's
    route table gives it today's route and level.
 5. **The State stamp**, `ClientReceived`, with og-net's receive time.

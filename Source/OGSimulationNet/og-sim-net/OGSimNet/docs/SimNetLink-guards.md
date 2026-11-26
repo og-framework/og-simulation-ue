@@ -47,8 +47,9 @@ frame's `drain()` above it. Once a world session is attached, the session's step
 
 **The consequence.** A frame drain then runs every consumer the drain reaches (the correction inject, the relay ingest, the
 estimator feed, the tier receipt, the roster with its registrations) on the frame thread while a step runs the same objects on a
-worker, and the lifecycle queue's registrations land in the middle of a step. og-sim-net's in-drain flag catches two drains that
-overlap in time (an `OG_CHECK`); one that does not overlap is caught by nothing and is a data race on every structure the step
+worker, and the lifecycle queue's registrations land in the middle of a step. og-simulation's `SimInbox::drain` catches two drains
+that overlap in time (its one-consumer `OG_CHECK`, `SimInbox-guards.md` G-06; corrected by og-session-runtime task 33: not an
+og-sim-net flag); one that does not overlap is caught by nothing and is a data race on every structure the step
 reads.
 
 **What breaks if it moves.** Nothing at compile time; a smoke stays healthy on most runs.

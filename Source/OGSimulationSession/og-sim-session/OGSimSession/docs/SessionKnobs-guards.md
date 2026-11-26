@@ -13,7 +13,8 @@ task 23: the knob intake left the Unreal session for this engine-free header. Ea
 there with this file's id as their successor. What the compiler checks is not here: the doors' bounds against
 `ClockDilationConfig`'s compiled defaults and the render bracket (four `static_assert`s), the case-insensitive compare's
 ASCII-only folding (a `static_assert`), the og-sim-net server's presence before the floor's publish (an `OG_CHECK`), and, in the
-Unreal adapter, each line's category and level (a `static_assert` in `UESimulationSession.h`).
+Unreal adapter, each line's category and level (a `static_assert` in the game module's `UESessionClockLineRouteTest.cpp` or
+`UESessionKnobsLineRouteTest.cpp`, `UESimulationSession.h` until og-session-runtime task 31).
 
 ---
 
@@ -181,8 +182,9 @@ og-sim-net's server flush (`SimNetServer.h`, through `latencyKnobs::clampRelayRe
 ## G-05 — the resim-trigger policy is applied and proved once, after both role branches
 
 **Tag site:** `SessionKnobs.h`, directly above `if (knobs.hasIniResimTriggerPolicy)`, the first statement of
-`applyResimTriggerPolicy`. The Unreal session calls it once, after both role branches; the "after both role branches" half of
-the first quote below is typed at that call, so it has its own tag there (`UESimulationSession-guards.md` G-24). This entry
+`applyResimTriggerPolicy`. The runtime's `start` calls it once, after both role branches (the Unreal session's `beginPlay` until
+og-session-runtime task 31); the "after both role branches" half of the first quote below is typed at that call, so it has
+its own tag there (`SessionRuntime-guards.md` G-04; `UESimulationSession-guards.md` G-24 until task 31). This entry
 keeps the body's three.
 
 **The prohibition, as it stood in the source:**

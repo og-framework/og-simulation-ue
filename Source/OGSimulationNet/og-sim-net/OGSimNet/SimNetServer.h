@@ -328,6 +328,8 @@ public:
 		m_coordinator.setLogger([this](const char* line) { m_host.log(line); });
 	}
 
+	SimNetServer(HostT& host, TransportT& transport, TimeConfig&& config, size_t correctionBudgetBytes, PolicyT policy = PolicyT{}) = delete;
+
 	SimNetServer(const SimNetServer&) = delete;
 	SimNetServer& operator=(const SimNetServer&) = delete;
 	SimNetServer(SimNetServer&&) = delete;

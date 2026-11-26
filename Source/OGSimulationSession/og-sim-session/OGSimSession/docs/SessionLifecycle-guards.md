@@ -13,7 +13,8 @@ names its old id; those ids are retired there with this file's id as their succe
 here: each door's thread (its first statement, `SessionThreadChecks::checkOp` against `SessionThreads.h`'s table, the drain's
 hooks against the inbox row or, inside the teardown's stopped drain, the stopped-drain row), the role (an `OG_CHECK` in the
 constructor), the port (three concepts with one negative per requirement), and, in the Unreal adapter, each line's category and
-level (a `static_assert` in `UESimulationSession.h`).
+level (a `static_assert` in the game module's `UESessionClockLineRouteTest.cpp` or
+`UESessionKnobsLineRouteTest.cpp`, `UESimulationSession.h` until og-session-runtime task 31).
 
 ---
 

@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: beginStoppedDrain -- replaced by og-session-runtime task 31 with StoppedDrainScope (section 8); kept in the history -->
+<!-- lint-external-ref: endStoppedDrain -- replaced by og-session-runtime task 31 with StoppedDrainScope (section 8); kept in the history -->
 # `SessionThreads.h` — rationale
 
 `SessionThreads.h` holds the session runtime's per-role thread table and its checks (og-session-runtime design §3.4, the
@@ -11,11 +13,13 @@ SessionThreads component; lead ruling L8: one table per role, here and nowhere e
 
 ## §1 What it is for
 
-Today the Unreal session marks each function's thread with a suffix (`_GameThread`, `_Step`, `_Runner`, `_Owner`) and checks
-some of them with `checkf(IsInGameThread())`; the table of who calls what on which thread is prose (§7, moved here from
-OGSimulationUnreal's docs). The runtime replaces both with data: one row per operation and role, and a check each entry
-point calls with its operation, which fails with an `OG_CHECK` on any other thread. og-session-runtime task 22 added the table
-and the check with no caller; the runtime's entry points call `checkOp` as they move here (tasks 23 to 31).
+Until og-session-runtime task 22 the Unreal session marked each function's thread with a suffix (`_GameThread`, `_Step`,
+`_Runner`, `_Owner`) and checked some of them with `checkf(IsInGameThread())`; the table of who calls what on which thread
+was prose (§7, moved here from OGSimulationUnreal's docs). The runtime replaces both with data: one row per operation and
+role, and a check each entry point calls with its operation, which fails with an `OG_CHECK` on any other thread. Task 22
+added the table and the check with no caller; tasks 23 to 31 moved the session's entry points into og-sim-session, and each
+component's doors call `checkOp` with their operation (each component's rationale names its doors and rows). The Unreal
+adapter that remains (`UESimulationSession.h`) keeps the suffixes on its own game-thread members.
 
 ## §2 The threads: `SessionThread`
 
@@ -88,6 +92,12 @@ the frame thread's id. `isOn(thread)` answers for the calling thread:
 - On a client, `Step`: a step of this role is running on the calling thread (`isStepRunningOnThisThread`, the driver's
   `StepScope` around each step and around the publish after the batch). `NetIo`: neither the frame thread nor a step.
 - With no context, or a context configured for the other role, `Step` and `NetIo` never pass: only the frame rows can.
+- **The exact `NetIo` row** (og-session-runtime task 31): on a client, once `setNetIoThread(id)` has been given a thread,
+  `NetIo` passes on that thread only, and the context is not asked. The runtime calls it from `start` when the engine fills
+  `SessionStart::netIoThread` (`SessionRuntime-rationale.md`); an engine that does not know og-net's I/O thread leaves it
+  empty and keeps the reading above ("neither the frame thread nor a step"). Unreal's adapter leaves it empty today:
+  `UESimulationSession::beginPlay` sets no `netIoThread`. Test:
+  `SessionThreads.WithOgNetsIoThreadKnownAPredictionNetIoOpPassesOnThatThreadAlone`.
 
 `isAllowed(op)` is `isOn` of the operation's row, and false for an operation the role does not perform and for `Count`.
 **`checkOp(op)` is `OG_CHECK(isAllowed(op))`**: on the wrong thread it fails with
@@ -150,6 +160,11 @@ item 3.)
 > `UESimulationSession-rationale.md` §24, where task 16 wrote it, so that the thread table is kept in one place. It
 > describes today's Unreal session, read from the code after task 15; the runtime takes over its rows as tasks 23 to 31
 > move the session here. Section numbers in it (§19, §23) are that file's, and "this table" is this section.
+>
+> *Since og-session-runtime task 31* the code it was read from is og-sim-session's (`SessionRuntime` and its components); the
+> Unreal session is the thin adapter. The section stays the record of task 16's reading, under the names the code had then;
+> the checked table is §3's, in `SessionThreads.h`. Where a row names a member that moved, the component's rationale names
+> its successor.
 
 The one table of who calls what on which thread, for both roles, read from the code after og-session-runtime task 15
 (`UESimulationSession.h`, `BrawlerSessionHooksUImpl.h`, og-simulation's `SimulationTickDriver.h`, `TickDriverStepHooks.h`
@@ -239,3 +254,13 @@ The tick driver keeps its own (the occupancy ring, the tick offset, the step-cos
 `ThreadingCrossings.md`'s J-rows). Each entry point's thread is checked where the code can check it: the tick driver's
 `TickDriverThreadContext` `OG_CHECK`s, and the session's and lanes' `checkf(IsInGameThread())` and `checkf(!IsInGameThread())`.
 Design §3.4 makes every row an `OG_CHECK` (task 22).
+
+## §8 `StoppedDrainScope` (og-session-runtime task 31)
+
+One scope for a stopped drain's flag, so the clock's and the lifecycle's flags are set and cleared the same way. The
+constructor checks `SessionOp::DrainStopped` and stores `true` in the flag it is given; the destructor checks the same
+operation again and stores `false`. Both stores are relaxed: the flag is read on the same thread, by the receipt doors
+that the drain inside the scope reaches (`SessionClock-rationale.md` §3). It is neither copyable nor assignable, so a
+scope cannot outlive its drain by a copy. Its users: the session clock's `stoppedDrain()` and `SessionLifecycle`'s
+teardown drain (task 31 replaced the clock's `beginStoppedDrain`/`endStoppedDrain` pair and the lifecycle's own flag
+handling with it).

@@ -86,6 +86,12 @@ is the module's generated definitions header.
   the root's `Source/OGSimulationTests/SessionKnobsFormatParityTest.cpp` includes it (the format parity).
   `SessionClock.h` includes og-sim-net's `SimNetClock.h` (the SimClock client's counts on the window line) and `SimNetServer.h`
   (`kSimNetWindowSeconds`, the window's length, which only that header declares).
+  **Since task 31** the Unreal side includes the module through four headers only: `UESimulationSession.h` and
+  `TickDriverBackendUImpl.h` include `SessionRuntime.h` (which includes the components above), `TickDriverBackendUImpl.h` and
+  `UESessionEngine.h` include `SessionTypes.h`, and `UEConfigSource.h` and `UESessionEngine.h` include `SessionEngine.h`.
+  `OGBrawlerUnreal`'s two route tests (`UESessionClockLineRouteTest.cpp`, `UESessionKnobsLineRouteTest.cpp`) include
+  `SessionClock.h` and `SessionKnobs.h`, and the root's `SessionKnobsFormatParityTest.cpp` includes `SessionClock.h`,
+  `SessionKnobs.h`, `SessionLifecycle.h`, `SessionNetHooks.h` and `SessionRuntime.h`. The lines above are each task's record.
 
 ## §5 The tests, in `OGSimulationTests`
 

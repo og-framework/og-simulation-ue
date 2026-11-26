@@ -13,8 +13,9 @@ task 24: the clock routing and the schedule left the Unreal session for this eng
 those ids are retired there with this file's id as their successor. What the compiler or a check holds is not here: each door's
 thread (its first statement, `SessionThreadChecks::checkOp`, an `OG_CHECK` against `SessionThreads.h`'s table), the published
 server tick's start time being there on an authority (an `OG_CHECK` in `publishServerTick`), the ports (three concepts with
-their negatives), and, in the Unreal adapter, each line's category and level (a `static_assert` in `UESimulationSession.h`) and
-the clock's destruction before the manager (a `compositionContractsHold()` row there).
+their negatives), and, in the Unreal adapter, each line's category and level (a `static_assert` in the game module's `UESessionClockLineRouteTest.cpp` or
+`UESessionKnobsLineRouteTest.cpp`, `UESimulationSession.h` until og-session-runtime task 31), and the clock's destruction
+before the manager (a `compositionContractsHold()` row in `SessionRuntime.h` since task 31).
 
 ---
 
@@ -55,11 +56,12 @@ og-ue-simulationcomponentandmanagersplit task 25.*
 
 **What breaks if the edit is made.** Floor `0` is the documented "scheduled regime OFF" mode, and the function is called
 from every intake point of the floor: the ini override at start-up (og-sim-session's `applySessionKnobs`, which the Unreal
-session's `beginPlay` hands a lambda that calls this function) and the floor's receipt (`onRelayFloor`). An assert here would
+session's `beginPlay` handed a lambda that calls this function; since og-session-runtime task 31 `SessionRuntime::start`
+hands it, `SessionRuntime.h`) and the floor's receipt (`onRelayFloor`). An assert here would
 fire on the shipped default configuration. `classifyRelayDelayFloor` (og-simulation's `Network/ConnectionTierTable.h`) never
 flags `0`; this function only reports what that classification says. The same prohibition is guarded inside the body, at the
 classification `switch`, by **G-04**: the two tags sit where the two different wrong edits would be typed (one would change the
-function's contract, the other would assert in its body).
+function's contract, the other would assert in its body): one rule at two sites, see G-04's "One rule, two sites".
 
 *R0, task 25:* the moved text said "both intake points — the ini override and the `OnRep`". The floor listener had two
 entry points then, the change and the replay (`onRelayDelayFloorReplayed`), and both reached this function through
@@ -126,6 +128,12 @@ never flags it.
 
 **The same prohibition, at the declaration:** G-02 carries it at the declaration of `logRelayDelayFloorAdvisory`.
 
+**One rule, two sites (inherited).** G-02 and G-04 guard one rule, "the advisory never asserts", at two sites: the
+declaration (an edit to the function's contract) and the classification `switch` (an assert typed in its body). The pair
+came from the Unreal session as two ids (`UESimulationSession-guards.md` G-04 and G-09, retired into these by
+og-session-runtime task 24) and keeps two, because each tag is in view of a different wrong edit. A change to the rule
+changes both entries.
+
 *R0, task 25:* verified against `classifyRelayDelayFloor` (`<= 0` is `None`, uniform-D is tested first, then `== 1`).
 *R0, og-session-runtime task 24:* re-read on the tree (`ConnectionTierTable.h`): the same three tests in the same order.
 
@@ -163,7 +171,8 @@ both return `FPlatformTime::Seconds()`; the client's `[SimHost.Frame]` line read
 smoke (`T8_shadow`), the server's `timeBase=monotonic`.
 
 *R0, og-session-runtime task 24:* verified on the tree: `FOGNetUnrealHost::nowSeconds` (OGNetUnreal's `OGNetUnrealHost.h`) and
-`UESessionClockEngine::nowSeconds` (`UESimulationSession.h`) both return `FPlatformTime::Seconds()`, which was the line this tag
+`UESessionClockEngine::nowSeconds` (`UESimulationSession.h` then, `TickDriverBackendUImpl.h` since og-session-runtime
+task 31) both return `FPlatformTime::Seconds()`, which was the line this tag
 marked before the move.
 
 *Was `UESimulationSession-guards.md` G-38 (moved by og-session-runtime task 24; og-time-dilation task 8).*

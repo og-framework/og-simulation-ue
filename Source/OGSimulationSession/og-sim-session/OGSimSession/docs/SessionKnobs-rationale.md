@@ -27,8 +27,12 @@ logging with `UE_LOG(LogOGNet, …)`. Task 23 moved it in two commits (TeamDescr
   `UE_LOG` became one formatted line handed to `logRouted` (§6); the `checkf` on the og-sim-net server became an `OG_CHECK`.
   The statements' order, the keys, the clamps, the role rules and the lines are unchanged, which the tests prove (§8).
 
-The Unreal adapter's side is three calls in `beginPlay` (`UESimulationSession-rationale.md` §9.8), `UEConfigSource` and
-`UESessionLogSink` (`UEConfigSource-rationale.md`, `UESimulationLogRoutes-rationale.md`).
+Since og-session-runtime task 31 the calls are the runtime's: `SessionRuntime::start` reads the knobs once
+(`readSessionKnobs`) and applies them (`applySessionKnobs` on the authority, then `applyResimTriggerPolicy` after both role
+branches, then `applyLatencyKnobs`; `SessionRuntime-rationale.md`), logging through the runtime's clock engine. The Unreal
+adapter's side is the `ConfigSource` it passes to `start` (`UEConfigSource`, `UEConfigSource-rationale.md`) and the log
+routes the lines reach (`UESimulationLogRoutes-rationale.md`); `UESessionLogSink` is the routes' `SessionLogSink`, which the
+game's `UESessionKnobsLineRouteTest.cpp` drives. Until task 31 the calls were three in the Unreal session's `beginPlay`.
 
 ## §2 The session knobs
 

@@ -22,19 +22,17 @@ task P5-32 also the hitch's delay cvar and its marker line; rationale §10), sha
 
 **If this file and the source disagree, the source is authoritative and this file is stale.**
 
-The member order is checked by the compiler, not here: `compositionContractsHold()` asserts the construction chain and
-the destruction-order rows (since task 25 also the tier consumer's, the clock's since og-session-runtime task 24, and since og-input-latency task P5-7 og-sim-net's
-server's, below the manager and its host; the session's own detached lanes until og-session-runtime task 14), and the constructor asserts `compositionContractsHold()`
-(rationale §2). So is the shape of `getTimeConfigPtr` (a pointer, rationale §8), so is the owner type, og-sim-net's one
-channel for both roles (since P5-7; the session's being both reception sinks before, rationale §16.7), so is the order of the
-client's og-net bind after the manager and the tier consumer (a `checkf` in `beginClientSimNet` since P5-7, which replaced
-G-07), and so is PROBE A's window length against the resim-gate probe's (a `static_assert` in
-`onFrameStepsDue_Step`, rationale §9.9).
-So are the game's hooks: each sequence that calls them checks them first (`beginPlay`, rationale §11.1; `tryRegister` and
-`unregisterFromNewFramework`, rationale §12.5), and since task 28 `compositionContractsHold()` asserts that no session member
-shares a hook's name (rationale §12.5). Since task 34 it also asserts that each of the five core-system aliases names the
-composition's own type (rationale §13). Since task 35 it also asserts that the two executors, `IntegrationExec` and
-`SystemsExec`, name the composition's own types, and that `EngineTraits` models `PhysicsEngineTraits` (rationale §14).
+**What the compiler checks instead (og-session-runtime task 33, the adapter task 31 left).** The constructor asserts
+`adapterContractsHold()`: the member order (the latency diagnostics, the frame host and the presentation before the runtime,
+the runtime before the bodies), the runtime's channel type, the game's six instance and static hooks
+(`ueSimulationSessionHookNames::GameInstanceHooks`) and that no member shares a hook's name
+(`ueSimulationSessionHookNames::SharesNoHookName`); `beginPlay` `checkf`s the step length against the tick rate, and
+`findDriverSimNetLanes` the lanes' role (rationale §0.1, §0.2). The composition's order, the executors, the owner
+traits and the client's bind order are the runtime's (`SessionRuntime.h`'s `compositionContractsHold()`,
+`SessionRuntime-guards.md`). Until task 31 this paragraph listed them as this class's (`compositionContractsHold()` here).
+
+Four entries are live (G-02, G-10, G-11, G-30); §R lists every retired id, and `UESimulationSession-rationale.md` §R
+lists the successors of those tasks 23 to 31 retired.
 
 ---
 
@@ -44,6 +42,10 @@ composition's own type (rationale §13). Since task 35 it also asserts that the 
 **Tag site:** `UESimulationSession.h`, directly above the `return vizState->getState().template get<SliceT>();` statement in
 `getVizSlice` (until og-input-latency task P5-16, the `return m_storage.template get<Simulatable>(id).getVizState()...`
 statement).
+
+**Today (og-session-runtime task 33).** The tagged statement reads the runtime's held display:
+`m_runtime.findDisplayVizState(id)` (og-sim-session's `SessionDisplay`, since task 25; `SessionDisplay-rationale.md` §4),
+and the prohibition below holds unchanged: never the storage.
 
 **Since og-input-latency task P5-16.** The prohibition now reads: `getVizSlice` answers from the game-thread display copy
 (`findDisplayVizState`, the held display snapshot's state with the rendered poses overlaid, `UESimulationSession-rationale.md`
@@ -88,6 +90,13 @@ copy in both configurations.
 **Tag site:** `UESimulationSession.h`, the first statement of `~UESimulationSession` (the `unregisterInstance()` call; the
 `s_instances[0]` test until og-session-runtime task 16b).
 
+**Today (og-session-runtime task 33).** The destructor is two statements: `unregisterInstance()`, which clears this
+session's slot in `UESessionRegistry`'s static tables (`s_instances`, `s_started`; `UESessionRefusal.h`), and
+`m_runtime.detachLink()`, which unbinds the runtime from the og-net lanes, a plain C++ object the driver owns. Neither
+reaches a `UObject`. The prohibition is unchanged; where the text below says `detachFromSimNetLanes()`, read
+`m_runtime.detachLink()` (task 31), and where it says `endPlay` unbinds, read the runtime's `stop` (`SessionRuntime-rationale.md`
+§3), which `endPlay` calls.
+
 **The prohibition.** ⛔ Do not call `GetWorld()` on the owner, or any other method that reaches the owner actor's outer,
 its world or another `UObject`, from the destructor. Unbinding from engine objects belongs in `endPlay`, which the owner's
 `EndPlay` calls for every world teardown while the world still exists (until og-session-runtime tasks 3 and 5 the former
@@ -123,6 +132,15 @@ body this was, became the session's.*
 ## G-11 — the transport seam: a transport function reaches only its allow-list (deny by default)
 
 **Tag site:** `UESimulationSession.h`, directly above `instanceFor`, the first declaration of the transport section.
+
+**Today (og-session-runtime task 33): the seam's functions have left this class.** Tasks 23 to 31 moved every function in
+the table below into og-sim-session (the clock and the tier and floor receipts to `SessionClock`, the knobs to
+`SessionKnobs`, the frame probe and the og-net hookup to `SessionRuntime`, the reception to `SessionNetHooks`), and task 31
+deleted `setOnTimingInfoReceivedCallback`, `getTimeConfigPtr` and `getReceptionCoordinator` (no caller). What stays at the tag
+is `instanceFor`, which reaches only the registry (`UESessionRegistry::instanceFor`), and the destructor (G-10). The
+prohibition still binds those two: they reach no typed session state. The table and the paragraphs below are the entry's
+record, under the names the code had. The tag and this entry could retire (a code change: the tag goes with it); task 33
+leaves that to task 33b.
 
 **The prohibition.** ⛔ Until the type-free transport (M4, deferred) lands, a transport function reaches typed state only
 through what that transport's binding would take (manager design §9): the manager's session controls (`runsPrediction`,
@@ -218,8 +236,15 @@ an allowance the body stopped using). The script is the reviewer's tool, not a b
 ## G-30 — the pawn's unregistration returns at once for an id already unregistered by a roster Remove or the lanes' stop
 
 **Tag site:** `UESimulationSession.h`, directly above `if (m_simUnregisteredIds.erase(id) != 0u) return;`, the first statement
-of `unregisterFromNewFramework` after its hook check (og-input-latency task P5-7) and its no-session return
-(og-session-runtime task 11, `UESimulationSession-rationale.md` §23).
+of `unregisterFromNewFramework` after its no-session return (og-session-runtime task 11, `UESimulationSession-rationale.md`
+§23; the hook check that preceded it is the compile-time `GameInstanceHooks` assertion since task 31).
+
+**Today (og-session-runtime task 33).** The ids are recorded by `onPredictionOutcome_GameThread` (a client's roster Remove,
+the outcome `RosterRemoved`), `teardownComponents` (a client's teardown) and `onLinkStopping` (the link's stop; it was
+`onSimNetLanesStopping`); `forgetComponents`, which the runtime's `stop` calls through the port, clears the set with the
+maps (it was `endPlay`'s clear under G-21, now `SessionRuntime-guards.md` G-08's list), and the same `endPlay` clears the
+registry slot after `stop`, so no `instanceFor` lookup reaches this function for a cleared id. The prohibition is
+unchanged.
 
 **The prohibition.** ⛔ Keep this early return, and keep it first (after the no-session return, which runs only in a
 world that registered nothing). A client's roster Remove of a registered id

@@ -127,14 +127,16 @@ publish reads after each batch, and logs `[ConnectionTier] applied client input 
 `SimNetServer::publishTier`. The client never computes a tier and never samples the round trip for tier purposes, which is what
 makes a client/server tier disagreement impossible by construction rather than merely unlikely.
 
-**The tier consumer is emplaced on both roles** (`UESimulationSession-guards.md` G-06, at the Unreal session's two
-`m_clock->beginTierConsumer()` calls). A dedicated server never reads the value it publishes there, but a listen-server host
+**The tier consumer is emplaced on both roles** (`SessionRuntime-guards.md` G-03, at the runtime's one
+`m_clock->beginTierConsumer()` call after the authority branch in `start`; `UESimulationSession-guards.md` G-06, at the Unreal
+session's two calls, until og-session-runtime task 31). A dedicated server never reads the value it publishes there, but a listen-server host
 did: its local player's input delay came from that cache, and an empty cache would leave the atomic at `0` where the no-tier
 fallback is correct. No tier ever reaches an authority world, so the authority cache stays at that fallback.
 
 **The tier consumer is destroyed before the manager.** It borrows the manager's `TimeConfig`. It is the clock's member, the
-clock is declared after the Unreal session's `m_manager`, and a `compositionContractsHold()` row there asserts that order;
-`endPlay` also resets it while the manager still exists (`endTierConsumer`, `UESimulationSession-guards.md` G-21).
+clock is declared after the runtime's `m_manager` (the Unreal session's until task 31), and a `compositionContractsHold()` row in
+`SessionRuntime.h` asserts that order; `stop` also resets it while the manager still exists (`endTierConsumer`,
+`SessionRuntime-guards.md` G-08; the Unreal `endPlay`'s G-21 until task 31).
 
 ### 4.1 Both receipts pay the change, either sign (og-input-latency P6-2)
 
@@ -193,7 +195,8 @@ and `kConnectionTierChange` with those values (the task's smokes print `[RelayDe
 is og-simulation's `ClientPredictionClock` member; the shipped tier table is `{1, 2, 3, 4}` (`TimeConfig.h`). **Corrected:** the
 moved text said the last-published delay "is kept on the session"; it is the clock's member now. It also said the listen-server
 host reads the authority's cache: listen servers start no session since og-session-runtime task 14, so the authority's consumer
-has no reader today; the guard (`UESimulationSession-guards.md` G-06) keeps the emplace, as that entry says. The "pull" paragraph
+has no reader today; the guard (`UESimulationSession-guards.md` G-06 then, `SessionRuntime-guards.md` G-03 since task 31) keeps
+the emplace, as that entry says. The "pull" paragraph
 on the retired G-07 was history of the relay actors (deleted by P5-9) and was left out.
 
 ## §5 The clock feeds and the window line
@@ -351,7 +354,9 @@ Each `UE_LOG(LogOGNet, <Level>, …)` of the moved code is one format in `sessio
 `RouteOGLevelLine` reads the token for the level, routes the body by its tag through the route table and prints the body
 without the token (`UESimulationLogRoutes-rationale.md` §2.1). The route table's adapter block gained `[ConnectionTier]`,
 `[ClockSource.Window]`, `[Dilation.Window]` and `[Dilation.Authority]` (`LogOGNet`, plain level `Log`) with task 24;
-`[RelayDelayFloor]` was task 23's. A `static_assert` in `UESimulationSession.h` checks each format's category and level.
+`[RelayDelayFloor]` was task 23's. A `static_assert` checks each format's category and level (in the game module's
+`UESessionClockLineRouteTest.cpp` and `UESessionKnobsLineRouteTest.cpp` since og-session-runtime task 31; in
+`UESimulationSession.h` before).
 
 | format | level | tag |
 |---|---|---|

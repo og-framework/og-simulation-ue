@@ -109,10 +109,12 @@ fill returns instead of writing past the array, as `fillSimulationDisplaySnapsho
 
 The publisher's channel holds four snapshots, each up to `kMaxSimulatables` entries with both relayed rings by value, so the
 display holds it, the visualization copies and the presentation buffer through `std::unique_ptr`s and stays a few pointers
-large. The Unreal session holds one `std::optional<SessionDisplay>`, built beside the clock in `beginPlay` on either role and
-declared after the clock, so it is destroyed before the clock (whose display-tier buffer it reads) and before the storage, the
-two peers and the manager; a `static_assert` in `UESimulationSession.h` holds that order. Before the first `beginPlay` the
-Unreal accessors answer as before the first publish.
+large. The runtime holds one `std::optional<SessionDisplay>` (`SessionRuntime::m_display`; the Unreal session's until
+og-session-runtime task 31), built beside the clock in `start` on either role and declared after the clock, so it is
+destroyed before the clock (whose display-tier buffer it reads) and before the storage, the two peers and the manager; a
+`static_assert` in `SessionRuntime.h`'s `compositionContractsHold()` holds that order. Before the first `start` the
+runtime's display accessors (`getDisplaySnapshot`, `findDisplayEntry`, `findDisplayVizState`) answer as before the first
+publish: no display, so null.
 
 ## §7 The tests
 

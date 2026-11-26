@@ -152,7 +152,8 @@ does. The decision-equivalence test drives that sink through the coordinator dir
 
 - **`deliverRemoteInput(id, captureTick, input)`** and the **release callback** both deliver to the channel of that sim id
   (`deliverDelayedRemoteInput`). The release callback returns false when there is no such channel, and the coordinator then
-  drops the claim, as it does for a gone engine component today.
+  drops the claim, as it did for a gone engine component under the Unreal session's own reception (until og-input-latency
+  task P5-7).
 - **`relayRemoteInput(id, captureTick, dA, input)`** stages into the character's `RelayRingStager`. Nothing is sent here. The
   session flushes the bundle's character's stager as soon as the coordinator returns (§9 step 1, §16).
 - **`sendConnectionTierToOwningClient(id, tier)`** makes the session the coordinator's `ConnectionTierSink`. It looks up the
@@ -181,8 +182,8 @@ the frame-locked host called after its steps; its body moved into `afterInlineBa
 
 - `publishTier(conn, tier)` sends `ConnectionTier` on Control to that connection only, and only when the value differs from
   the last one sent to it. Two local players on one wire are two owners to the coordinator, and each publishes on its own
-  tier change; the session sends the wire's value once. (Today two components write one per-wire relay property, which also
-  replicates once.)
+  tier change; the session sends the wire's value once. (Until og-input-latency task P5-9 two components wrote one per-wire relay
+  property, which also replicated once.)
 - **The first tier is always sent, tier 0 included** (og-input-latency P6-2). A connection that was never sent a tier runs the
   no-tier fallback on the client (og-sim's `ReplicatedTierConsumer`, the worst tier's delay), not tier 0, so a first tier 0 is
   a change the client must hear: below a relay delay floor of 4 it lowers the client's delay, which the client pays as a

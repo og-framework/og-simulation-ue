@@ -72,6 +72,33 @@ two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` →
 
 ---
 
+## §0 The class today (og-session-runtime task 31; written by task 33)
+
+`TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>` is the Unreal session's bodies: the traits'
+`Bodies` (`UESessionRuntimeTraits`), held by `UESimulationSession` as `m_bodies` over the runtime and the presentation's
+render-target table. `TickDriverBackendComposition` states what the three parameters must model: the engine traits and
+binding concepts, a tick-driver world host for the binding's simulatable, and the binding's capsule check.
+
+- **Keys.** `slotKeyFor(owner)` is the pawn's address (the physics slot's key); `entityKeyOf(component)` the component's
+  address (the lifecycle's key); `componentOf` and `bodyKeyOf` go back from an entity key.
+- **The register request**, `requestFor(id, component, withEntityFacts)`: the id and the entity key, and on an authority
+  the pawn's facts (its debug name, its owner connection's og-net id, its local player slot).
+- **The world's config**, `worldConfig(isAuthority, staticData)`, which the runtime's world build reads through the traits:
+  the role, never inline, the gravity (G-06), the contact counts and the mapped categories from the engine binding, and the
+  engine's log.
+- **The bodies.** `makeRequest` (the bodies' request, on the frame thread, with the component's static data; it checks the
+  owner is a `Character` and its capsule), `createBodies_GameThread` (the runtime's `acquireAndBind`), `registerVizVolume`
+  (the runtime's), and the registration hooks: a client's `onRegistered_GameThread` / `onUnregistered_GameThread` (the
+  runtime's `bodiesRegistered`, `forgetBodies` and `releaseBodySlot`, and the render target), an authority's
+  `onRegisteredHost_GameThread` / `onUnregisteredHost_GameThread` (the render target only).
+- **The slot request**, `callWithSlotRequest`: the game binding's, given the runtime's `physicsSlotFor` and
+  `recordAuthoritativeSlot` for the pawn's key.
+
+The header also holds `UESessionClockEngine` (the session clock's engine: the log routes and `FPlatformTime::Seconds()`)
+and `UESessionRuntimeTraits<TraitsT>` (the runtime's Unreal parts, `UESimulationSession-rationale.md` §0.1), and the
+hook-name concepts `ueSimulationSessionHookNames`. The world build, the stepping and the stop are the runtime's; the
+record below is the class as it was.
+
 ## §1 Why this class exists
 
 The user asked whether `AOGBrawlerSimulationManager` could be split so that the Chaos and Jolt backends are more

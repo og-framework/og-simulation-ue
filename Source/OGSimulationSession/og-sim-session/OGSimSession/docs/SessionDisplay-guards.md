@@ -9,8 +9,8 @@ than reused. The reasoning lives in `SessionDisplay-rationale.md`.
 What the compiler or a check holds is not here: each door's thread (its first statement, `SessionThreadChecks::checkOp`, an
 `OG_CHECK` against `SessionThreads.h`'s table), the role of the two publishes (an `OG_CHECK` each), the presentation's entry count
 (an `OG_CHECK`), that the overlay writes the display's own copy and never the published snapshot (the entry is `const`), the
-ports (two concepts with their negatives), and, in the Unreal adapter, the display's destruction before the members it reads (a
-`static_assert` in `UESimulationSession.h`).
+ports (two concepts with their negatives), and the display's destruction before the members it reads (a `static_assert` in
+`SessionRuntime.h`'s `compositionContractsHold()` since og-session-runtime task 31; in `UESimulationSession.h` before).
 
 ---
 

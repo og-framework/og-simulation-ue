@@ -89,8 +89,8 @@ frame, the step and the runner, and they check nothing.
 `TickDriverSampleGame`, `TickDriverReceiveGame`, `TickDriverDisplayGame` and `TickDriverIdleGame` are asserted at the end of the
 header over a reference host, with the reasons the brawler binding's four `static_assert`s gave (each optional hook is called
 only under `if constexpr`, so a missing one compiles and silently does nothing; `idleUntil` is the authority loop's
-requirement). The Unreal session asserts the four again on the type its backend holds (`UESimulationSession.h`,
-`compositionContractsHold`).
+requirement). The runtime asserts the four again on the type its tick backend holds (`SessionRuntime.h`,
+`compositionContractsHold`, since og-session-runtime task 31; the Unreal session's before).
 
 ## §6 Tests
 

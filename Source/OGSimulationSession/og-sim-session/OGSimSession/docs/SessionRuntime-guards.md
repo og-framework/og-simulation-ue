@@ -22,7 +22,7 @@ site).
 
 **Moved by og-session-runtime task 31 (2026-11-26)** from `UESimulationSession-guards.md` G-01, with the code it marks. **Tag site:** `SessionRuntime.h`, directly above `std::optional<SystemsExec> m_systemsExec;`. Its emplace site is `start`'s configuration, `Game::emplaceSystems(m_systemsExec, *m_physAdapter, *m_queryAdapter)`, once for both roles, between the integration layer's `emplace` and the manager's. **R0 (task 31):** the two role branches became one configuration with role tests; the order integration, systems, manager holds in it. The text below is the entry as it was; where it names the Unreal session's members, read the runtime's (the same names).
 
-**Tag site:** `UESimulationSession.h`, directly above `std::optional<SystemsExec> m_systemsExec;`. The two emplace sites
+*Before og-session-runtime task 31 the tag stood in* `UESimulationSession.h`, directly above `std::optional<SystemsExec> m_systemsExec;`. The two emplace sites
 it governs are the game's hook `Game::emplaceSystems(m_systemsExec, *m_physAdapter, *m_queryAdapter)`, called once per role
 branch of `beginPlay` (since og-ue-simulationcomponentandmanagersplit task 27b; the owner's `BeginPlay` before), each between
 the integration layer's `emplace` and the manager's. The session hands the hook the two adapters; the hook constructs the
@@ -61,7 +61,7 @@ brawler's type names replaced by the session's and the R0 line above.*
 
 **Moved by og-session-runtime task 31 (2026-11-26)** from `UESimulationSession-guards.md` G-23, with the code it marks. **Tag site:** `SessionRuntime.h`, directly above `m_inputResolution.template setNeutralInput<Simulatable>(Game::neutralInput());` in `start`'s configuration, which both roles run before the link is attached. **R0 (task 31):** one statement for both roles now (it was one per branch); both still set it before any registration, which the frame thread can make only after `start` returned. The text below is the entry as it was; where it names the Unreal session's members, read the runtime's (the same names).
 
-**Tag site:** `UESimulationSession.h`, directly above `m_inputResolution.template setNeutralInput<Simulatable>(Game::neutralInput());`
+*Before og-session-runtime task 31 the tag stood in* `UESimulationSession.h`, directly above `m_inputResolution.template setNeutralInput<Simulatable>(Game::neutralInput());`
 on the authority branch of `beginPlay`.
 
 **The prohibition, as it stood in the source:**
@@ -99,7 +99,7 @@ marks: the authority branch's neutral input is the session's own statement in `b
 
 **Moved by og-session-runtime task 31 (2026-11-26)** from `UESimulationSession-guards.md` G-06, with the code it marks. **Tag site:** `SessionRuntime.h`, directly above `m_clock->beginTierConsumer();` in `start`'s configuration (both roles; on an authority after the session knobs, on a client before the link is attached, as the two branches had it). **R0 (task 31):** the authority still emplaces the tier cache; the statement is shared by both roles. The text below is the entry as it was; where it names the Unreal session's members, read the runtime's (the same names).
 
-**Tag site:** `UESimulationSession.h`, directly above the authority branch's `m_clock->beginTierConsumer();` in `beginPlay`
+*Before og-session-runtime task 31 the tag stood in* `UESimulationSession.h`, directly above the authority branch's `m_clock->beginTierConsumer();` in `beginPlay`
 (since task 27b; the clock's member since og-session-runtime task 24). `beginPlay` calls `beginTierConsumer` once in each role branch, at the position of the two statements it
 replaced; the wrong edit, dropping the authority's call or making the call client-only, is typed at that call. Until task
 27b the start-up was the owner's `BeginPlay`, so the tag sat in `beginTierConsumer` above its emplace (task 25's A5); task
@@ -138,7 +138,7 @@ the emplace and the baseline publish moved into `beginTierConsumer`, and the tag
 
 **Moved by og-session-runtime task 31 (2026-11-26)** from `UESimulationSession-guards.md` G-24, with the code it marks. **Tag site:** `SessionRuntime.h`, directly above `applyResimTriggerPolicy(m_clockEngine, *m_manager, sessionKnobs);`, after both roles' configuration. **R0 (task 31):** unchanged: one application, after both roles' statements, with the knob sink now the runtime's clock engine (the same route, RouteOGLevelLine, on Unreal). The text below is the entry as it was; where it names the Unreal session's members, read the runtime's (the same names).
 
-**Tag site:** `UESimulationSession.h`, directly above `ogsession::applyResimTriggerPolicy(knobLog, *m_manager, sessionKnobs);`
+*Before og-session-runtime task 31 the tag stood in* `UESimulationSession.h`, directly above `ogsession::applyResimTriggerPolicy(knobLog, *m_manager, sessionKnobs);`
 in `beginPlay`, the first statement after the role branches (the session's own member until og-session-runtime task 23).
 
 **The prohibition, as it stood in the source** (the first of the four quotes G-17 carried; G-17 is og-sim-session's
@@ -167,7 +167,8 @@ og-sim-session with its guard (`SessionKnobs-guards.md` G-05).
 
 *Was `OGBrawlerSimulationManager-guards.md` G-80; moved here by og-simulationscheduler-withjolt task 83, when the Jolt host left the UImpl. Only its site and its cross-references changed.*
 
-**Site:** `m_tickBackend.stop();` in `onEndPlayBegin`, after the frame host's tick functions are unregistered. *Moved
+*Before og-session-runtime task 31 the site was* `m_tickBackend.stop();` in `onEndPlayBegin` (of `TickDriverBackendUImpl`), after the
+frame host's tick functions are unregistered (today: `stopStepping`, the first tag site above). *Moved
 by og-tickdriver task 15d (2026-10-18): the site was `m_tickDriver->stop();` inside `if (m_tickDriver.has_value())`;
 the tick driver is og-simulation's `SimulationTickBackend`'s member since then, and its `stop()` makes the same call
 under the same condition. The prohibition and its id are unchanged.* The session's `endPlay` calls `onEndPlayBegin` as its first
@@ -179,11 +180,11 @@ the blocking step task. The prohibition is unchanged.*
 **The prohibition** (og-simulationscheduler-withjolt task 54, design §9.1). ⛔ Do not move any
 `EndPlay` statement above this wait, and do not drop it. The order is: unregister the two tick
 functions (so no new step is dispatched), wait for the step task dispatched in this and earlier frames,
-then everything else (`UESimulationSession-guards.md` G-21's resets, the listener unregistration, the post-tick-flush unbind).
-The "do not move any statement above" half is typed in `UESimulationSession::endPlay`, above its
-`m_physicsBackend.onEndPlayBegin();`, and is guarded there: `UESimulationSession-guards.md` G-20 (the brawler's
-`OGBrawlerSimulationManager-guards.md` G-85 and G-64 until og-ue-simulationcomponentandmanagersplit task 27a). This entry's tag
-guards the wait itself (dropping it, or moving a statement above it inside `onEndPlayBegin`).
+then everything else (G-08's resets, the link's detach, the components' teardown). The "do not move any statement above"
+half is typed in `stop`, above its `stopStepping();`, and is guarded there: G-07 (`UESimulationSession-guards.md` G-20 until
+og-session-runtime task 31; the brawler's `OGBrawlerSimulationManager-guards.md` G-85 and G-64 until
+og-ue-simulationcomponentandmanagersplit task 27a). This entry's tag guards the wait itself (dropping it, or moving a
+statement above it inside `stopStepping`).
 
 **The consequence.** On a worker client the frame's step task runs on another thread through the rest
 of the frame. A teardown above the wait resets the coordinator or the tier cache, or unbinds what the
@@ -214,21 +215,17 @@ test stopped on `Assertion failed: (!m_stepping)` at the attach.
 
 ---
 
-## G-07 — `m_physicsBackend.onEndPlayBegin()` stays the first statement of `endPlay`: nothing moves above it
+## G-07 — `stopStepping()` stays the first statement of `stop`: nothing moves above it
 
-**Moved by og-session-runtime task 31 (2026-11-26)** from `UESimulationSession-guards.md` G-20, with the code it marks. **Tag site:** `SessionRuntime.h`, directly above `stopStepping();`, the first statement of `stop` (which the Unreal session's `endPlay` calls first). **R0 (task 31):** `m_physicsBackend.onEndPlayBegin()` is `stopStepping()` now: the frame host's tick functions, the runner's join, the tick backend's stop, in that order; nothing moved above it. The text below is the entry as it was; where it names the Unreal session's members, read the runtime's (the same names).
+**Moved by og-session-runtime task 31 (2026-11-26)** from `UESimulationSession-guards.md` G-20, with the code it marks. **Tag site:** `SessionRuntime.h`, directly above `stopStepping();`, the first statement of `stop` (which the Unreal session's `endPlay` calls first). **R0 (task 31):** `m_physicsBackend.onEndPlayBegin()` is `stopStepping()` now: the frame host's tick functions, the runner's join, the tick backend's stop, in that order; nothing moved above it. The text below names the runtime's members (task 33 rewrote it from the entry as it was, which named the Unreal session's
+`endPlay` and `m_physicsBackend.onEndPlayBegin()`; the second tag-site line that named them is gone).
 
-**Tag site:** `UESimulationSession.h`, directly above `m_physicsBackend.onEndPlayBegin();`, the first statement of `endPlay`.
-
-**The prohibition.** ⛔ Do not move any `endPlay` statement above `m_physicsBackend.onEndPlayBegin()`, do not add one above
-it, and do not drop the call. Everything else in `endPlay` (the og-net unbind, G-21's resets, the static instance table,
-the latency member's `end` with its post-tick-flush unbind; the backend's world-teardown entry point until og-session-runtime
-task 5) runs after it. The rule is the same for every backend:
-- on a driver-scheduled backend (the tick-driver backend, `TickDriverBackendUImpl`), `onEndPlayBegin` unregisters the
-  frame host's two tick functions and waits for every outstanding step task (`TickDriverBackendUImpl-guards.md` G-01);
-- a backend whose `onEndPlayBegin` has nothing to wait for may leave it empty (the former self-scheduled Chaos host's was,
-  until og-session-runtime task 3 removed it); a teardown of such a backend that must run first belongs inside it, not
-  above it.
+**The prohibition.** ⛔ Do not move any `stop` statement above `stopStepping()`, do not add one above it, and do not
+drop the call. Everything else in `stop` (the components' teardown through the host port, the link's detach, G-08's
+resets, the tier consumer's end, the display's release) runs after it, and the Unreal adapter's `endPlay` calls `stop`
+before anything of its own (the registry slot, the latency member's `end`). `stopStepping()` unregisters the frame
+host's two tick functions (`m_host.endFrames()`), joins the authority's runner, and stops the tick backend, which waits for
+every outstanding step task (G-05, at that statement).
 
 **The consequence of getting it wrong.** On a worker-stepping peer the frame's step task runs on another thread through
 the rest of the frame. A statement above the call tears its state down while the step still runs: a use-after-reset on
@@ -267,15 +264,16 @@ marks: the owner's `EndPlay` statements before `Super` became `endPlay`.*
 
 ---
 
-## G-08 — `endPlay` resets og-sim-net's server and the tier cache while `m_manager` still exists
+## G-08 — `stop` resets og-sim-net's server and the tier cache while `m_manager` still exists
 
 **Moved by og-session-runtime task 31 (2026-11-26)** from `UESimulationSession-guards.md` G-21, with the code it marks. **Tag site:** `SessionRuntime.h`, directly above `m_simNetIdle.reset();` in `stop`, which resets the idle, the clock server, the server and its host while `m_manager` still exists (the runtime's member, destroyed after `stop` returns). **R0 (task 31):** unchanged; the authority start/stop test's server sentinel checks the runner was joined before the server went. The text below is the entry as it was; where it names the Unreal session's members, read the runtime's (the same names).
-
-**Tag site:** `UESimulationSession.h`, directly above `m_simNetServer.reset();` in `endPlay`, after
-`detachFromSimNetLanes();`, which follows `m_physicsBackend.onEndPlayBegin();` (`⛔G-20`); the server host's reset, the clears
-of the two registered maps and the slot map, the unregistered-id set's clear (since og-input-latency task P5-9) and the tier
-cache's reset (`m_clock->endTierConsumer()` since og-session-runtime task 24) follow it. (Since og-input-latency task P5-7; until then the tag stood above
-the delayed-input map's clear, with the session's own coordinator's reset after it.)
+*Where the tag stood before (task 33 folded the stale second tag-site line in here):* in `UESimulationSession.h`'s
+`endPlay`, above `m_simNetServer.reset();`, after `detachFromSimNetLanes();`, which followed
+`m_physicsBackend.onEndPlayBegin();` (the Unreal G-20, now G-07). In `stop` today: after `detachLink()`, the tag above
+`m_simNetIdle.reset();`, then the clock server's, the server's and its host's resets, the host port's `forgetComponents()`,
+the authority lifecycle's `forgetRegistered()` and the tier consumer's end (`m_clock->endTierConsumer()`). (Since
+og-input-latency task P5-7; until then the tag stood above the delayed-input map's clear, with the session's own
+coordinator's reset after it.)
 
 **The prohibition, as it stood in the source:**
 

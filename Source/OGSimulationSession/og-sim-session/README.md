@@ -26,6 +26,10 @@ og-sim-session/
 The library builds as the Unreal module `OGSimulationSession` from a `Build.cs` that lives outside this folder, one level
 above it. `OGSimSession/docs/OGSimSession-rationale.md` describes the module and the test wiring.
 
+`OGSimSession/docs/Porting.md` is the porting checklist: what an engine adapter writes, item by item, with the concept
+each item models, its header, the Unreal file that does it today and its thread; the core without this session; and
+the standalone build's targets.
+
 ## Standalone build
 
 `CMakeLists.txt` defines three targets:

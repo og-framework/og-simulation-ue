@@ -75,8 +75,9 @@ subdirectories (FindInputFilesFromDirectoryRecursive, lines 2622-2630).
   Measured: the Editor build's module DLL exports one name, the engine's module marker ThisIsAnUnrealEngineModule.
   In the modular Editor every module is its own DLL, so the first out-of-line og-sim-net function that another module calls
   needs an export marker on its declaration, as og-net's `OGNET_API` does for og-net.
-- **The plugin lists `OGSimulationNet`** as a Runtime module, after `OGNetUnreal`. Nothing depends on it yet, so the game's own
-  modules are unchanged.
+- **The plugin lists `OGSimulationNet`** as a Runtime module, after `OGNetUnreal`. Nothing depended on it when it was added, so
+  the game's own modules were unchanged. Today `OGSimulationSession`, `OGSimulationUnreal` and the game's `OGBrawlerUnreal`
+  depend on it, as do the test modules `OGSimulationTests`, `OGBrawlerTests` and `OGNetTests` (their Build.cs files).
 
 ## §5 `kSimNetApiVersion`
 

@@ -291,7 +291,17 @@ A `static_assert` in the class checks that the element holds no callable field. 
   `std::function<void(Channel*)> applied` are each refused.
 - **Not checked:** what a pointer or a smart pointer points to, and the members of a field whose class is not an aggregate
   (`std::string`, `std::shared_ptr`, `std::optional` are checked as types only). A
-  `std::optional<std::function<…>>` or `std::shared_ptr<std::function<…>>` field passes.
+  `std::optional<std::function<…>>` or `std::shared_ptr<std::function<…>>` field passes. Nor is **a class callable only
+  through a conversion to a function pointer that takes arguments** (a surrogate call: `operator void(*)(int)()`, so
+  `request.field(1)` compiles): it names no `operator()`, and `std::is_invocable` is asked with no argument. A conversion to
+  a pointer to a function of no argument is caught (the `std::is_invocable` arm). Found by og-session-runtime task 30's re-review
+  probes on clang-cl and MSVC 14.38.
+- **A base class: the compilers differ.** A request (or the bodies' request) that derives from a base is still an aggregate.
+  A callable in the base is caught on both compilers, and an empty base with a callable field breaks the binding on both.
+  A base that holds only data does not: MSVC binds the fields and passes the request, clang-cl breaks the structured binding
+  ("both it and its base class have non-static data members"), so such a request compiles on MSVC and fails on clang. No
+  request has a base today. Whether to refuse a base outright is task 33b's decision; this paragraph is the record until then
+  (og-session-runtime task 30's re-review probes).
 
 The namespace `authorityRequestSelfCheck` holds the check's own cases (data passes; a unary, generic, private and inherited
 `operator()`, pointers to functions and members, a final class, a union, a callable field, one inside an aggregate field, one

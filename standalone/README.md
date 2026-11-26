@@ -52,7 +52,8 @@ so the core is shown to build and pass its tests without the layers above it.
 Every target compiles as C++20 with `/Zc:preprocessor /utf-8 /bigobj` (MSVC) and defines `OG_STANDALONE_BUILD`. The
 floating-point mode comes from each library's own target: `/fp:precise` on MSVC, `-ffp-contract=off` elsewhere, as the
 `FPSemantics = Precise` of the Unreal modules. Jolt's determinism defines come only through og-simulation-jolt's own target.
-`OG_CHECK` is `assert`, so a `Release` build compiles it out.
+`OG_CHECK` is `assert`, so a `Release` build compiles it out, except in og-sim-session's `og_sim_session_headless_tests`,
+which defines `OG_CHECKS_LIVE` (the CMake option `OG_SIM_SESSION_LIVE_CHECKS`, ON by default; og-sim-session's `tests/README.md`).
 
 ## Licence
 
