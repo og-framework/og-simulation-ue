@@ -134,6 +134,11 @@ struct PortWithLanesWithoutClient : ConformingPort
 	Lanes* lanes() const;
 };
 
+struct PortWithAFloatClock : ConformingPort
+{
+	float nowSeconds() const;
+};
+
 struct PortLanesOnlyWhenMutable : ConformingPort
 {
 	ConformingLanes* lanes();
@@ -214,6 +219,9 @@ static_assert(!SessionNetHooksPort<PortPresentationReturnsBool>,
 	"SessionNetHooksPort self-check: publishPresentation() returns void");
 static_assert(!SessionNetHooksPort<PortClockOnlyWhenMutable>,
 	"SessionNetHooksPort self-check: nowSeconds() must be callable on a const port");
+static_assert(!SessionNetHooksPort<PortWithAFloatClock>,
+	"SessionNetHooksPort self-check: nowSeconds() returns double; a float of seconds since start loses milliseconds, and "
+	"the corrections-handed stamp is such a time");
 static_assert(!SessionNetHooksPort<PortLogReturnsBool>,
 	"SessionNetHooksPort self-check: logRouted(line) returns void");
 static_assert(SessionCorrectionStamps<ConformingStamps>,

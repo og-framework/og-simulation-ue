@@ -119,6 +119,202 @@ concept SessionRuntimeHost = requires(H& host, const H& constHost, DriverT& driv
 	{ constHost.forEachRegisteredId(eachId) }                -> std::same_as<void>;
 };
 
+namespace sessionRuntimeHostSelfCheck
+{
+struct Driver
+{
+};
+
+struct InputProvider
+{
+};
+
+struct StaticData
+{
+};
+
+struct ConformingHost
+{
+	void onConfigure();
+	void bindDiagnosticGates();
+	void afterPredictionConfigured();
+	void onSessionConfigured();
+	void beginFrames(Driver& driver);
+	void endFrames();
+	void sampleInput();
+	void onPostPhysics();
+	void logHost(const char* line);
+	SessionBodyRequest<StaticData> makeBodyRequest(const RegisterRequest& request);
+	uint64_t bodyKeyOf(EntityKey key) const;
+	InputProvider wrapInputProvider(const RegisterRequest& request, InputProvider&& provider);
+	void teardownComponents();
+	void forgetComponents();
+	void onLinkStopping(bool isServer);
+	template <typename FunctionT>
+	void forEachRegisteredId(FunctionT&& function) const;
+};
+
+struct OnConfigureReturnsBool : ConformingHost
+{
+	bool onConfigure();
+};
+
+struct BindDiagnosticGatesReturnsBool : ConformingHost
+{
+	bool bindDiagnosticGates();
+};
+
+struct AfterPredictionConfiguredReturnsBool : ConformingHost
+{
+	bool afterPredictionConfigured();
+};
+
+struct OnSessionConfiguredReturnsBool : ConformingHost
+{
+	bool onSessionConfigured();
+};
+
+struct BeginFramesReturnsBool : ConformingHost
+{
+	bool beginFrames(Driver& driver);
+};
+
+struct EndFramesReturnsBool : ConformingHost
+{
+	bool endFrames();
+};
+
+struct SampleInputReturnsBool : ConformingHost
+{
+	bool sampleInput();
+};
+
+struct OnPostPhysicsReturnsBool : ConformingHost
+{
+	bool onPostPhysics();
+};
+
+struct LogHostReturnsBool : ConformingHost
+{
+	bool logHost(const char* line);
+};
+
+struct TeardownComponentsReturnsBool : ConformingHost
+{
+	bool teardownComponents();
+};
+
+struct ForgetComponentsReturnsBool : ConformingHost
+{
+	bool forgetComponents();
+};
+
+struct OnLinkStoppingReturnsBool : ConformingHost
+{
+	bool onLinkStopping(bool isServer);
+};
+
+struct ForEachRegisteredIdReturnsBool : ConformingHost
+{
+	template <typename FunctionT>
+	bool forEachRegisteredId(FunctionT&& function) const;
+};
+
+struct MakeBodyRequestReturnsAConvertibleType : ConformingHost
+{
+	struct ConvertsToTheBodyRequest
+	{
+		operator SessionBodyRequest<StaticData>() const;
+	};
+	ConvertsToTheBodyRequest makeBodyRequest(const RegisterRequest& request);
+};
+
+struct BodyKeyOfReturnsA32BitKey : ConformingHost
+{
+	uint32_t bodyKeyOf(EntityKey key) const;
+};
+
+struct WrapInputProviderReturnsAConvertibleType : ConformingHost
+{
+	struct ConvertsToTheProvider
+	{
+		operator InputProvider() const;
+	};
+	ConvertsToTheProvider wrapInputProvider(const RegisterRequest& request, InputProvider&& provider);
+};
+
+struct BodyKeyOfOnAMutableHost : ConformingHost
+{
+	uint64_t bodyKeyOf(EntityKey key);
+};
+
+struct MakeBodyRequestTakingAMutableRequest : ConformingHost
+{
+	SessionBodyRequest<StaticData> makeBodyRequest(RegisterRequest& request);
+};
+
+template <typename H>
+inline constexpr bool kModels = SessionRuntimeHost<H, Driver, InputProvider, StaticData>;
+
+static_assert(kModels<ConformingHost>,
+	"SessionRuntimeHost self-check: the reference shape (thirteen void hooks, the body request, the body key, the "
+	"provider's wrap) must satisfy the concept");
+static_assert(!kModels<OnConfigureReturnsBool>,
+	"SessionRuntimeHost self-check: onConfigure() is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<BindDiagnosticGatesReturnsBool>,
+	"SessionRuntimeHost self-check: bindDiagnosticGates() is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<AfterPredictionConfiguredReturnsBool>,
+	"SessionRuntimeHost self-check: afterPredictionConfigured() is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<OnSessionConfiguredReturnsBool>,
+	"SessionRuntimeHost self-check: onSessionConfigured() is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<BeginFramesReturnsBool>,
+	"SessionRuntimeHost self-check: beginFrames(driver) is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<EndFramesReturnsBool>,
+	"SessionRuntimeHost self-check: endFrames() is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<SampleInputReturnsBool>,
+	"SessionRuntimeHost self-check: sampleInput() is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<OnPostPhysicsReturnsBool>,
+	"SessionRuntimeHost self-check: onPostPhysics() is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<LogHostReturnsBool>,
+	"SessionRuntimeHost self-check: logHost(line) is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<TeardownComponentsReturnsBool>,
+	"SessionRuntimeHost self-check: teardownComponents() is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<ForgetComponentsReturnsBool>,
+	"SessionRuntimeHost self-check: forgetComponents() is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<OnLinkStoppingReturnsBool>,
+	"SessionRuntimeHost self-check: onLinkStopping(isServer) is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<ForEachRegisteredIdReturnsBool>,
+	"SessionRuntimeHost self-check: forEachRegisteredId(function) is required and returns void; the runtime calls it as a statement and "
+	"discards any result");
+static_assert(!kModels<MakeBodyRequestReturnsAConvertibleType>,
+	"SessionRuntimeHost self-check: makeBodyRequest(request) is required and returns the SessionBodyRequest the "
+	"authority's bodies are made from, not a type that converts to it");
+static_assert(!kModels<BodyKeyOfReturnsA32BitKey>,
+	"SessionRuntimeHost self-check: bodyKeyOf(key) is required and returns the 64-bit body key (the Unreal adapter's is "
+	"an address); a 32-bit key would truncate it");
+static_assert(!kModels<WrapInputProviderReturnsAConvertibleType>,
+	"SessionRuntimeHost self-check: wrapInputProvider(request, provider) is required and returns the provider type the "
+	"client queues, not a type that converts to it");
+static_assert(!kModels<BodyKeyOfOnAMutableHost>,
+	"SessionRuntimeHost self-check: bodyKeyOf and forEachRegisteredId are callable on a const host; the runtime's "
+	"readers do not change it");
+static_assert(!kModels<MakeBodyRequestTakingAMutableRequest>,
+	"SessionRuntimeHost self-check: makeBodyRequest and wrapInputProvider take the request by const reference; the "
+	"runtime passes the lifecycle's const RegisterRequest through");
+} // namespace sessionRuntimeHostSelfCheck
+
 template <typename TraitsT>
 class SessionRuntime
 {
@@ -170,8 +366,9 @@ public:
 
 	struct Worlds
 	{
-		Engine    engine;
-		WorldHost host{ engine };
+		explicit Worlds(Engine& engine) : host{ engine } {}
+
+		WorldHost host;
 	};
 
 	struct TickHost
@@ -215,6 +412,7 @@ public:
 		: m_host(host)
 		, m_diagnostics(diagnostics)
 		, m_frameEngine(frameEngine)
+		, m_physicsBackendWorlds(frameEngine)
 	{
 		static_assert(compositionContractsHold());
 	}
@@ -725,10 +923,6 @@ private:
 			"m_tickBackend (og-tickdriver task 15d) and m_tickBackend < m_runner (og-input-latency P5-19) rows and the "
 			"session's m_physicsBackendWorlds < m_physicsBackend row (og-tickdriver task 10); one row since "
 			"og-session-runtime task 31 moved the tick backend into the runtime.");
-		static_assert(__builtin_offsetof(Worlds, engine) < __builtin_offsetof(Worlds, host),
-			"SessionRuntime::Worlds members construct in declaration order and destruct in REVERSE. The world host holds its "
-			"engine by reference from its constructor on, so the engine must be built first and go last. Keep engine < host. "
-			"Was TickDriverBackendWorldsUImpl's row (og-tickdriver task 15b); moved by og-session-runtime task 31.");
 		static_assert(__builtin_offsetof(SessionRuntime, m_manager) < __builtin_offsetof(SessionRuntime, m_clock)
 		           && __builtin_offsetof(SessionRuntime, m_inputResolution) < __builtin_offsetof(SessionRuntime, m_clock)
 		           && __builtin_offsetof(SessionRuntime, m_clockEngine) < __builtin_offsetof(SessionRuntime, m_clock),

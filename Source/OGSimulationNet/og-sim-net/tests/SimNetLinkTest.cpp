@@ -227,10 +227,12 @@ using Server = ogsimnet::SimNetServer<LinkGame, ServerHost, ServerTransport>;
 static_assert(ogsimnet::SimNetLinkServices<LinkServices> && ogsimnet::SimNetLinkLock<LinkLock>
 	&& ogsimnet::SimNetLinkSession<RecordingSession> && ogsimnet::SimNetLinkEndpoint<LinkEndpoint>);
 static_assert(!std::is_constructible_v<Server, ServerHost&, ServerTransport&, TimeConfig, std::size_t>
-		&& std::is_constructible_v<Server, ServerHost&, ServerTransport&, TimeConfig&, std::size_t>,
-	"SimNetServer holds its TimeConfig by reference, so a temporary one is refused at compile time (its TimeConfig&& "
-	"constructor is deleted). Was this rig's TimeConfig{} argument, a dangling reference (og-session-runtime task 32, "
-	"impl_notes_SR5_31a step (b))");
+		&& !std::is_constructible_v<Server, ServerHost&, ServerTransport&, const TimeConfig, std::size_t>
+		&& std::is_constructible_v<Server, ServerHost&, ServerTransport&, TimeConfig&, std::size_t>
+		&& std::is_constructible_v<Server, ServerHost&, ServerTransport&, const TimeConfig&, std::size_t>,
+	"SimNetServer holds its TimeConfig by reference, so a temporary one, const or not, is refused at compile time (its "
+	"TimeConfig&& and const TimeConfig&& constructors are deleted). Was this rig's TimeConfig{} argument, a dangling "
+	"reference (og-session-runtime task 32, impl_notes_SR5_31a step (b); the const one task 33b)");
 
 constexpr std::uint8_t kServerHostIndex = 1u;
 constexpr std::uint8_t kClientHostIndex = 10u;

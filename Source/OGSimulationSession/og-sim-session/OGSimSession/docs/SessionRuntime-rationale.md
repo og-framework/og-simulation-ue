@@ -9,7 +9,8 @@ backend that `TickDriverBackendUImpl` wrapped until then. The prohibitions are i
 ## 1. What it owns, and in what order
 
 The members are the session's, in the order they had in `UESimulationSession` (task 31 step (a) moved the declarations
-verbatim, step (b) wrapped them in this class): the backend worlds (`Worlds`: the world host's engine, then the world host),
+verbatim, step (b) wrapped them in this class): the backend worlds (`Worlds`: the world host, built on the adapter's engine since task 33b; until then a world-host engine of
+its own, then the world host),
 the three adapters, the storage, the static data, the three peers (reconciliation, input resolution, net sync), the systems,
 the integration layer, the manager, then the tick backend's members (its tick game, `SimulationTickBackend`, the runner's world
 config and statics, the started driver, the runner), the thread checks, the clock's engine and the clock, the display, the net
@@ -19,10 +20,14 @@ registrations.
 
 `compositionContractsHold` holds the order: every row of the Unreal session's (each message names its history and "moved by
 og-session-runtime task 31"), plus the tick backend's rows (the manager, the worlds and the tick game before it, the runner
-after it; were `TickDriverBackendUImpl`'s and the session's `m_physicsBackend` rows), the worlds' engine-before-host row, and
-one new row, the authority lifecycle after its bodies and the tick backend. The latency diagnostics and the frame host's
-engine are the engine adapter's: the runtime holds both by reference, and the Unreal session declares both before its runtime
-member (its `adapterContractsHold`).
+after it; were `TickDriverBackendUImpl`'s and the session's `m_physicsBackend` rows), and one new row, the authority
+lifecycle after its bodies and the tick backend. (The worlds' engine-before-host row went with the worlds' own engine in
+task 33b: `Worlds` is built from the constructor's engine argument and has no default constructor, so leaving it out does
+not compile.) The latency diagnostics and the frame host's engine are the engine adapter's: the runtime holds both by
+reference, and the Unreal session declares both before its runtime member (its `adapterContractsHold`). **An order row may
+not name a reference member:** MSVC (14.38, 14.44) answers `__builtin_offsetof` of a reference member with 0 wherever it is
+declared, so such a row holds vacuously there and fails only on clang (task 33b's probe); order a reference through the
+constructor instead, as `Worlds` is.
 
 ## 2. `start`: `beginPlay`'s order, both roles
 
@@ -69,6 +74,12 @@ bookkeeping (`teardownComponents`, `forgetComponents`, `onLinkStopping`, `forEac
 `start`, where the host is complete (the host holds the runtime as a member). Lines that carry their own `[Level][Tag]` go to the
 engine's `logRouted` (Unreal: `RouteOGLevelLine`): `[SimHost.Backend]` (the route table's `[SimHost.` row, task 31) and
 `SimulationManager: … initialized` keep the category and level their `UE_LOG`s had.
+
+Since og-session-runtime task 33b the header holds the concept's reference shape and one negative per requirement
+(`sessionRuntimeHostSelfCheck`): a `bool` return for each of the thirteen `void` hooks (each is called as a statement), a
+type that converts for `makeBodyRequest` and `wrapInputProvider`, a 32-bit key for `bodyKeyOf` (Unreal's key is an actor's
+address), and a mutable host and a mutable request for the two const parameters. Its 37 deletion and weakening mutants are
+all killed.
 
 ## 5. The traits
 

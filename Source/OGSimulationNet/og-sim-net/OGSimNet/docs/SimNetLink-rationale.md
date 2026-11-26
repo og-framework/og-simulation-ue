@@ -195,8 +195,11 @@ The design's list (the session-runtime design's §3.3 and og-session-runtime tas
 The link holds no server host (the authority's host is its world session's, owned by og-sim-session's runtime from task 31), so
 no door reads a connection's round trip; and the client's stamps go to the attached session (§7). `logHost` and
 `onWireMismatch` are added because the client host needs them. The concepts are checked by `simNetLinkSelfCheck` and by
-task 28's requirement-deletion mutants (each requirement deleted in turn, and two return types weakened: every mutant fires a
-self-check).
+task 28's requirement-deletion mutants (each requirement deleted in turn: every mutant fires a self-check). Task 28's review
+found eight return-type weakenings that survived; og-session-runtime task 33b added one negative per return type (a `bool`
+for each `void`, which the link calls as a statement and discards; a `float` `nowSeconds`; a copy of the endpoint's config)
+and one for the const sample, and its mutants (each requirement deleted, its return made "any" or `convertible_to`, a const
+parameter made mutable) are all killed, 35 of 35.
 
 **`SimNetLinkSession`**, the attached session's hooks: `onTimingInfo(tick, rtt)`, `onRelayFloor(floor)`,
 `onConnectionTier(old, new)`, `onClockSample(sample)`, `onLifecycleUnregistering(simId)`,

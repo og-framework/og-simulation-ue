@@ -27,7 +27,6 @@ concept SessionDisplayManager = requires(const M& m)
 template <typename G, typename SystemsT>
 concept SessionPresentationGame = requires(const SystemsT& systems, unsigned int id)
 {
-	typename G::AuthorityPresentationSlice;
 	{ G::authorityPresentationSlice_Step(systems, id) } -> std::same_as<typename G::AuthorityPresentationSlice>;
 };
 
@@ -53,6 +52,16 @@ struct ManagerReadableOnlyWhenMutable
 {
 	const ClientPredictionClock& getClientClock();
 	const NetworkTimeEstimator&  getNetworkEstimator();
+};
+
+struct ManagerReturningAClockByValue : ConformingManager
+{
+	ClientPredictionClock getClientClock() const;
+};
+
+struct ManagerReturningAnEstimatorByValue : ConformingManager
+{
+	NetworkTimeEstimator getNetworkEstimator() const;
 };
 
 struct Systems
@@ -87,6 +96,20 @@ struct GameReturningAnotherType
 	static int authorityPresentationSlice_Step(const Systems&, unsigned int);
 };
 
+struct GameReturningAConvertibleType : ConformingGame
+{
+	struct ConvertsToTheSlice
+	{
+		operator AuthorityPresentationSlice() const;
+	};
+	static ConvertsToTheSlice authorityPresentationSlice_Step(const Systems&, unsigned int);
+};
+
+struct GameReadingMutableSystems : ConformingGame
+{
+	static AuthorityPresentationSlice authorityPresentationSlice_Step(Systems&, unsigned int);
+};
+
 static_assert(SessionDisplayManager<ConformingManager>,
 	"SessionDisplayManager self-check: the reference shape (const getClientClock, const getNetworkEstimator) must satisfy the "
 	"concept");
@@ -96,6 +119,12 @@ static_assert(!SessionDisplayManager<ManagerWithoutEstimator>,
 	"SessionDisplayManager self-check: getNetworkEstimator is required, the clock reading carries the estimator's target");
 static_assert(!SessionDisplayManager<ManagerReadableOnlyWhenMutable>,
 	"SessionDisplayManager self-check: both readers must be callable on a const manager; the display only reads it");
+static_assert(!SessionDisplayManager<ManagerReturningAClockByValue>,
+	"SessionDisplayManager self-check: getClientClock returns a const reference to the manager's own clock; a clock by "
+	"value is another clock, not the one the steps advance");
+static_assert(!SessionDisplayManager<ManagerReturningAnEstimatorByValue>,
+	"SessionDisplayManager self-check: getNetworkEstimator returns a const reference to the manager's own estimator; an "
+	"estimator by value is another estimator, not the one the clock samples feed");
 static_assert(SessionPresentationGame<ConformingGame, Systems>,
 	"SessionPresentationGame self-check: the reference shape (a slice type and a static authorityPresentationSlice_Step "
 	"returning it) must satisfy the concept");
@@ -105,6 +134,12 @@ static_assert(!SessionPresentationGame<GameWithoutSliceHook, Systems>,
 	"SessionPresentationGame self-check: authorityPresentationSlice_Step(systems, id) is required, it reads each entry's slice");
 static_assert(!SessionPresentationGame<GameReturningAnotherType, Systems>,
 	"SessionPresentationGame self-check: authorityPresentationSlice_Step returns the game's AuthorityPresentationSlice");
+static_assert(!SessionPresentationGame<GameReturningAConvertibleType, Systems>,
+	"SessionPresentationGame self-check: authorityPresentationSlice_Step returns the slice type itself, not a type that "
+	"converts to it");
+static_assert(!SessionPresentationGame<GameReadingMutableSystems, Systems>,
+	"SessionPresentationGame self-check: authorityPresentationSlice_Step takes the systems by const reference; the runner "
+	"hands it const systems (publishPresentation), and a slice is a read");
 } // namespace sessionDisplaySelfCheck
 
 template <typename GameT, typename SnapshotT, SessionDisplayManager ManagerT, typename StorageT, typename ResolutionT,
@@ -202,13 +237,13 @@ public:
 	const Entry* findEntry(unsigned int id) const
 	{
 		m_threads.checkOp(SessionOp::AcquireDisplay);
-		return m_held != nullptr ? m_held->find(id) : nullptr;
+		return heldEntry(id);
 	}
 
 	const VizState* findVizState(unsigned int id) const
 	{
 		m_threads.checkOp(SessionOp::AcquireDisplay);
-		const Entry* const entry = findEntry(id);
+		const Entry* const entry = heldEntry(id);
 		if (entry == nullptr)
 			return nullptr;
 		return &(*m_vizStates)[static_cast<size_t>(entry - m_held->entries.data())];
@@ -262,6 +297,8 @@ public:
 	}
 
 private:
+	const Entry* heldEntry(unsigned int id) const { return m_held != nullptr ? m_held->find(id) : nullptr; }
+
 	SessionThreadChecks              m_threads;
 	const ManagerT&                  m_manager;
 	const StorageT&                  m_storage;

@@ -42,8 +42,6 @@ const char* kindName(const ogsession::LifecycleOutcome& outcome)
 TEST_CASE("SessionSkeleton.TheModuleReachesOgSimAndOgSimNet", "[Session]")
 {
 	STATIC_REQUIRE(ogsession::SessionEngine<ogsession::sessionEngineSelfCheck::Conforming>);
-	STATIC_REQUIRE(ogsession::SessionGameHooks<ogsession::sessionGameHooksSelfCheck::Conforming,
-		ogsession::sessionGameSelfCheck::Conforming>);
 	STATIC_REQUIRE(ogsession::ConfigSource<MapConfigSource>);
 	STATIC_REQUIRE(ogsession::SessionEngine<FakeSessionEngine>);
 

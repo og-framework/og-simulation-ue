@@ -39,7 +39,8 @@ header unchanged; step (b) made them this engine-free class. What changed in (b)
 | `NetSyncT`, `StorageT` | the capture's sender; `forEachSimulatable<Simulatable>(fn)` | the session's `m_netSync`, `m_storage` |
 | `DiagnosticsT` | a `SessionCorrectionStamps` (`stampCorrectionHanded_Internal(lane, tick, seconds)`) | `UELatencyBudgetDiagnostics<TraitsT>` |
 
-Each port requirement has a negative in `sessionNetHooksSelfCheck` (the `Simulatable` type's is `PortWithoutSimulatable`, since
+Each port requirement has a negative in `sessionNetHooksSelfCheck` (since og-session-runtime task 33b also `PortWithAFloatClock`:
+a `float` `nowSeconds()` converts to `double` and would lose milliseconds; the `Simulatable` type's is `PortWithoutSimulatable`, since
 nothing else in the concept names it), except three type names that another requirement names in its return type: the lanes'
 `Client` (`client()`), the port's `Server` (`server()`) and `Idle` (`idle()`). A port without one of them fails there, so
 deleting the type-name line alone changes nothing. The server and the idle service are used by their calls

@@ -39,7 +39,10 @@ keeps references to what the client's fill reads: the manager (`SessionDisplayMa
 clock's display-tier buffer (`SessionClock::displayTier()`, which the tier receipt writes, `SessionClock-rationale.md` §4).
 The game is a template argument for its presentation slice (`SessionPresentationGame`: a type `AuthorityPresentationSlice`
 and a static `authorityPresentationSlice_Step(systems, id)` returning it). Each concept has a reference shape and one negative
-per requirement (`sessionDisplaySelfCheck`).
+per requirement (`sessionDisplaySelfCheck`), and since og-session-runtime task 33b one per return type and const parameter: a
+clock or an estimator returned by value, a slice hook returning a type that converts to the slice, and one taking mutable
+systems. Task 33b's mutants (each requirement deleted, its return made "any" or `convertible_to`, a const parameter made
+mutable; one edit each in an overlay copy, the header compiled alone by the clang header probe) are all killed, 11 of 11.
 
 | door | thread (`SessionOp`) | what it does |
 |---|---|---|

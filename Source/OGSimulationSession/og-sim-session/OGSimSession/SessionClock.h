@@ -65,6 +65,11 @@ struct EngineWithoutConstNow
 	double nowSeconds();
 };
 
+struct EngineWithAFloatNow : ConformingEngine
+{
+	float nowSeconds() const;
+};
+
 struct ConformingLink
 {
 	double ackSrttSeconds() const;
@@ -81,6 +86,22 @@ struct LinkWithoutClockStats
 	double ackSrttSeconds() const;
 };
 
+struct LinkWithAFloatAckSrtt : ConformingLink
+{
+	float ackSrttSeconds() const;
+};
+
+struct LinkReturningStatsByReference : ConformingLink
+{
+	const ogsimnet::SimNetClockStats& clockStats() const;
+};
+
+struct LinkReadableOnlyWhenMutable
+{
+	double ackSrttSeconds();
+	ogsimnet::SimNetClockStats clockStats();
+};
+
 struct ConformingServer
 {
 	void publishServerTick(uint32_t, double);
@@ -91,23 +112,43 @@ struct ServerPublishingTheTickOnly
 	void publishServerTick(uint32_t);
 };
 
+struct ServerWhosePublishReturnsBool
+{
+	bool publishServerTick(uint32_t, double);
+};
+
 static_assert(SessionClockEngine<ConformingEngine>,
 	"SessionClockEngine self-check: the reference shape (logRouted, a const nowSeconds) must satisfy the concept");
 static_assert(!SessionClockEngine<EngineWithoutLogRouted>,
 	"SessionClockEngine self-check: logRouted is required, every clock line goes through the engine's log routes");
 static_assert(!SessionClockEngine<EngineWithoutConstNow>,
 	"SessionClockEngine self-check: nowSeconds must be callable on a const engine, as TickDriverEngine's is");
+static_assert(!SessionClockEngine<EngineWithAFloatNow>,
+	"SessionClockEngine self-check: nowSeconds returns double; a float of seconds since start loses milliseconds, and the "
+	"clock's window timer is a difference of two such times");
 static_assert(SessionClockLink<ConformingLink>,
 	"SessionClockLink self-check: the reference shape (ackSrttSeconds, clockStats) must satisfy the concept");
 static_assert(!SessionClockLink<LinkWithoutAckSrtt>,
 	"SessionClockLink self-check: ackSrttSeconds is required, the [ClockSource.Window] line prints it");
 static_assert(!SessionClockLink<LinkWithoutClockStats>,
 	"SessionClockLink self-check: clockStats is required, the [ClockSource.Window] line prints its ping and pong counts");
+static_assert(!SessionClockLink<LinkWithAFloatAckSrtt>,
+	"SessionClockLink self-check: ackSrttSeconds returns double seconds, which the [ClockSource.Window] line prints in "
+	"milliseconds");
+static_assert(!SessionClockLink<LinkReturningStatsByReference>,
+	"SessionClockLink self-check: clockStats returns a SimNetClockStats by value, one snapshot per window line, not a "
+	"reference into the link");
+static_assert(!SessionClockLink<LinkReadableOnlyWhenMutable>,
+	"SessionClockLink self-check: both readers are callable on a const link; the clock's doors take the link by const "
+	"reference");
 static_assert(SessionClockServer<ConformingServer>,
 	"SessionClockServer self-check: the reference shape (publishServerTick(tick, tickStartSeconds)) must satisfy the concept");
 static_assert(!SessionClockServer<ServerPublishingTheTickOnly>,
 	"SessionClockServer self-check: the publish carries the tick's step-start time; a tick-only publish is refused "
 	"(og-time-dilation task 2b)");
+static_assert(!SessionClockServer<ServerWhosePublishReturnsBool>,
+	"SessionClockServer self-check: publishServerTick returns void; the clock discards any result, so a server that "
+	"reported a refused publish through its return would go unheard");
 } // namespace sessionClockSelfCheck
 
 namespace sessionClock
@@ -253,8 +294,8 @@ public:
 		OG_CHECK(tickStartSeconds.has_value(),
 			"SessionClock::publishServerTick: an authority step ended with no start time. The tick driver's game calls "
 			"noteAuthorityStepStart when it releases the inputs for an authority tick, at the start of every authority step, "
-			"and the SimClock server's tick age is measured from that time. Was the Unreal session's checkf in "
-			"afterStep_Step (og-time-dilation task 2b; og-session-runtime task 24)");
+			"and the SimClock server's tick age is measured from that time. Was publishServerTick(tick), which read the clock "
+			"at the publish (og-time-dilation task 2b)");
 		// ⛔G-06  docs/SessionClock-guards.md
 		clockServer->publishServerTick(static_cast<uint32_t>(m_manager.getServerClock().getTick()), *tickStartSeconds);
 	}

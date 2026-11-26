@@ -1570,6 +1570,25 @@ TEST_CASE("SessionLifecycle.AnUnregisterAtTeardownWithTheStepsStopped", "[Sessio
 	CHECK(countOf(newEvents, "facade.unregister 3") == 1u);
 }
 
+TEST_CASE("SessionLifecycle.AfterTheTeardownAStepWorkersReceiptIsAStepReceipt", "[Session][SessionLifecycle]")
+{
+	Rig<NewSession> rig;
+	rig.world.client.addToRoster(1u, /*isLocal=*/true);
+	rig.step();
+	CHECK(rig.tryRegister(1u, true) == Status::Pending);
+	rig.step();
+	CHECK(rig.tryRegister(1u, true) == Status::Ready);
+	rig.session.teardownImmediateClient_GameThread();
+	CHECK(rig.world.recorder.count("stoppedDrain.end") == 1u);
+	bool received = false;
+	rig.stepThread.run([&rig, &received]
+	{
+		rig.session.lifecycle().onRegisteredRemoved(1u);
+		received = true;
+	});
+	CHECK(received);
+}
+
 TEST_CASE("SessionLifecycle.TheDetachWithoutTeardownUnmarksAQueuedRegistration", "[Session][SessionLifecycle]")
 {
 	auto script = [](auto& rig)

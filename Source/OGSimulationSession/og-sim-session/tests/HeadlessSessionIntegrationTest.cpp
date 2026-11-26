@@ -724,6 +724,7 @@ TEST_CASE("HeadlessSession.OneAuthorityAndTwoClientsRunTheScriptedSessionEngineF
 		<< "windows=" << client2bResims.windows << " requested=" << client2bResims.requested);
 	CHECK(client1Resims.windows >= 2u);
 	CHECK(client1Resims.requested == 0u);
+	CHECK(client2bResims.windows >= 1u);
 	CHECK(client2bResims.requested == 0u);
 	CHECK(localDivergencesAfterJoin(client1Log, 1u) == 0u);
 	CHECK(localDivergencesAfterJoin(client2aLog, 2u) == 0u);

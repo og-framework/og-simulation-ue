@@ -244,6 +244,11 @@ struct MutatingRead : Conforming
 	std::optional<int32_t> readInt(const char*);
 };
 
+struct ReadStringAsACString : Conforming
+{
+	const char* readString(const char*) const;
+};
+
 static_assert(ConfigSource<Conforming>,
 	"ConfigSource self-check: the reference shape must satisfy the concept");
 static_assert(!ConfigSource<ReadIntWithoutAbsence>,
@@ -254,5 +259,8 @@ static_assert(!ConfigSource<MissingReadString>,
 	"ConfigSource self-check: readString (the knobs spelled as words) is required");
 static_assert(!ConfigSource<MutatingRead>,
 	"ConfigSource self-check: every read is callable on a const source; reading changes nothing");
+static_assert(!ConfigSource<ReadStringAsACString>,
+	"ConfigSource self-check: readString returns std::optional<std::string>; a const char* converts to one, so a source "
+	"answering an absent key with nullptr would build a std::string from a null pointer");
 } // namespace configSourceSelfCheck
 } // namespace ogsession

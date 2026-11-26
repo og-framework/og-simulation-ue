@@ -72,7 +72,7 @@ engine ini). One source reads one section, by key:
 |---|---|
 | `readInt(key)` returns `std::optional<int32_t>`: an absent key is told apart from a zero | `ReadIntWithoutAbsence` |
 | `readDouble(key)` returns `std::optional<double>` | `ReadDoubleAsFloat` |
-| `readString(key)` returns `std::optional<std::string>` | `MissingReadString` |
+| `readString(key)` returns `std::optional<std::string>` | `MissingReadString`; `ReadStringAsACString` (task 33b: a `const char*` converts to the optional, and a null one for an absent key would build a `std::string` from a null pointer) |
 | every read is callable on a const source | `MutatingRead` |
 
 `int32_t` and `double` are the types today's knob intake reads (`GetInt`, `GetDouble`).

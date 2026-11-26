@@ -296,16 +296,24 @@ A `static_assert` in the class checks that the element holds no callable field. 
   `request.field(1)` compiles): it names no `operator()`, and `std::is_invocable` is asked with no argument. A conversion to
   a pointer to a function of no argument is caught (the `std::is_invocable` arm). Found by og-session-runtime task 30's re-review
   probes on clang-cl and MSVC 14.38.
-- **A base class: the compilers differ.** A request (or the bodies' request) that derives from a base is still an aggregate.
+- **A base class: refused (og-session-runtime task 33b).** `authorityRequest::kHasBase` finds one (an aggregate's bases are
+  its first elements, so `T{ AnyBaseOf<T>{} }` compiles exactly when `T` has one, `AnyBaseOf<T>` converting only to a proper
+  base of `T`; checked on clang-cl and MSVC 14.38 and 14.44), and the walk's `static_assert` refuses a request, or an
+  aggregate inside one, that has a base, on every compiler. A first field of a type that converts from anything (`std::any`)
+  reads as a base too and is refused with it. The record that led there: a request (or the bodies' request) that derives from
+  a base is still an aggregate.
   A callable in the base is caught on both compilers, and an empty base with a callable field breaks the binding on both.
   A base that holds only data does not: MSVC binds the fields and passes the request, clang-cl breaks the structured binding
-  ("both it and its base class have non-static data members"), so such a request compiles on MSVC and fails on clang. No
-  request has a base today. Whether to refuse a base outright is task 33b's decision; this paragraph is the record until then
-  (og-session-runtime task 30's re-review probes).
+  ("both it and its base class have non-static data members"), so such a request could compile on MSVC and fail on clang
+  (og-session-runtime task 30's re-review probes). Task 33b's probe against the header before the refusal: MSVC 14.38 and
+  14.44 passed task 30's `Base{uint64_t key}` + `{uint32_t id}` and refused an `int` + `int` one (C3643, "cannot decompose
+  type with non-static data-members in both"); an empty base with a data field broke the binding on all three compilers.
+  No request has a base.
 
 The namespace `authorityRequestSelfCheck` holds the check's own cases (data passes; a unary, generic, private and inherited
 `operator()`, pointers to functions and members, a final class, a union, a callable field, one inside an aggregate field, one
-in the bodies' request and a request that is not an aggregate are each refused).
+in the bodies' request and a request that is not an aggregate are each refused; and since task 33b `kHasBase` finds a base
+that holds data, an empty one and two, and none on a request without one, also when its first field is an aggregate).
 
 ### §10.4 The bodies: `SessionBodies`
 
@@ -344,7 +352,8 @@ the game's `afterBodiesCreated` / `afterRegistered` / `onUnregistered`, the rend
 `onUnregisteredHost_GameThread`), the latency forget and the `NewFramework: unregistered` line (the host work, as on the client),
 and the engine facts it reads into each `RegisterRequest`. `SessionAuthorityLifecyclePort` (one negative per requirement in
 `sessionAuthorityLifecycleSelfCheck`): `server()` (a pointer, null with no server), `bodies()`, `bodiesResolvable(simulatable)`,
-`bodyKeyOf(entityKey)`, `runnerStopped()` (the adapter's: set when the runner joined), the executor's two notifies,
+`bodyKeyOf(entityKey)` (a 32-bit key is refused too, `PortKeyOfReturnsA32BitKey`, task 33b), `runnerStopped()` (the
+adapter's: set when the runner joined), the executor's two notifies,
 `inStorage(id)`, `logRouted(line)`. The server models `SessionAuthorityServer` (og-sim-net's `registerCharacter` /
 `unregisterCharacter`), the hooks `SessionAuthorityRegisterHooks` (`bodiesRequested`, `bodiesCreated`).
 

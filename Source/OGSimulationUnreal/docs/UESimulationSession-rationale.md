@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: TickDriverBackendWorldsUImpl -- og-tickdriver task 15b's worlds pair (the world host's engine beside the host), folded into og-sim-session's SessionRuntime::Worlds by og-session-runtime task 31; its last mention in code, the Worlds engine < host row, went with that engine in task 33b; kept in the history -->
 <!-- lint-external-ref: PhysicsBackend -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
 <!-- lint-external-ref: getTimeConfigPtr -- deleted by og-session-runtime task 31 (no caller); kept in the history -->
 <!-- lint-external-ref: PhysicsBackend::TickGame::Manager -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
@@ -209,7 +210,7 @@ the latency diagnostics.
 `runsPrediction()`, the visualization query and reader (`editVizQuery`, `getVizReader`, the runtime's),
 `registerVizVolume` (the bodies'), `hasGameThreadVizWorld` (a manager on a predicting peer), `getVizSlice<SliceT>(id)` (the
 held display's state, G-02), `getRegisteredComponentsById`, `forEachRegisteredId` and the static `instanceFor(world,
-isAuthority)` (the registry's lookup, G-11).
+isAuthority)` (the registry's lookup; G-11 guarded it until task 33b retired that id).
 
 ### 0.7 What else stays as it was
 
@@ -268,6 +269,8 @@ game's two (task 26) are listed in `SimulationArchitecture.md`'s copy of this ta
 | 31 | `UESimulationSession-guards.md` G-21 | `SessionRuntime-guards.md` G-08 |
 | 31 | `UESimulationSession-guards.md` G-22 | `UESessionEngine-guards.md` G-01 |
 | 31 | `UESimulationSession-guards.md` G-28 | `UESessionEngine-guards.md` G-02 |
+
+Task 33b retired `UESimulationSession-guards.md` G-11, the transport seam, with no successor: every function of its allow-list had left the class (that file's §R).
 
 The record's own guard references (G-01 to G-41 below) name the ids as they were; this table and each file's `§R` give their
 successors.

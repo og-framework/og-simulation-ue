@@ -10,7 +10,6 @@
 
 #include "OGSimulation/BodyId.h"
 #include "OGSimulation/Network/SimWireToken.h"
-#include "OGSimSession/SessionTypes.h"
 
 namespace ogsession
 {
@@ -154,92 +153,4 @@ static_assert(!SessionGame<RuntimeWireTokenFragment>,
 	"SessionGame self-check: kWireTokenFragment must be a constant expression, because a game joins its wire token at "
 	"compile time");
 } // namespace sessionGameSelfCheck
-
-template <typename H, typename G>
-concept SessionGameHooks = SessionGame<G>
-	&& requires(H& h, typename G::Simulatable& simulatable, EntityKey entityKey, uint32_t id, bool isAuthority,
-		const typename G::AuthorityPresentationSlice& slice)
-{
-	{ h.sampleInput() }                                           -> std::same_as<void>;
-	{ h.afterBodiesCreated(simulatable, entityKey, id, isAuthority) } -> std::same_as<void>;
-	{ h.afterRegistered(id, isAuthority) }                        -> std::same_as<void>;
-	{ h.onUnregistered(id) }                                      -> std::same_as<void>;
-	{ h.presentAuthoritySlice(id, slice) }                        -> std::same_as<void>;
-	{ h.afterVisualization() }                                    -> std::same_as<void>;
-};
-
-namespace sessionGameHooksSelfCheck
-{
-using Game = sessionGameSelfCheck::Conforming;
-
-struct Conforming
-{
-	void sampleInput();
-	void afterBodiesCreated(Game::Simulatable&, EntityKey, uint32_t, bool);
-	void afterRegistered(uint32_t, bool);
-	void onUnregistered(uint32_t);
-	void presentAuthoritySlice(uint32_t, const Game::AuthorityPresentationSlice&);
-	void afterVisualization();
-};
-
-struct SampleReturnsBool : Conforming
-{
-	bool sampleInput();
-};
-
-struct BodiesCreatedWithoutEntityKey : Conforming
-{
-	void afterBodiesCreated(Game::Simulatable&, uint32_t, bool);
-};
-
-struct MissingAfterRegistered
-{
-	void sampleInput();
-	void afterBodiesCreated(Game::Simulatable&, EntityKey, uint32_t, bool);
-	void onUnregistered(uint32_t);
-	void presentAuthoritySlice(uint32_t, const Game::AuthorityPresentationSlice&);
-	void afterVisualization();
-};
-
-struct MissingOnUnregistered
-{
-	void sampleInput();
-	void afterBodiesCreated(Game::Simulatable&, EntityKey, uint32_t, bool);
-	void afterRegistered(uint32_t, bool);
-	void presentAuthoritySlice(uint32_t, const Game::AuthorityPresentationSlice&);
-	void afterVisualization();
-};
-
-struct PresentTakesMutableSlice : Conforming
-{
-	void presentAuthoritySlice(uint32_t, Game::AuthorityPresentationSlice&);
-};
-
-struct AfterVisualizationTakesAnArgument : Conforming
-{
-	void afterVisualization(double);
-};
-
-struct HooksOfNoGame : Conforming
-{
-};
-
-static_assert(SessionGameHooks<Conforming, Game>,
-	"SessionGameHooks self-check: the reference shape must satisfy the concept");
-static_assert(!SessionGameHooks<SampleReturnsBool, Game>,
-	"SessionGameHooks self-check: sampleInput returns void, so it cannot veto or skip the frame");
-static_assert(!SessionGameHooks<BodiesCreatedWithoutEntityKey, Game>,
-	"SessionGameHooks self-check: afterBodiesCreated takes the entity key, the engine's handle of the entity whose bodies "
-	"were created");
-static_assert(!SessionGameHooks<MissingAfterRegistered, Game>,
-	"SessionGameHooks self-check: afterRegistered is required");
-static_assert(!SessionGameHooks<MissingOnUnregistered, Game>,
-	"SessionGameHooks self-check: onUnregistered is required");
-static_assert(!SessionGameHooks<PresentTakesMutableSlice, Game>,
-	"SessionGameHooks self-check: presentAuthoritySlice reads the slice and cannot rewrite it");
-static_assert(!SessionGameHooks<AfterVisualizationTakesAnArgument, Game>,
-	"SessionGameHooks self-check: afterVisualization takes nothing");
-static_assert(!SessionGameHooks<HooksOfNoGame, sessionGameSelfCheck::MissingInstallGameLoggers>,
-	"SessionGameHooks self-check: the hooks are another game's half, so their game must be a SessionGame");
-} // namespace sessionGameHooksSelfCheck
 } // namespace ogsession

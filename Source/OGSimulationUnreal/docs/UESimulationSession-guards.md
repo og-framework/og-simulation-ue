@@ -31,7 +31,7 @@ the runtime before the bodies), the runtime's channel type, the game's six insta
 traits and the client's bind order are the runtime's (`SessionRuntime.h`'s `compositionContractsHold()`,
 `SessionRuntime-guards.md`). Until task 31 this paragraph listed them as this class's (`compositionContractsHold()` here).
 
-Four entries are live (G-02, G-10, G-11, G-30); §R lists every retired id, and `UESimulationSession-rationale.md` §R
+Three entries are live (G-02, G-10, G-30); §R lists every retired id, and `UESimulationSession-rationale.md` §R
 lists the successors of those tasks 23 to 31 retired.
 
 ---
@@ -128,110 +128,6 @@ og-ue-simulationcomponentandmanagersplit task 25: the owner registry moved here,
 body this was, became the session's.*
 
 ---
-
-## G-11 — the transport seam: a transport function reaches only its allow-list (deny by default)
-
-**Tag site:** `UESimulationSession.h`, directly above `instanceFor`, the first declaration of the transport section.
-
-**Today (og-session-runtime task 33): the seam's functions have left this class.** Tasks 23 to 31 moved every function in
-the table below into og-sim-session (the clock and the tier and floor receipts to `SessionClock`, the knobs to
-`SessionKnobs`, the frame probe and the og-net hookup to `SessionRuntime`, the reception to `SessionNetHooks`), and task 31
-deleted `setOnTimingInfoReceivedCallback`, `getTimeConfigPtr` and `getReceptionCoordinator` (no caller). What stays at the tag
-is `instanceFor`, which reaches only the registry (`UESessionRegistry::instanceFor`), and the destructor (G-10). The
-prohibition still binds those two: they reach no typed session state. The table and the paragraphs below are the entry's
-record, under the names the code had. The tag and this entry could retire (a code change: the tag goes with it); task 33
-leaves that to task 33b.
-
-**The prohibition.** ⛔ Until the type-free transport (M4, deferred) lands, a transport function reaches typed state only
-through what that transport's binding would take (manager design §9): the manager's session controls (`runsPrediction`,
-`getTimeConfig`, the clamped setters and the six clock accessors), the input-delay atomic (through the delay publish
-and its read), the resim-policy sink and the coordinator's tier tracking. Every other member, accessor or `TraitsT` reach
-in a transport function is forbidden unless the table below names it, and a transport function calls into the session only
-through another transport function (or the one accessor the table names).
-
-**The allow-list, built from the moved code (og-ue-simulationcomponentandmanagersplit tasks 25 and 26b).** "Transport
-state" is the transport's own members (`s_instances`, `m_replicatedTierConsumer`, `m_lastPublishedEffectiveInputDelayTicks`,
-`m_onTimingInfoReceivedCallback`, and since task 26b the frame probe `m_frameHealthProbe`; PROBE 6's until og-session-runtime
-task 14, the timing relay pointer until og-input-latency task P5-7), which M4 moves with the functions.
-
-| function | may reach |
-|---|---|
-| `instanceFor`, `~UESimulationSession` | transport state `s_instances`; since og-session-runtime task 16b also each registered session's `m_registeredWorld` and `m_registeredAsAuthority` (`instanceFor`) and `unregisterInstance` (the destructor), which reaches `s_instances` and `s_startedSessions` |
-| `setOnTimingInfoReceivedCallback` | transport state `m_onTimingInfoReceivedCallback` |
-| `onTimingInfoReceived` | transport state `m_onTimingInfoReceivedCallback`; `m_manager`: `has_value`, `editNetworkEstimator`; **exempt (Q-I):** `m_latencyBudgetDiagnostics.noteWireSample` |
-| `publishClientEffectiveInputDelayTicks` / `getClientEffectiveInputDelayTicks` | `m_inputResolution`: `setClientEffectiveInputDelayTicks` / `getClientEffectiveInputDelayTicks` (the atomic) |
-| `getReplicatedTierConsumer`, `applyReplicatedConnectionTier` | transport state `m_replicatedTierConsumer` |
-| `onConnectionTierReceived` | transport calls `applyReplicatedConnectionTier`, `payInputDelayTransition`; `m_manager`: `has_value`, `getTimeConfig` (the floor its line prints; og-input-latency P6-2) |
-| `beginTierConsumer` | transport state `m_replicatedTierConsumer`; `m_manager`: `getTimeConfig` |
-| `recomputeAndPublishEffectiveInputDelay` | transport state `m_replicatedTierConsumer`, `m_lastPublishedEffectiveInputDelayTicks`; `m_manager`: `has_value`, `getTimeConfig` |
-| `logRelayDelayFloorAdvisory` | `m_manager`: `has_value`, `getTimeConfig` (`applyTierTransitionStall` was here too until og-input-latency P6-2 deleted it) |
-| `applyReplicatedRelayDelayFloor` | `m_manager`: `has_value`, `getTimeConfig`, `setRelayDelayFloorTicks` |
-| `requestInputDelayTransition` (`requestInputDelayIncreaseStall` until og-input-latency P6-2) | `m_manager`: `has_value`, `runsPrediction`, `editClientClock` |
-| `payInputDelayTransition` (og-input-latency P6-2) | transport call `requestInputDelayTransition` only |
-| `onRelayDelayFloorReceived` | transport calls only (its replay twin and the tier's were deleted by og-input-latency task P5-9) |
-| `onFrameStepsDue_Step` (task 26b) | transport state `m_frameHealthProbe` and the runner's wake count; `m_manager`: `has_value`, `runsPrediction` (until og-session-runtime task 14 also PROBE 6's state and its one-shot `[PacketBudget]` latch, the server's presence test and the owner as an `AActor`, for the in-frame server) |
-
-**The exemption (ruled Q-I, 2026-10-20).** The wire sample in `onTimingInfoReceived` is the session's own call to its typed
-latency member; it stays typed under M4 (its binding would take it), so the ruling exempts it instead of widening §9's list.
-The ruling's other exemption, the relay host's character cast in the input-relay listener member, went with that member
-(og-input-latency task P5-7).
-
-**One reach §9 did not name.** From task 26b until og-session-runtime task 14 PROBE 6 read the owner's world for its net
-driver (the timing relay's lookup iterated it the same way until P5-7): the owner as an `AActor`, a `UObject` reach, not a game
-type. It went with PROBE 6.
-
-**The knobs and the frame probe (task 26b)** were on the seam: the three knob functions reached the manager only through its
-session controls (`getTimeConfig` and the two clamped setters) and the resim-policy sink, and the frame probe reaches the
-manager's role (`has_value`, `runsPrediction`) only. **The knob functions left this class with og-session-runtime task 23**: they
-are og-sim-session's (`SessionKnobs.h`), free functions that take what they reach as arguments (the manager, og-sim-net's server
-as a pointer, the advisory, the dilation controller and window, a log sink), so their four rows went from the table; what
-`beginPlay` passes them is its own reach. Until og-session-runtime task 14 PROBE 6 also reached the coordinator's
-presence, the one reach into the input-reception state a seam function had (§9 named it).
-
-**A fourth knob function (og-input-latency task 4).** `applyLatencyKnobs` reached the manager through `getTimeConfig` and
-two more clamped setters, `setRedundancyFrames` and `setRelayResendEntries`. They are the same kind of session control
-as the first two (an integer clamped into one `TimeConfig` field), so "the clamped setters" above names four. (Its row went
-with the move, og-session-runtime task 23.)
-
-**Exempt by design: the input reception and the og-net hookup.** `getReceptionCoordinator`,
-`getServerReceptionTick`, `releaseDelayedInputsForStep` and `afterAuthorityBatch` (the reap; og-sim-session's `SessionNetHooks`
-since og-session-runtime task 26, over the port's `Server`) are typed on the per-step release
-(task 26a; the in-frame server's correction-tick walk for the latency member too, until og-session-runtime task 14): erasing the game's input type there would put
-an indirect call on the step path (manager design §9, step 5). Since og-input-latency task P5-7 they reach og-sim-net's server,
-which is typed on the game's composition, and the og-net hookup joins them: `findDriverSimNetLanes`, `beginServerSimNet`,
-`beginClientSimNet`, `logSimNetHostLine`, `onSimNetLanesStopping`, `detachFromSimNetLanes`, `clientBindStep`,
-`forgetSimNetCharacter` and `onSimNetRegisteredRemoved`, with their state (`m_simNetLanes`, `m_simNetServerHost`,
-`m_simNetServer`, `m_registeredComponentsById`, `m_simUnregisteredIds`; the authority's slot map is og-sim-session's
-`SessionAuthorityLifecycle`'s since og-session-runtime task 30). og-sim-net is the
-typed transport M4 was to make type-free, so they stay in this class, are not on the list above, and the script does not check
-them. Of the functions above, `applySessionKnobs` reached the server (to publish) until og-session-runtime task 23 moved it to
-og-sim-session, which `beginPlay` passes the server. Until og-session-runtime task 14 the in-frame
-server's clock publish reached it too, `onFrameStepsDue_Step` tested its presence, and the hookup also held the in-frame
-server's add and unregistration with their channel map and the session's detached lanes. Until P5-7 this list was the session's own coordinator, the delayed-input map and
-its registration, the two sinks with PROBE 5, the coordinator's emplace and the forget.
-
-**What breaks if the edit is made.** A typed reach in a transport function compiles and behaves; what breaks is M4. Each
-reach outside the list is a dependency the type-free transport class cannot satisfy, found only when that refactor is
-attempted.
-
-**How it is checked.** The seam script of og-ue-simulationcomponentandmanagersplit (transport_seam.py, in that initiative's td25 evidence folder, outside this repository) extracts each listed
-function's body from this header by brace matching and denies every data member, member call and `TraitsT`-derived name
-the function's list does not name, every call into the session that is not another listed function, and every allowance
-the body does not use, so the list in the script and the table here stay the moved code's exactly. Since task 26b it also
-reads `(*this).X` and `(*this)->X` as `this->X`, and denies every other use of the session object inside a listed
-function (`*this`, or a bare `this` that is not `this->`, a comparison or a lambda capture), so a local alias of the
-session cannot carry a call past the check. Its seen-failing arms each fail it: task 25's three (a `TraitsT::PlayerInput`
-use in a tier helper, an `m_storage` read, a call to `getReceptionCoordinator()`), and task 26b's (a knob function calling
-a manager member outside its list, `(*this).getReceptionCoordinator()`, a reference and a pointer alias of the session, and
-an allowance the body stopped using). The script is the reviewer's tool, not a build step: nothing in the build runs it.
-
----
-
-
-
-
-
-
 
 ## G-30 — the pawn's unregistration returns at once for an id already unregistered by a roster Remove or the lanes' stop
 
@@ -596,3 +492,94 @@ runner side (`run(Unregister&)`, above `if (!request.registerPosted)`). **Succes
 **Was:** *"the margin predicate must ask the category `RouteOGMessage` sends `[DivergenceProbe` to, at `Log`, live"*. Its tag sat at: `UESimulationSession.h`, directly above the `correctionVerdictMargin::setEnabledPredicate(` call in `bindCorrectionFieldDiffGate`, the second predicate install, after G-22's and a `static_assert` on the route.
 
 **Why it retired.** Task 31 moved the session's composition, start and stop out of the Unreal adapter (and the tick backend out of its Unreal wrapper) into og-sim-session's engine-free `SessionRuntime.h`, or the engine's parts into `UESessionEngine.h`, the site with it. The entry moved with its text. **Successor:** `UESessionEngine-guards.md` G-02.
+
+### G-11 — RETIRED by og-session-runtime task 33b (2026-11-26): its subject left the class
+
+**Was:** *"the transport seam: a transport function reaches only its allow-list (deny by default)"*. Its tag sat at: `UESimulationSession.h`, directly above `instanceFor`, the first declaration of the transport section.
+
+**Why it retired.** Tasks 23 to 31 moved every function of its allow-list into og-sim-session (the clock and the tier and floor receipts to `SessionClock`, the knobs to `SessionKnobs`, the frame probe and the og-net hookup to `SessionRuntime`, the reception to `SessionNetHooks`), and task 31 deleted `setOnTimingInfoReceivedCallback`, `getTimeConfigPtr` and `getReceptionCoordinator` (no caller). What stayed at the tag was `instanceFor`, which reaches only the registry (`UESessionRegistry::instanceFor`), and the destructor, which G-10 guards. **Successor:** none; no function of the seam is this class's.
+
+**The entry as it stood**, under the names the code had, is the record below.
+
+**The prohibition.** ⛔ Until the type-free transport (M4, deferred) lands, a transport function reaches typed state only
+through what that transport's binding would take (manager design §9): the manager's session controls (`runsPrediction`,
+`getTimeConfig`, the clamped setters and the six clock accessors), the input-delay atomic (through the delay publish
+and its read), the resim-policy sink and the coordinator's tier tracking. Every other member, accessor or `TraitsT` reach
+in a transport function is forbidden unless the table below names it, and a transport function calls into the session only
+through another transport function (or the one accessor the table names).
+
+**The allow-list, built from the moved code (og-ue-simulationcomponentandmanagersplit tasks 25 and 26b).** "Transport
+state" is the transport's own members (`s_instances`, `m_replicatedTierConsumer`, `m_lastPublishedEffectiveInputDelayTicks`,
+`m_onTimingInfoReceivedCallback`, and since task 26b the frame probe `m_frameHealthProbe`; PROBE 6's until og-session-runtime
+task 14, the timing relay pointer until og-input-latency task P5-7), which M4 moves with the functions.
+
+| function | may reach |
+|---|---|
+| `instanceFor`, `~UESimulationSession` | transport state `s_instances`; since og-session-runtime task 16b also each registered session's `m_registeredWorld` and `m_registeredAsAuthority` (`instanceFor`) and `unregisterInstance` (the destructor), which reaches `s_instances` and `s_startedSessions` |
+| `setOnTimingInfoReceivedCallback` | transport state `m_onTimingInfoReceivedCallback` |
+| `onTimingInfoReceived` | transport state `m_onTimingInfoReceivedCallback`; `m_manager`: `has_value`, `editNetworkEstimator`; **exempt (Q-I):** `m_latencyBudgetDiagnostics.noteWireSample` |
+| `publishClientEffectiveInputDelayTicks` / `getClientEffectiveInputDelayTicks` | `m_inputResolution`: `setClientEffectiveInputDelayTicks` / `getClientEffectiveInputDelayTicks` (the atomic) |
+| `getReplicatedTierConsumer`, `applyReplicatedConnectionTier` | transport state `m_replicatedTierConsumer` |
+| `onConnectionTierReceived` | transport calls `applyReplicatedConnectionTier`, `payInputDelayTransition`; `m_manager`: `has_value`, `getTimeConfig` (the floor its line prints; og-input-latency P6-2) |
+| `beginTierConsumer` | transport state `m_replicatedTierConsumer`; `m_manager`: `getTimeConfig` |
+| `recomputeAndPublishEffectiveInputDelay` | transport state `m_replicatedTierConsumer`, `m_lastPublishedEffectiveInputDelayTicks`; `m_manager`: `has_value`, `getTimeConfig` |
+| `logRelayDelayFloorAdvisory` | `m_manager`: `has_value`, `getTimeConfig` (`applyTierTransitionStall` was here too until og-input-latency P6-2 deleted it) |
+| `applyReplicatedRelayDelayFloor` | `m_manager`: `has_value`, `getTimeConfig`, `setRelayDelayFloorTicks` |
+| `requestInputDelayTransition` (`requestInputDelayIncreaseStall` until og-input-latency P6-2) | `m_manager`: `has_value`, `runsPrediction`, `editClientClock` |
+| `payInputDelayTransition` (og-input-latency P6-2) | transport call `requestInputDelayTransition` only |
+| `onRelayDelayFloorReceived` | transport calls only (its replay twin and the tier's were deleted by og-input-latency task P5-9) |
+| `onFrameStepsDue_Step` (task 26b) | transport state `m_frameHealthProbe` and the runner's wake count; `m_manager`: `has_value`, `runsPrediction` (until og-session-runtime task 14 also PROBE 6's state and its one-shot `[PacketBudget]` latch, the server's presence test and the owner as an `AActor`, for the in-frame server) |
+
+**The exemption (ruled Q-I, 2026-10-20).** The wire sample in `onTimingInfoReceived` is the session's own call to its typed
+latency member; it stays typed under M4 (its binding would take it), so the ruling exempts it instead of widening §9's list.
+The ruling's other exemption, the relay host's character cast in the input-relay listener member, went with that member
+(og-input-latency task P5-7).
+
+**One reach §9 did not name.** From task 26b until og-session-runtime task 14 PROBE 6 read the owner's world for its net
+driver (the timing relay's lookup iterated it the same way until P5-7): the owner as an `AActor`, a `UObject` reach, not a game
+type. It went with PROBE 6.
+
+**The knobs and the frame probe (task 26b)** were on the seam: the three knob functions reached the manager only through its
+session controls (`getTimeConfig` and the two clamped setters) and the resim-policy sink, and the frame probe reaches the
+manager's role (`has_value`, `runsPrediction`) only. **The knob functions left this class with og-session-runtime task 23**: they
+are og-sim-session's (`SessionKnobs.h`), free functions that take what they reach as arguments (the manager, og-sim-net's server
+as a pointer, the advisory, the dilation controller and window, a log sink), so their four rows went from the table; what
+`beginPlay` passes them is its own reach. Until og-session-runtime task 14 PROBE 6 also reached the coordinator's
+presence, the one reach into the input-reception state a seam function had (§9 named it).
+
+**A fourth knob function (og-input-latency task 4).** `applyLatencyKnobs` reached the manager through `getTimeConfig` and
+two more clamped setters, `setRedundancyFrames` and `setRelayResendEntries`. They are the same kind of session control
+as the first two (an integer clamped into one `TimeConfig` field), so "the clamped setters" above names four. (Its row went
+with the move, og-session-runtime task 23.)
+
+**Exempt by design: the input reception and the og-net hookup.** `getReceptionCoordinator`,
+`getServerReceptionTick`, `releaseDelayedInputsForStep` and `afterAuthorityBatch` (the reap; og-sim-session's `SessionNetHooks`
+since og-session-runtime task 26, over the port's `Server`) are typed on the per-step release
+(task 26a; the in-frame server's correction-tick walk for the latency member too, until og-session-runtime task 14): erasing the game's input type there would put
+an indirect call on the step path (manager design §9, step 5). Since og-input-latency task P5-7 they reach og-sim-net's server,
+which is typed on the game's composition, and the og-net hookup joins them: `findDriverSimNetLanes`, `beginServerSimNet`,
+`beginClientSimNet`, `logSimNetHostLine`, `onSimNetLanesStopping`, `detachFromSimNetLanes`, `clientBindStep`,
+`forgetSimNetCharacter` and `onSimNetRegisteredRemoved`, with their state (`m_simNetLanes`, `m_simNetServerHost`,
+`m_simNetServer`, `m_registeredComponentsById`, `m_simUnregisteredIds`; the authority's slot map is og-sim-session's
+`SessionAuthorityLifecycle`'s since og-session-runtime task 30). og-sim-net is the
+typed transport M4 was to make type-free, so they stay in this class, are not on the list above, and the script does not check
+them. Of the functions above, `applySessionKnobs` reached the server (to publish) until og-session-runtime task 23 moved it to
+og-sim-session, which `beginPlay` passes the server. Until og-session-runtime task 14 the in-frame
+server's clock publish reached it too, `onFrameStepsDue_Step` tested its presence, and the hookup also held the in-frame
+server's add and unregistration with their channel map and the session's detached lanes. Until P5-7 this list was the session's own coordinator, the delayed-input map and
+its registration, the two sinks with PROBE 5, the coordinator's emplace and the forget.
+
+**What breaks if the edit is made.** A typed reach in a transport function compiles and behaves; what breaks is M4. Each
+reach outside the list is a dependency the type-free transport class cannot satisfy, found only when that refactor is
+attempted.
+
+**How it is checked.** The seam script of og-ue-simulationcomponentandmanagersplit (transport_seam.py, in that initiative's td25 evidence folder, outside this repository) extracts each listed
+function's body from this header by brace matching and denies every data member, member call and `TraitsT`-derived name
+the function's list does not name, every call into the session that is not another listed function, and every allowance
+the body does not use, so the list in the script and the table here stay the moved code's exactly. Since task 26b it also
+reads `(*this).X` and `(*this)->X` as `this->X`, and denies every other use of the session object inside a listed
+function (`*this`, or a bare `this` that is not `this->`, a comparison or a lambda capture), so a local alias of the
+session cannot carry a call past the check. Its seen-failing arms each fail it: task 25's three (a `TraitsT::PlayerInput`
+use in a tier helper, an `m_storage` read, a call to `getReceptionCoordinator()`), and task 26b's (a knob function calling
+a manager member outside its list, `(*this).getReceptionCoordinator()`, a reference and a pointer alias of the session, and
+an allowance the body stopped using). The script is the reviewer's tool, not a build step: nothing in the build runs it.

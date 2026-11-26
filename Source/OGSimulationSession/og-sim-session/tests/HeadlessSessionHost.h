@@ -141,7 +141,11 @@ public:
 	void sampleInput() {}
 	void endFrames() { m_driver = nullptr; }
 	void logHost(const char* line) { logLine(line); }
-	void forgetComponents() { m_registered.clear(), m_gone.clear(); }
+	void forgetComponents()
+	{
+		m_registered.clear();
+		m_gone.clear();
+	}
 	uint64_t bodyKeyOf(ogsession::EntityKey key) const { return key.value; }
 	InputProvider wrapInputProvider(const ogsession::RegisterRequest&, InputProvider&& provider) { return std::move(provider); }
 
@@ -228,7 +232,10 @@ private:
 	{
 		RegisterHooks hooks{ this, &entity };
 		if (auto* const authority = m_runtime.authorityLifecycle())
-			return collectOutcomes(), authority->tryRegister(requestFor(entity), Simulatable(entity.prototype), hooks);
+		{
+			collectOutcomes();
+			return authority->tryRegister(requestFor(entity), Simulatable(entity.prototype), hooks);
+		}
 		if (isAuthority() || m_runtime.bindStep(entity.simId, entity.local) != ogsimnet::BindStep::Ready)
 			return ogsession::RegisterStatus::Pending;
 		return m_runtime.tryRegisterPrediction(requestFor(entity), Simulatable(entity.prototype), InputProvider(entity.provider), hooks);

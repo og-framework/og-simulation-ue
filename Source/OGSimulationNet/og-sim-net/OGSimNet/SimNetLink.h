@@ -565,6 +565,11 @@ struct LockWhoseLockReturnsBool
 	void unlock();
 };
 
+struct LockWhoseUnlockReturnsBool : ReferenceLock
+{
+	bool unlock();
+};
+
 struct ReferenceServices
 {
 	double nowSeconds();
@@ -621,6 +626,26 @@ struct ServicesWithAFloatServerRtt
 	void logHost(const char* line);
 	float serverRttSeconds();
 	void onWireMismatch(uint8_t received, uint8_t expected);
+};
+
+struct ServicesWithAFloatNowSeconds : ReferenceServices
+{
+	float nowSeconds();
+};
+
+struct ServicesWhoseLogRoutedReturnsBool : ReferenceServices
+{
+	bool logRouted(const char* line);
+};
+
+struct ServicesWhoseLogHostReturnsBool : ReferenceServices
+{
+	bool logHost(const char* line);
+};
+
+struct ServicesWhoseWireMismatchReturnsBool : ReferenceServices
+{
+	bool onWireMismatch(uint8_t received, uint8_t expected);
 };
 
 struct ReferenceSession
@@ -697,6 +722,41 @@ struct SessionWithAReplayedFloor
 	void stampClientReceived(SimNetStream stream, uint8_t simId, uint32_t tick, double recvSeconds);
 };
 
+struct SessionWhoseTimingInfoReturnsBool : ReferenceSession
+{
+	bool onTimingInfo(uint32_t tick, double rttSeconds);
+};
+
+struct SessionWhoseRelayFloorReturnsBool : ReferenceSession
+{
+	bool onRelayFloor(uint8_t floorTicks);
+};
+
+struct SessionWhoseConnectionTierReturnsBool : ReferenceSession
+{
+	bool onConnectionTier(uint8_t oldTier, uint8_t newTier);
+};
+
+struct SessionWhoseClockSampleReturnsBool : ReferenceSession
+{
+	bool onClockSample(const SimClockRttSample& sample);
+};
+
+struct SessionWhoseUnregisteringReturnsBool : ReferenceSession
+{
+	bool onLifecycleUnregistering(uint8_t simId);
+};
+
+struct SessionWhoseStampReturnsBool : ReferenceSession
+{
+	bool stampClientReceived(SimNetStream stream, uint8_t simId, uint32_t tick, double recvSeconds);
+};
+
+struct SessionTakingAMutableSample : ReferenceSession
+{
+	void onClockSample(SimClockRttSample& sample);
+};
+
 struct ReferenceEndpoint
 {
 	void send(ognet::ConnectionId id, ognet::Lane lane, std::span<const std::byte> bytes);
@@ -740,11 +800,24 @@ struct EndpointWithATwoArgumentNoteDelivered
 	void noteDelivered(ognet::Lane lane, double recvSeconds);
 };
 
+struct EndpointWithAConfigCopy : ReferenceEndpoint
+{
+	ognet::EndpointConfig config() const;
+};
+
+struct EndpointWhoseNoteDeliveredReturnsBool : ReferenceEndpoint
+{
+	bool noteDelivered(ognet::Lane lane, double recvSeconds, double nowSeconds);
+};
+
 static_assert(SimNetLinkLock<ReferenceLock>, "SimNetLinkLock self-check: the reference shape (lock, unlock) must satisfy the concept");
 static_assert(!SimNetLinkLock<LockWithoutLock>, "SimNetLinkLock self-check: lock() is required; the bindings take it around every call");
 static_assert(!SimNetLinkLock<LockWithoutUnlock>, "SimNetLinkLock self-check: unlock() is required");
 static_assert(!SimNetLinkLock<LockWhoseLockReturnsBool>,
 	"SimNetLinkLock self-check: lock() returns void; a lock that can fail (try_lock's shape) is not BasicLockable");
+static_assert(!SimNetLinkLock<LockWhoseUnlockReturnsBool>,
+	"SimNetLinkLock self-check: unlock() returns void; the link takes the lock through std::scoped_lock, which discards "
+	"any result");
 
 static_assert(SimNetLinkServices<ReferenceServices>, "SimNetLinkServices self-check: the reference shape must satisfy the concept");
 static_assert(!SimNetLinkServices<ServicesWithoutNowSeconds>,
@@ -759,6 +832,15 @@ static_assert(!SimNetLinkServices<ServicesWithoutWireMismatch>,
 	"SimNetLinkServices self-check: onWireMismatch(received, expected) is required (the engine's report of a build mismatch)");
 static_assert(!SimNetLinkServices<ServicesWithAFloatServerRtt>,
 	"SimNetLinkServices self-check: serverRttSeconds() returns double, the type og-sim-net's client host hands the clock");
+static_assert(!SimNetLinkServices<ServicesWithAFloatNowSeconds>,
+	"SimNetLinkServices self-check: nowSeconds() returns double; a float of seconds since start loses milliseconds, and "
+	"the delivery note's residence is a difference of two such times");
+static_assert(!SimNetLinkServices<ServicesWhoseLogRoutedReturnsBool>,
+	"SimNetLinkServices self-check: logRouted(line) returns void; the link discards any result");
+static_assert(!SimNetLinkServices<ServicesWhoseLogHostReturnsBool>,
+	"SimNetLinkServices self-check: logHost(line) returns void; the link discards any result");
+static_assert(!SimNetLinkServices<ServicesWhoseWireMismatchReturnsBool>,
+	"SimNetLinkServices self-check: onWireMismatch(received, expected) returns void; the link discards any result");
 
 static_assert(SimNetLinkSession<ReferenceSession>, "SimNetLinkSession self-check: the reference shape must satisfy the concept");
 static_assert(!SimNetLinkSession<SessionWithoutTimingInfo>, "SimNetLinkSession self-check: onTimingInfo(tick, rtt) is required");
@@ -773,6 +855,21 @@ static_assert(!SimNetLinkSession<SessionWithoutStamp>,
 static_assert(!SimNetLinkSession<SessionWithAReplayedFloor>,
 	"SimNetLinkSession self-check: onRelayFloor takes the floor alone; a session that could tell a replay apart could skip "
 	"the stall an attach-time floor pays (SimNetLink-guards.md G-04)");
+static_assert(!SimNetLinkSession<SessionWhoseTimingInfoReturnsBool>,
+	"SimNetLinkSession self-check: onTimingInfo(tick, rtt) returns void; the link discards any result");
+static_assert(!SimNetLinkSession<SessionWhoseRelayFloorReturnsBool>,
+	"SimNetLinkSession self-check: onRelayFloor(floor) returns void; the link discards any result");
+static_assert(!SimNetLinkSession<SessionWhoseConnectionTierReturnsBool>,
+	"SimNetLinkSession self-check: onConnectionTier(oldTier, newTier) returns void; the link discards any result");
+static_assert(!SimNetLinkSession<SessionWhoseClockSampleReturnsBool>,
+	"SimNetLinkSession self-check: onClockSample(sample) returns void; the link discards any result");
+static_assert(!SimNetLinkSession<SessionWhoseUnregisteringReturnsBool>,
+	"SimNetLinkSession self-check: onLifecycleUnregistering(simId) returns void; the link discards any result");
+static_assert(!SimNetLinkSession<SessionWhoseStampReturnsBool>,
+	"SimNetLinkSession self-check: stampClientReceived(stream, simId, tick, recvSeconds) returns void; the link discards "
+	"any result");
+static_assert(!SimNetLinkSession<SessionTakingAMutableSample>,
+	"SimNetLinkSession self-check: onClockSample takes the sample by const reference, as the link hands it over");
 
 static_assert(SimNetLinkEndpoint<ReferenceEndpoint>, "SimNetLinkEndpoint self-check: the reference shape must satisfy the concept");
 static_assert(!SimNetLinkEndpoint<EndpointWithoutDisconnect>,
@@ -781,5 +878,10 @@ static_assert(!SimNetLinkEndpoint<EndpointWithAMutableConfig>,
 	"SimNetLinkEndpoint self-check: config() is callable on a const endpoint and returns the endpoint's og-net config");
 static_assert(!SimNetLinkEndpoint<EndpointWithATwoArgumentNoteDelivered>,
 	"SimNetLinkEndpoint self-check: noteDelivered(lane, recvSeconds, nowSeconds) is required, the endpoint's [OGNet.Window] row");
+static_assert(!SimNetLinkEndpoint<EndpointWithAConfigCopy>,
+	"SimNetLinkEndpoint self-check: config() returns a const reference to the endpoint's own og-net config, not a copy");
+static_assert(!SimNetLinkEndpoint<EndpointWhoseNoteDeliveredReturnsBool>,
+	"SimNetLinkEndpoint self-check: noteDelivered(lane, recvSeconds, nowSeconds) returns void; the link discards any "
+	"result");
 } // namespace simNetLinkSelfCheck
 } // namespace ogsimnet

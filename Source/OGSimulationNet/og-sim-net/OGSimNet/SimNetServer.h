@@ -329,6 +329,8 @@ public:
 	}
 
 	SimNetServer(HostT& host, TransportT& transport, TimeConfig&& config, size_t correctionBudgetBytes, PolicyT policy = PolicyT{}) = delete;
+	SimNetServer(HostT& host, TransportT& transport, const TimeConfig&& config, size_t correctionBudgetBytes,
+		PolicyT policy = PolicyT{}) = delete;
 
 	SimNetServer(const SimNetServer&) = delete;
 	SimNetServer& operator=(const SimNetServer&) = delete;

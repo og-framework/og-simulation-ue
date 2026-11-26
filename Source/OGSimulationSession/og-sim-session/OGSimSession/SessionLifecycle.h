@@ -852,6 +852,17 @@ struct AnyField
 	operator U() const;
 };
 
+template <typename T>
+struct AnyBaseOf
+{
+	template <typename U>
+		requires(std::is_class_v<U> && std::is_base_of_v<U, T> && !std::is_same_v<std::remove_cv_t<U>, T>)
+	operator U() const;
+};
+
+template <typename T>
+inline constexpr bool kHasBase = std::is_aggregate_v<T> && requires { T{ AnyBaseOf<T>{} }; };
+
 template <typename T, typename IndicesT>
 struct BraceInitializableWith;
 
@@ -945,6 +956,12 @@ consteval bool holdsNoCallable()
 		return false;
 	else if constexpr (std::is_class_v<T> && std::is_aggregate_v<T>)
 	{
+		static_assert(!kHasBase<T>,
+			"authorityRequest: a request, and an aggregate inside one, has no base class. Its fields are found by a structured "
+			"binding, which clang refuses on a class whose base holds data too and MSVC accepts for some such classes, so with "
+			"a base the check would differ by compiler. A first field that converts from any type (std::any) reads as a base "
+			"too. Was a request with a data-only base, which MSVC could pass and clang-cl refused (og-session-runtime task "
+			"30's re-review)");
 		static_assert(!BraceInitializableWith<T, std::make_index_sequence<kMaxFields + 1u>>::value,
 			"authorityRequest: a request holds at most kMaxFields fields; add a binding to fieldsHoldNoCallable and raise it");
 		return decltype(fieldsHoldNoCallable<fieldCount<T>()>(std::declval<const T&>()))::value;
@@ -976,6 +993,7 @@ using AuthorityRequest = std::variant<authorityRequest::CreateBodies<BodyRequest
 namespace authorityRequestSelfCheck
 {
 using authorityRequest::kAlternativesHoldNoCallable;
+using authorityRequest::kHasBase;
 using authorityRequest::kHoldsNoCallable;
 using authorityRequest::kIsCallable;
 using Simulatable = sessionBodiesSelfCheck::Simulatable;
@@ -1057,6 +1075,36 @@ struct RequestNotAggregate
 	uint64_t key = 0u;
 };
 
+struct DataBase
+{
+	uint64_t key = 0u;
+};
+
+struct EmptyBase
+{
+};
+
+struct RequestWithADataBase : DataBase
+{
+	uint32_t simId = 0u;
+};
+
+struct RequestWithAnEmptyBase : EmptyBase
+{
+	uint32_t simId = 0u;
+};
+
+struct RequestWithTwoBases : DataBase, EmptyBase
+{
+	uint32_t simId = 0u;
+};
+
+struct RequestWithAnAggregateFirst
+{
+	DataBase    first;
+	std::string name;
+};
+
 static_assert(!kIsCallable<uint64_t> && !kIsCallable<std::string> && !kIsCallable<std::optional<uint32_t>>
 		&& !kIsCallable<std::shared_ptr<Simulatable>> && !kIsCallable<const Simulatable*> && !kIsCallable<DataRequest>,
 	"authorityRequest self-check: data is not callable");
@@ -1080,6 +1128,10 @@ static_assert(!kAlternativesHoldNoCallable<std::variant<authorityRequest::Unregi
 	"authorityRequest self-check: a callable field added to a request is found");
 static_assert(!kAlternativesHoldNoCallable<std::variant<authorityRequest::Unregister, RequestNotAggregate>>,
 	"authorityRequest self-check: a request that is not an aggregate cannot be walked field by field, so it is refused");
+static_assert(kHasBase<RequestWithADataBase> && kHasBase<RequestWithAnEmptyBase> && kHasBase<RequestWithTwoBases>,
+	"authorityRequest self-check: a base class is found, one that holds data, an empty one and two");
+static_assert(!kHasBase<DataRequest> && !kHasBase<RequestWithAnAggregateFirst> && !kHasBase<authorityRequest::Unregister>,
+	"authorityRequest self-check: a request without a base reads as none, also when its first field is an aggregate");
 } // namespace authorityRequestSelfCheck
 
 template <typename S, typename SimulatableT, typename ChannelT>
@@ -1209,6 +1261,11 @@ struct PortKeyOfReturnsEntityKey : ConformingPort
 	EntityKey bodyKeyOf(EntityKey) const;
 };
 
+struct PortKeyOfReturnsA32BitKey : ConformingPort
+{
+	uint32_t bodyKeyOf(EntityKey) const;
+};
+
 struct PortStoppedOnlyWhenMutable : ConformingPort
 {
 	bool runnerStopped();
@@ -1270,6 +1327,9 @@ static_assert(!SessionAuthorityLifecyclePort<PortResolvableOnlyWhenMutable>,
 	"SessionAuthorityLifecyclePort self-check: bodiesResolvable(simulatable) must be callable on a const port");
 static_assert(!SessionAuthorityLifecyclePort<PortKeyOfReturnsEntityKey>,
 	"SessionAuthorityLifecyclePort self-check: bodyKeyOf(entityKey) returns the bodies' key, a uint64_t");
+static_assert(!SessionAuthorityLifecyclePort<PortKeyOfReturnsA32BitKey>,
+	"SessionAuthorityLifecyclePort self-check: bodyKeyOf(entityKey) returns the 64-bit key; a 32-bit one converts and "
+	"would truncate an address key (the Unreal adapter's is an actor's address)");
 static_assert(!SessionAuthorityLifecyclePort<PortStoppedOnlyWhenMutable>,
 	"SessionAuthorityLifecyclePort self-check: runnerStopped() must be callable on a const port");
 static_assert(!SessionAuthorityLifecyclePort<PortNotifyRegisteredReturnsBool>,

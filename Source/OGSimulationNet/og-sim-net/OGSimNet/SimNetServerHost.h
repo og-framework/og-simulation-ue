@@ -212,6 +212,31 @@ struct ReferenceEndpoint
 	void noteDelivered(ognet::Lane lane, double recvSeconds, double nowSeconds);
 };
 
+struct ServicesWhoseLogHostReturnsBool : ReferenceServices
+{
+	bool logHost(const char* line);
+};
+
+struct SessionWhoseStampServerReceivedReturnsBool : ReferenceSession
+{
+	bool stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds);
+};
+
+struct SessionWhoseStampHandedReturnsBool : ReferenceSession
+{
+	bool stampHanded(uint8_t simId, uint32_t captureTick);
+};
+
+struct SessionWhoseUnregisteringReturnsBool : ReferenceSession
+{
+	bool onLifecycleUnregistering(uint8_t simId);
+};
+
+struct EndpointWhoseNoteDeliveredReturnsBool : ReferenceEndpoint
+{
+	bool noteDelivered(ognet::Lane lane, double recvSeconds, double nowSeconds);
+};
+
 struct EndpointWithATwoArgumentNoteDelivered
 {
 	void noteDelivered(ognet::Lane lane, double recvSeconds);
@@ -233,6 +258,8 @@ static_assert(!SimNetServerHostServices<ServicesWithAFloatNowSeconds>,
 	"hours, and the delivery note's residence is a difference of two such times");
 static_assert(!SimNetServerHostServices<ServicesWithAFloatRttMs>,
 	"SimNetServerHostServices self-check: rttMs returns double, the type the tier table smooths (SimNetServerHost's own rule)");
+static_assert(!SimNetServerHostServices<ServicesWhoseLogHostReturnsBool>,
+	"SimNetServerHostServices self-check: logHost(line) returns void; the host discards any result");
 
 static_assert(SimNetServerHostSession<ReferenceSession>,
 	"SimNetServerHostSession self-check: the reference shape (receptionTick, the two stamps, onLifecycleUnregistering) must "
@@ -250,6 +277,12 @@ static_assert(!SimNetServerHostSession<SessionWithoutUnregistering>,
 	"facade unregisters a queue-registered character)");
 static_assert(!SimNetServerHostSession<SessionWithAnUnsignedReceptionTick>,
 	"SimNetServerHostSession self-check: receptionTick returns int32_t, the tick type SimNetServerHost hands the coordinator");
+static_assert(!SimNetServerHostSession<SessionWhoseStampServerReceivedReturnsBool>,
+	"SimNetServerHostSession self-check: stampServerReceived returns void; the host discards any result");
+static_assert(!SimNetServerHostSession<SessionWhoseStampHandedReturnsBool>,
+	"SimNetServerHostSession self-check: stampHanded returns void; the host discards any result");
+static_assert(!SimNetServerHostSession<SessionWhoseUnregisteringReturnsBool>,
+	"SimNetServerHostSession self-check: onLifecycleUnregistering returns void; the host discards any result");
 
 static_assert(SimNetServerHostEndpoint<ReferenceEndpoint>,
 	"SimNetServerHostEndpoint self-check: the reference shape (og-net's noteDelivered(lane, recvSeconds, nowSeconds)) must "
@@ -257,6 +290,8 @@ static_assert(SimNetServerHostEndpoint<ReferenceEndpoint>,
 static_assert(!SimNetServerHostEndpoint<EndpointWithATwoArgumentNoteDelivered>,
 	"SimNetServerHostEndpoint self-check: noteDelivered takes the receive time and now (the endpoint's [OGNet.Window] residence "
 	"rows)");
+static_assert(!SimNetServerHostEndpoint<EndpointWhoseNoteDeliveredReturnsBool>,
+	"SimNetServerHostEndpoint self-check: noteDelivered returns void; the host discards any result");
 
 static_assert(SimNetServerHost<ReferenceHost> && SimNetDeliveryHook<ReferenceHost> && SimNetDeliveryHookWellFormed<ReferenceHost>
 		&& SimNetLifecycleUnregisteringHook<ReferenceHost> && SimNetLifecycleUnregisteringHookWellFormed<ReferenceHost>,

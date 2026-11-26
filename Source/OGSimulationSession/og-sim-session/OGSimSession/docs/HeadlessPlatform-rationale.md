@@ -19,11 +19,12 @@ it through the thread-local `t_peer`:
 
 So a line logged anywhere in a peer, by the runtime, og-sim-net, og-net or the Jolt world host, lands in that peer's sink.
 
-The frame counter is shared for a reason found by running it: the runtime builds a second engine inside its worlds
-(`SessionRuntime::Worlds`, default-constructed), and the Jolt world host checks the frame number its shadow world was restored on
-against its own engine's (`JoltTickWorldHost::overwriteShadowPoses_GameThread`). With one counter per engine instance that check
-failed on the first frame. On Unreal every engine instance reads `GFrameCounter`; here every engine of a peer reads its
-context's `frames`.
+The frame counter is shared for a reason found by running it: until og-session-runtime task 33b the runtime built a second
+engine inside its worlds (`SessionRuntime::Worlds`, default-constructed), and the Jolt world host checks the frame number its
+shadow world was restored on against its own engine's (`JoltTickWorldHost::overwriteShadowPoses_GameThread`). With one counter
+per engine instance that check failed on the first frame. On Unreal every engine instance reads `GFrameCounter`; here every
+engine of a peer reads its context's `frames`. Since task 33b `Worlds` builds its world host on the adapter's engine, so a
+peer has one engine (and one executor thread, not two); the counter stays the context's, which needs nothing more.
 
 ## §2 `Engine`: the SessionEngine model
 

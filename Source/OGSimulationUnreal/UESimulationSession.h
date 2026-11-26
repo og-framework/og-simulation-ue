@@ -112,7 +112,6 @@ public:
 		return m_registeredComponentsById;
 	}
 
-	// ⛔G-11  docs/UESimulationSession-guards.md
 	static UESimulationSession* instanceFor(const UWorld* world, bool isAuthority)
 	{
 		return UESessionRegistry<UESimulationSession>::instanceFor(world, isAuthority);

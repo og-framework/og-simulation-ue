@@ -66,8 +66,10 @@ The core holds the services and the endpoint by reference and the session by poi
 `uint32_t`), and `static_assert`s that the core over the reference shapes is a `SimNetServerHost` with both optional hooks. Each
 negative names what its requirement is for. Task 31a's mutants (each one edit in an overlay copy, compiled alone by the clang
 header probe): every requirement deleted (8), the three non-`void` returns weakened, and the core's two optional doors deleted
-are killed; the five `void` returns weakened to "any return" survive and are equivalent, because the core calls those members
-only as statements and discards what they return; the two stamp negatives replace Unreal's old `static_assert(!SimNetServerHost<UESimNetServerHost>)`
+are killed; the five `void` returns weakened to "any return" survived and are equivalent in behaviour, because the core calls
+those members only as statements and discards what they return. og-session-runtime task 33b pinned them anyway, one negative
+each returning `bool`, as it did `SimNetLink`'s: a port written to report through a return the core never reads is refused
+at compile time; its mutants are all killed, 19 of 19; the two stamp negatives replace Unreal's old `static_assert(!SimNetServerHost<UESimNetServerHost>)`
 ("the base host keeps no stamps", og-session-runtime task 14), which since task 31a's step (a) held for more than one reason
 and isolated none (review_SR5_31a, L3).
 

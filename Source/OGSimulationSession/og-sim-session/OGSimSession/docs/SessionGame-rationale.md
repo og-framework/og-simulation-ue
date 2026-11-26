@@ -1,9 +1,12 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: SessionGameHooks -- retired by og-session-runtime task 33b (no template was constrained by it and no engine type modelled it; SessionGame-rationale.md section 3); kept in the history -->
+<!-- lint-external-ref: sessionGameHooksSelfCheck -- retired by og-session-runtime task 33b (no template was constrained by it and no engine type modelled it; SessionGame-rationale.md section 3); kept in the history -->
 # `SessionGame.h` — rationale
 
-`SessionGame.h` holds the game's two ports into the session runtime (og-session-runtime design §3.5): the engine-free traits
-(`SessionGame`) and the engine-side hooks (`SessionGameHooks`). Each is a concept with a reference shape and one negative
-per requirement, checked by `static_assert`s in the header, as in `SessionEngine.h` (`SessionEngine-rationale.md` §1). It is
+`SessionGame.h` holds the game's port into the session runtime (og-session-runtime design §3.5): the engine-free traits
+(`SessionGame`), a concept with a reference shape and one negative per requirement, checked by `static_assert`s in the
+header, as in `SessionEngine.h` (`SessionEngine-rationale.md` §1). The engine-side hooks' concept, `SessionGameHooks`, was
+retired by og-session-runtime task 33b (§3). It is
 the docs pointer target of `SessionGame.h`; it states no prohibition outside those checks, so there is no guards file.
 
 **If this file and `SessionGame.h` disagree, the header is authoritative and this file is stale.**
@@ -15,7 +18,8 @@ the docs pointer target of `SessionGame.h`; it states no prohibition outside tho
 A game supplies the runtime one traits type with its engine-free facts, and, on the engine side, an object with the hooks
 that touch the engine (design §3.5). Today both halves are `BrawlerSessionGameUImpl`'s members, beside
 `BrawlerSessionTraitsUImpl` and `UEBrawlerNetConfig`; the traits move to og-brawler as the design's Q13 says, the hooks stay
-in the game's Unreal module. og-session-runtime task 22 declares the ports only; nothing models them outside the self-checks.
+in the game's Unreal module. og-session-runtime task 22 declared both ports; the engine-side one never gained a model or a
+constrained user and was retired by task 33b (§3).
 
 ## §2 `SessionGame`: the engine-free traits
 
@@ -45,19 +49,26 @@ in the game's Unreal module. og-session-runtime task 22 declares the ports only;
   body and query adapters, the world host's options), so they join with the composition (task 31), where those types are
   known.
 
-## §3 `SessionGameHooks`: the engine-side hooks
+## §3 The engine-side hooks: what an adapter provides (`SessionGameHooks` retired, og-session-runtime task 33b)
 
-`SessionGameHooks<Hooks, Game>` requires that `Game` is a `SessionGame` and that the hooks object offers the six hooks of
-design §3.3's last row, each returning `void`:
+Task 22 declared `SessionGameHooks<Hooks, Game>`: the six engine-side hooks of design §3.3's last row (`sampleInput`,
+`afterBodiesCreated(Simulatable&, EntityKey, id, isAuthority)`, `afterRegistered`, `onUnregistered`, `presentAuthoritySlice`,
+`afterVisualization`), each returning `void`, with a reference shape and one negative each. Nothing was constrained by it: no
+template took it as a constraint and no `static_assert` named a model, only its own self-check and one `STATIC_REQUIRE` in
+`SessionSkeletonTest.cpp`. No engine type modelled it either: the Unreal game has no `sampleInput`, its `afterBodiesCreated`
+takes the engine's character and the net mode, and its `presentAuthoritySlice` and `afterVisualization` are statics that take
+the session. Task 33b deleted the concept, `sessionGameHooksSelfCheck` and that `STATIC_REQUIRE`. What an engine adapter
+provides instead:
 
-| hook | today | negative in `sessionGameHooksSelfCheck` |
-|---|---|---|
-| `Game` is a `SessionGame` | — | `HooksOfNoGame` (over `MissingInstallGameLoggers`) |
-| `sampleInput()` | `BrawlerSessionHooksUImpl::sampleInput` (a static over the session since og-session-runtime task 26) | `SampleReturnsBool` |
-| `afterBodiesCreated(Simulatable&, EntityKey, uint32_t id, bool isAuthority)` | `BrawlerSessionGameUImpl::afterBodiesCreated`, which takes the engine's character; the runtime passes the opaque key | `BodiesCreatedWithoutEntityKey` |
-| `afterRegistered(uint32_t, bool)` | `BrawlerSessionGameUImpl::afterRegistered` | `MissingAfterRegistered` |
-| `onUnregistered(uint32_t)` | `BrawlerSessionGameUImpl::onUnregistered` | `MissingOnUnregistered` |
-| `presentAuthoritySlice(uint32_t, const AuthorityPresentationSlice&)` | `BrawlerSessionGameUImpl::presentAuthoritySlice` | `PresentTakesMutableSlice` |
-| `afterVisualization()` | `BrawlerSessionGameUImpl::afterVisualization`, which reads the session; the runtime calls it after the visualization pass | `AfterVisualizationTakesAnArgument` |
+- **The runtime calls no engine-side game hook.** It calls the game's statics through its traits (`SessionGame`, §2, and
+  `emplaceSystems`, which `SessionRuntime::start` checks) and the adapter's own hooks through `SessionRuntimeHost`
+  (`SessionRuntime.h`), `sampleInput()` among them; the Unreal adapter forwards that one to the brawler's
+  `BrawlerSessionHooksUImpl::sampleInput`.
+- **The adapter calls the game's engine-side hooks itself**, in its engine's types. On Unreal: `beforeWorldBuild` and
+  `afterSessionConfigured` at start, `afterBodiesCreated(simulatable, character, id, isAuthority, netMode)` and
+  `afterRegistered(id, isAuthority)` in `tryRegister`, `onUnregistered(id)` in `unregisterFromNewFramework`
+  (`ueSimulationSessionHookNames::GameInstanceHooks` checks these and `rootBodyId`), and the statics
+  `presentAuthoritySlice(session, id, slice)` and `afterVisualization(session)` in its visualization pass.
 
-Sim ids are `uint32_t` here; today's hooks take `unsigned int`, the same type on every target this project builds.
+So a new engine models `SessionRuntimeHost` and calls its own game's engine-side hooks in whatever shape its engine needs;
+og-sim-session names none of them (`Porting.md` item 8).

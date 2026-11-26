@@ -47,7 +47,9 @@ Two more ports are per call: a door that may log the window line takes a `Sessio
 `publishServerTick` takes a `SessionClockServer*` (`publishServerTick(tick, tickStartSeconds)`: og-sim-net's
 `SimNetClockServer`; `nullptr` on a client). A full `SessionEngine` models `SessionClockEngine` (it refines `TickDriverEngine`,
 whose `nowSeconds` is const, and `SessionLogSink`). Each concept has a reference shape and one negative per requirement
-(`sessionClockSelfCheck`); the engine's `nowSeconds` must be og-net's receive-stamp clock (`⛔G-05`).
+(`sessionClockSelfCheck`), and since og-session-runtime task 33b one per return type and const receiver (a `float` clock, a
+`float` round trip, the stats by reference, a link readable only when mutable, a publish that returns `bool`); task 33b's
+deletion and weakening mutants are all killed, 13 of 13; the engine's `nowSeconds` must be og-net's receive-stamp clock (`⛔G-05`).
 
 **The doors, named by operation.** The first statement of each is `SessionThreadChecks::checkOp` with its row of
 `SessionThreads.h`'s table (the task's description calls it `check`, an engine macro in the Unreal builds;
