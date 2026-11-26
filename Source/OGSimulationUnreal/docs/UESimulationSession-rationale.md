@@ -1664,7 +1664,7 @@ a client drains at each step's start and sends at capture (§18), and the author
 |---|---|---|
 | the transport (`SimNetTransport` over the driver's erased endpoint) | the driver's lanes, from `InitBase` | og-net delivers from before the world exists (K4) |
 | a client's `SimNetClient`, its roster mirror and its channels; the bindings (`SimNetBindings`) | the driver's lanes | the roster, floor and tier arrive before the client's world exists, and are latched there |
-| the server's `SimNetServer` (it owns og-simulation's reception coordinator) and its host, `UESimNetServerHost` | this session: `m_simNetServer`, `m_simNetServerHost` | its lifetime is the world's, and it borrows the manager's `TimeConfig` |
+| the server's `SimNetServer` (it owns og-simulation's reception coordinator) and its host, `UESimNetLanesServerHost` (og-sim-net's `SimNetServerHostCore` over Unreal's port) | this session: `m_simNetServer`, `m_simNetServerHost` | its lifetime is the world's, and it borrows the manager's `TimeConfig` |
 | detached lanes, for a world with no og-net driver (until og-session-runtime task 14) | this session's own | one code path either way; sends were dropped and counted |
 
 `m_simNetLanes` points at the driver's lanes the session is bound to (until task 14 also its own detached ones). It is cleared by the
@@ -2296,7 +2296,8 @@ The latency probe's state is the game thread's; the step thread posts events thr
 rationale.md` §6). On the loop the server's three game-thread stamp sites are the runner's, each with a mailbox door
 (`UELatencyBudgetDiagnostics-rationale.md` §14):
 
-- og-sim-net's `stampServerReceived` and `stampHanded`, which the lanes' server host forwards (`UESimNetLanes-rationale.md` §12);
+- og-sim-net's `stampServerReceived` and `stampHanded`, which og-sim-net's server host core forwards to Unreal's port
+  (`UESimNetLanes-rationale.md` §12);
 - the corrections' `Handed`, which the runner's `stampCorrectionsHanded_Runner` posts after og-sim-net's `afterInlineBatch` has
   flushed the batch's corrections: it reads each simulatable's channel from og-sim-net itself (`SimNetServer::channel`) and the
   tick it carries (`correctionTickOf(channel)`). Until og-session-runtime task 14 the in-frame server stamped it in
@@ -2526,7 +2527,7 @@ has not begun play or does not exist; "`getManager()` empty" is this section's w
 | member | how it reaches `m_manager` | callers | `instanceFor()` null | `getManager()` empty | task 11 |
 |---|---|---|---|---|---|
 | `getServerClock`, `editServerClock`, `getClientClock`, `runsPrediction` | `m_manager->`, unguarded | the session's own paths (`afterAuthorityBatch`, `getServerReceptionTick`, `onPostPhysicsStep`, `hasGameThreadVizWorld` behind its test, the client teardown after `endPlay`'s no-session return); `TickDriverBackendUImpl`'s `onRegistered_GameThread` and `onRegisteredHost_GameThread` (`runsPrediction`) | not reached | not reached: every caller runs inside a started session (a step hook, a tick function, a registration that succeeded) | none |
-| `getServerReceptionTick` | through `getServerClock` | `UESimNetServerHost::receptionTick`, whose session pointer is set only when `beginServerSimNet` binds | not reached | not reached (nothing binds; a dedicated server has exited) | none |
+| `getServerReceptionTick` | through `getServerClock` | `UESimNetServerHostPort::receptionTick`, which og-sim-net's server host core calls only with session hooks, set only when `beginServerSimNet` binds | not reached | not reached (nothing binds; a dedicated server has exited) | none |
 | `tryRegister` | the body pass reaches `physicsSlotFor`'s `checkf(m_manager.has_value())`; the notify | `UESimulatableOwnerBinding::tryRegisterWithNewFramework`, through `instanceFor` | the binding retries, then asserts at 600 attempts (why the slot is registered) | an authority's first call would assert in `physicsSlotFor` (a client never gets here, below) | returns `Refused` at once, with the line once |
 | `clientBindStep` | none (it reads `m_simNetLanes`) | `UOGBrawlerSimulatableComponent::resolveRegistrationKey`, on a client | not reached | `m_simNetLanes` is null, so it would log that the world has no og-net sim lanes (false: they exist, unbound) and abandon | returns `Abandon` at once, with the line once |
 | `unregisterFromNewFramework` | the in-frame unregistration's notify, behind `has<>` (until og-session-runtime task 14; the role's request since) | `AOGBrawlerSimulationManager::unregisterFromNewFramework`, from the component's `EndPlay` through `instanceFor` | skipped by the caller | would run the backend's unregistration on an unbuilt session for an id it never registered | returns at once: nothing was registered |

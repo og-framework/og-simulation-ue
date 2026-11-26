@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: ueSimNetHost::noteDelivered -- Unreal's server host's delivery note, deleted by og-session-runtime task 31a (og-sim-net's SimNetServerHostCore::noteDelivered makes the note); named in this file's history -->
 <!-- lint-external-ref: FLockedSimNetBindings -- Unreal's locked bindings, which og-session-runtime task 28 replaced with og-sim-net's LockedSimNetBindings; named in this file's history -->
 <!-- lint-external-ref: hadAnyTier -- retired by og-input-latency P6-2 (the client pays its effective delay's change, either sign); kept in the history -->
 <!-- lint-external-ref: FUEConnectionHandle -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
@@ -17,8 +18,11 @@
 <!-- lint-external-ref: SimulatableNetSyncComponent.cpp -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
 # `UESimNetHost.h` — rationale
 
-`UESimNetServerHost<TraitsT>` is the Unreal host of og-sim-net's server session (`SimNetServer`'s `HostT`, og-sim-net's
-`SimNetServerHost` concept, plus the optional delivery hook), with its derived `UESimNetLanesServerHost` (§13). The client's host
+The server session's host (`SimNetServer`'s `HostT`) is `UESimNetLanesServerHost<TraitsT>`: og-sim-net's engine-free
+`SimNetServerHostCore` (`SimNetServerHost-rationale.md`, og-session-runtime task 31a) over `UESimNetServerHostPort<TraitsT>`, which
+is what the core needs from Unreal: the services (the clock, the log sink, the runner's round trip) and the world session's hooks
+(the reception tick, the two probe stamps, the unregistering hook). The port derives from `UESimNetServerHost<TraitsT>`, the
+game-thread round trip of an og-net connection and its warnings (§2, §13). The client's host
 is og-sim-net's `SimNetLinkClientHost`, inside the link (`SimNetLink-rationale.md` §7, og-session-runtime task 28); what the link
 needs from Unreal is here: `UESimNetLinkServices`, the link's engine services (the client's round trip and its warnings, the two
 log sinks, the wire-mismatch report), and `UESimNetLinkSession<TraitsT>`, the world session's hooks the lanes attach. Each answers
@@ -33,26 +37,27 @@ holds the engine primitives the hosts and the world session read: `LogOGRtt`, th
 
 ## §1 The members and their sources
 
-| member | server host (`UESimNetServerHost`, `UESimNetLanesServerHost`) | the link's services (`UESimNetLinkServices`) | the session hooks (`UESimNetLinkSession`) |
+| member | the server host's port (`UESimNetServerHostPort`) | the link's services (`UESimNetLinkServices`) | the session hooks (`UESimNetLinkSession`) |
 |---|---|---|---|
 | `nowSeconds` | `FPlatformTime::Seconds` | the same | — |
-| `rttMs(conn)` | the og-net connection's engine ping, plus the probe's wire sample (§2); on the runner, the published table (§13) | — | — |
+| `rttMs(conn)` | on the runner, the published table (§13); its base `UESimNetServerHost`'s, on the game thread, the og-net connection's engine ping, plus the probe's wire sample (§2) | — | — |
 | `serverRttSeconds` | — | the server connection's engine ping, as last published (§5) | — |
 | `receptionTick` | the session's `getServerReceptionTick` (§3) | — | — |
-| `stampServerReceived`, `stampHanded` | the latency probe (§4), through the lanes' derived host on the authority runner | — | — |
+| `stampServerReceived`, `stampHanded` | the latency probe (§4), through the diagnostics' mailbox on the authority runner | — | — |
 | `stampClientReceived` | — | — | the latency probe (§4) |
 | `onTimingInfo`, `onRelayFloor`, `onConnectionTier`, `onClockSample`, `onLifecycleUnregistering` | `onLifecycleUnregistering` (§13) | — | the world session's consumers (§6) |
 | `onWireMismatch` | — | today's Error line and toast (§8) | — |
-| `log` / `logHost` / `logRouted` | `RouteOGMessage` (§9) | `RouteOGMessage` / `RouteOGLevelLine` (§9) | — |
-| `noteDelivered` | the driver's `[OGNet.Window]` sim-lane rows (§9) | — (the link's client host calls the endpoint) | — |
+| `logHost` / `logRouted` | `logHost`: `RouteOGMessage` (§9) | `RouteOGMessage` / `RouteOGLevelLine` (§9) | — |
+| `noteDelivered` | — (og-sim-net's core calls the endpoint, §9) | — (the link's client host calls the endpoint) | — |
 
 The world session is `UESimulationSession<TraitsT>`, named here only by a forward declaration: every call into it is in a
 template body, instantiated where the session is complete. The calls use its public members.
 
 **Attached and unattached.** The link decides which client calls need a world session and drops them while none is attached
 (`SimNetLink-rationale.md` §7); the services and the hooks themselves check nothing. The server host is made by the world session
-with a pointer to it. A null pointer is allowed, for a test: the stamps then drop, and `receptionTick` `checkf`s, because
-og-sim-net only asks for it while draining a received input, which a server with no session never does.
+with a pointer to it. A null pointer is allowed, for a test: `UESimNetLanesServerHost` then gives the core no session hooks, so
+the stamps and the unregistering hook drop and `receptionTick` fails the core's `OG_CHECK` (`SimNetServerHost-rationale.md` §3).
+The port's hooks themselves check nothing.
 
 **The server host is not `final`.** og-sim-net detects a `noteDelivered` member by deriving a probe class from the host
 (`SimNetHost.h`), and its sessions `static_assert` the result, so a `final` host would not compile.
@@ -118,7 +123,8 @@ og-sim-net only asks for it while draining a received input, which a server with
 ## §3 The reception tick
 
 `receptionTick` is the session's `getServerReceptionTick`: the server clock's current tick, the tick the coordinator files an
-RTT sample under.
+RTT sample under. The port forwards it; og-sim-net's core checks that a session is bound (until og-session-runtime task 31a
+`UESimNetServerHost` made that check itself, a `checkf`).
 
 ## §4 Latency probe stamps
 
@@ -137,12 +143,13 @@ of the datagram, on the same clock (`FPlatformTime::Seconds`), taken on og-net's
 
 **Every stamp goes through the mailbox.** A client's drain runs on the step's thread (og-input-latency task P5-17) and the
 server's on the authority runner (task P5-19), and the diagnostics' probe is the game thread's. So `UESimNetLinkSession::stampClientReceived` hands
-every stamp to `stampClientReceived_Internal`, and the server's two stamps are the lanes' derived host's
-(`UESimNetLanes-rationale.md` §12): each posts its stamps, in order and at their times, through the diagnostics' mailbox
-(`UELatencyBudgetDiagnostics-rationale.md` §13, §14). The base server host has no stamp members since og-session-runtime task 14,
-so it is not og-sim-net's server host on its own (a `static_assert` in `UESimNetHostsConceptTest.cpp`). Until then its two
+every stamp to `stampClientReceived_Internal`, and the server's two stamps are the port's (`UESimNetServerHostPort`, which
+og-sim-net's core calls only while a session is bound): each posts its stamps, in order and at their times, through the
+diagnostics' mailbox (`UELatencyBudgetDiagnostics-rationale.md` §13, §14). Until og-session-runtime task 14 the base server host
 stamped through the diagnostics' game-thread doors for the in-frame server (and a frame-locked client host through them until
-og-session-runtime task 12); task 14 deleted the two stamps and the three doors.
+og-session-runtime task 12); task 14 deleted the two stamps and the three doors, and a `static_assert` in
+`UESimNetHostsConceptTest.cpp` held that the base host had no stamps. Task 31a replaced it with og-sim-net's per-requirement
+negatives (`SimNetServerHost-rationale.md` §2).
 
 ## §5 The client's round trip
 
@@ -221,8 +228,10 @@ og-sim-net's message kind. The rest of the line, its category and its level are 
 
 ## §9 Log and delivery
 
-- The server host's `log(line)` is `ueSimNetHost::routeLine`: og-sim-net's `routeSimNetHostLine` with `RouteOGMessage` as its
-  sink, the same rule the link's client host follows with the services' `logHost` (`SimNetLink-rationale.md` §9). The line's tag
+- The server host's `log(line)` is og-sim-net's core: `routeSimNetHostLine` with the port's `logHost`, `RouteOGMessage`, as its
+  sink (`SimNetServerHost-guards.md` G-01), the same rule the link's client host follows with the services' `logHost`
+  (`SimNetLink-rationale.md` §9). `ueSimNetHost::routeLine` is the same function over the same sink, for the client session's
+  `[Roster.BindMismatch]` line. The line's tag
   picks its category, and a leading `[Warning]` or `[Verbose]` its level. og-simulation's route table has the `[SimNet.` and
   `[Roster.` rows, which send og-sim-net's lines to `LogOGNet` at plain level Log (`SimulationLogRoutes-rationale.md` §5).
   - **A token-less `[Roster.` line is routed at `Warning`** (og-input-latency task P5-7, from P5-4's finding F1). The brawler's
@@ -235,22 +244,24 @@ og-sim-net's message kind. The rest of the line, its category and its level are 
     their row's level.
 - The services' `logRouted(line)` is `RouteOGLevelLine`: the link's own lines carry their level as a leading token that is not
   printed (the held line at `Warning`, the disconnect line at `Error`; `UESimulationLogRoutes-rationale.md`).
-- The server host's `noteDelivered(lane, recv)` is `ueSimNetHost::noteDelivered`: og-sim-net's `noteSimLaneDelivered` with
-  `FPlatformTime::Seconds()` as now, the endpoint's `noteDelivered(lane, recv, now)`, which writes the driver's `[OGNet.Window]`
-  sim-lane rows. og-sim-net calls it once per drained message, before decoding it. The link's client host does the same with the
-  services' clock.
+- The server host's `noteDelivered(lane, recv)` is og-sim-net's core: `noteSimLaneDelivered` with the port's `nowSeconds()`,
+  `FPlatformTime::Seconds()`, as now (`SimNetServerHost-guards.md` G-02), the endpoint's `noteDelivered(lane, recv, now)`, which
+  writes the driver's `[OGNet.Window]` sim-lane rows. og-sim-net calls it once per drained message, before decoding it. The
+  link's client host does the same with the services' clock. Until og-session-runtime task 31a it was `ueSimNetHost::noteDelivered`.
 
 ## §10 Tests
 
 The game drives the hosts since the switch (og-input-latency task P5-7), through its lanes factory and its session. Before it
 nothing drove them but the brawler's `UESimNetHostsConceptTest.cpp`, which still runs:
-- `static_assert`s that `UESimNetServerHost<BrawlerSessionTraitsUImpl>` is a `SimNetServerHost`, the lanes' link client host a
-  `SimNetClientHost`, both have the delivery hook, `UESimNetLinkServices` and `UESimNetLinkSession` model the link's concepts, the probe lane is the sim id, and the route table sends each og-sim-net tag to
+- `static_assert`s that the lanes' server host is a `SimNetServerHost` with the unregistering hook, its port models
+  og-sim-net's `SimNetServerHostServices` and `SimNetServerHostSession` and the lane endpoint `SimNetServerHostEndpoint`, the
+  lanes' link client host is a `SimNetClientHost`, both hosts have the delivery hook, `UESimNetLinkServices` and `UESimNetLinkSession` model the link's concepts, the probe lane is the sim id, and the route table sends each og-sim-net tag to
   the Net route at Log;
 - the automation test `OGBrawler.SimNet.Hosts`: `rttMs` of an unknown og-net id returns the sentinel twice and warns once;
   an `FServerRttWarnings` lets each cause through once, a second cause after the first (og-input-latency task P5-26); four
-  routed lines (three `[Warning]` lines and a token-less `[Roster.` line) reach `LogOGNet`, the token-less one with the
-  `[Warning]` token `routeLine` adds (it was checked at Log until P5-7), with `LogOGNet` raised to Log for the probe and restored
+  routed lines (three `[Warning]` lines and a token-less `[Roster.` line), logged through the lanes' server host's `log`
+  (og-sim-net's core over the port), reach `LogOGNet`, the token-less one with the
+  `[Warning]` token the route adds (it was checked at Log until P5-7), with `LogOGNet` raised to Log for the probe and restored
   after; a server's batch hook sends a staged clock once, at once, to an endpoint that counts and drops it, and an unchanged
   clock is not sent again; an `FServerConnectionLookup` (og-input-latency task
   P5-17, rework 1) with an unstarted driver, so that every lookup misses: a graceful leave (an id it found, then missed) has
@@ -431,6 +442,12 @@ this header in task 28's step (a): they are the authority runner's RTT readers a
 Unreal side, and the lanes are a thin adapter over the link. What they do is `UESimNetLanes-rationale.md` §12 (the hosts, the RTT
 table, no RTT warning before the Join: `UESimNetHost-guards.md` G-13).
 
-**The server host's engine-free halves stay here for now** (lead ruling under task 28): `UESimNetServerHost`'s `log` and
-`noteDelivered`, and `UESimNetLanesServerHost`'s stamps and `onLifecycleUnregistering`. The server host is the world session's,
-not the link's; og-session-runtime task 31 moves it into the runtime's composition, which holds it on an authority.
+**The server host's engine-free half is og-sim-net's since og-session-runtime task 31a** (`SimNetServerHost-rationale.md`):
+`UESimNetServerHost`'s `log` and `noteDelivered`, and the lanes' host's stamps and `onLifecycleUnregistering`, moved into
+`ogsimnet::SimNetServerHostCore`, and the `checkf` of `receptionTick` became its `OG_CHECK`. What stays here is the engine half:
+`UESimNetServerHost` (the game-thread round trip and its warnings), `UESimNetServerHostPort` (the old lanes' host's body, the
+runner's `rttMs` from `FRunnerRttTable` and its game-thread publish, now also the port's `logHost` and the session hooks, each one
+line to Unreal), and `UESimNetLanesServerHost`, the core over the port. The port sits in a private base,
+`UESimNetServerHostParts`, so it is built before the core stores its address, and is destroyed after it. The session names the
+host `SimNetLanes::ServerHost` and builds it from the driver, the endpoint and itself, unchanged. The server host is the world
+session's, not the link's; og-session-runtime task 31 moves it into the runtime's composition, which holds it on an authority.

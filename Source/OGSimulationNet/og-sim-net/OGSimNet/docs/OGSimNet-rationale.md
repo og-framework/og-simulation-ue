@@ -92,6 +92,8 @@ it yet, and later tasks keep it. It is not a wire version. The bytes on the wire
 - `SimNetVersionTest.cpp` pins the wire-token fragment of §7 (tag `[NetTransport][SimNetVersion]`).
 - `SimNetLinkTest.cpp` drives `SimNetLink` over a `VirtualNetwork` (tag `[NetTransport][SimNetLink]`;
   `SimNetLink-rationale.md` §10).
+- `SimNetServerHostTest.cpp` drives a `SimNetServer` over `SimNetServerHostCore` on a `VirtualNetwork` (tag
+  `[NetTransport][SimNetServerHost]`; `SimNetServerHost-rationale.md` §5).
 - `SimNetAuthorityLoopTest.cpp` includes og-simulation-tests' `TickDriver/TickDriverFakes.h` through an include path, as
   og-sim-session's tests do: `OGSimulationTests.Build.cs` adds og-simulation-tests' `Source/OGSimulationTests`, and og-sim-net's
   CMake adds the same directory under `OG_SIMULATION_TESTS_DIR` (which the plugin's `standalone/` project sets). Until

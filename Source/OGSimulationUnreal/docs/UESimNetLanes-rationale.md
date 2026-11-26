@@ -195,12 +195,13 @@ task 12 a frame-locked client published nothing: its drain read the connection i
   (`OGNetUnrealHost.h`), so t1 and t2 are on one clock (og-input-latency P2-20 F2). The world session publishes the server tick
   to it after every authority step. Every client pings it (§13).
 - **The hosts.** The client's host is og-sim-net's `SimNetLinkClientHost`, inside the link (`SimNetLink-rationale.md` §7).
-  The server's, `ServerHost`, is `UESimNetLanesServerHost`, which og-session-runtime task 28 moved unchanged into
-  `UESimNetHost.h` (`UESimNetHost-rationale.md` §13): it answers og-sim-net's optional `onLifecycleUnregistering(simId)` by
-  forwarding it to the world session, answers `rttMs` from `FRunnerRttTable`, and posts its two probe stamps through the
-  latency mailbox: `stampServerReceived` through `stampServerReceived_Internal` and `stampHanded` through
-  `stampHandedAndLeft_Internal` (the hand-over is the send at once, on the runner;
-  `UELatencyBudgetDiagnostics-rationale.md` §14). og-sim-net calls the host from the runner.
+  The server's, `ServerHost`, is `UESimNetLanesServerHost` (`UESimNetHost.h`; `UESimNetHost-rationale.md` §13): og-sim-net's
+  `SimNetServerHostCore` (og-session-runtime task 31a, `SimNetServerHost-rationale.md`) over Unreal's `UESimNetServerHostPort`.
+  The port answers og-sim-net's optional `onLifecycleUnregistering(simId)` by forwarding it to the world session, answers
+  `rttMs` from `FRunnerRttTable`, and posts the two probe stamps through the latency mailbox: `stampServerReceived` through
+  `stampServerReceived_Internal` and `stampHanded` through `stampHandedAndLeft_Internal` (the hand-over is the send at once, on
+  the runner; `UELatencyBudgetDiagnostics-rationale.md` §14). og-sim-net calls the host from the runner, the thread that builds
+  it, and the core checks every call against that thread.
 - **The RTT table.** `FRunnerRttTable` is 64 lock-free 64-bit words, each an og-net id and a `float` round trip in
   milliseconds, so the runner never reads one connection's id with another's reading. The game thread fills it in `afterDispatch`
   (`publishRunnerRtt_GameThread`): one word per og-net client connection, its value the base host's `rttMs` (which also feeds

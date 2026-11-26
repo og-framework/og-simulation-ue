@@ -18,6 +18,7 @@
 #include "OGSimNet/SimNetHost.h"
 #include "OGSimNet/SimNetLink.h"
 #include "OGSimNet/SimNetRoster.h"
+#include "OGSimNet/SimNetServerHost.h"
 #include "OGSimNet/SimNetTransport.h"
 #include "OGSimulation/LatencyBudgetProbe.h"
 #include "OGSimulation/Network/SimTransport.h"
@@ -292,11 +293,6 @@ inline void warnClientRttUnavailableOnce(FClientRttWarnings& warnings, EClientRt
 
 namespace ueSimNetHost
 {
-inline void noteDelivered(ognetunreal::SimLaneEndpoint& endpoint, SimLane lane, double recvSeconds)
-{
-	ogsimnet::noteSimLaneDelivered(endpoint, lane, recvSeconds, FPlatformTime::Seconds());
-}
-
 inline void routeLine(const char* line)
 {
 	ogsimnet::routeSimNetHostLine(line, [](const char* routed) { RouteOGMessage(routed); });
@@ -309,10 +305,7 @@ class UESimNetServerHost
 public:
 	using Session = UESimulationSession<TraitsT>;
 
-	UESimNetServerHost(UOGNetDriver* ognetDriver, ognetunreal::SimLaneEndpoint& laneEndpoint, Session* worldSession)
-		: m_driver(ognetDriver), m_endpoint(laneEndpoint), m_session(worldSession)
-	{
-	}
+	UESimNetServerHost(UOGNetDriver* ognetDriver, Session* worldSession) : m_driver(ognetDriver), m_session(worldSession) {}
 
 	UESimNetServerHost(const UESimNetServerHost&) = delete;
 	UESimNetServerHost& operator=(const UESimNetServerHost&) = delete;
@@ -342,16 +335,7 @@ public:
 		return roundTripMs;
 	}
 
-	int32_t receptionTick()
-	{
-		checkf(m_session != nullptr,
-			TEXT("UESimNetServerHost::receptionTick with no session: the server session that owns this host binds it at ")
-			TEXT("construction, and SimNetServer asks for the tick only while it drains a received input"));
-		return m_session != nullptr ? m_session->getServerReceptionTick() : 0;
-	}
-
 	UOGNetDriver* driver() const { return m_driver; }
-	ognetunreal::SimLaneEndpoint& endpoint() const { return m_endpoint; }
 	Session* session() const { return m_session; }
 
 private:
@@ -368,9 +352,6 @@ private:
 	}
 
 	UOGNetDriver* m_driver;
-protected:
-	ognetunreal::SimLaneEndpoint& m_endpoint;
-private:
 	Session* m_session;
 	FServerConnectionLookup m_connections;
 	FServerRttWarnings m_rttWarnings;
@@ -528,7 +509,7 @@ private:
 };
 
 template <typename TraitsT>
-class UESimNetLanesServerHost : public UESimNetServerHost<TraitsT>
+class UESimNetServerHostPort : public UESimNetServerHost<TraitsT>
 {
 	using Base = UESimNetServerHost<TraitsT>;
 
@@ -536,11 +517,21 @@ public:
 	using Base::Base;
 
 	double rttMs(SimConnectionId conn) { return m_runnerRtt.read(conn); }
+	void logHost(const char* line) { RouteOGMessage(line); }
+
+	int32_t receptionTick() { return this->session()->getServerReceptionTick(); }
+	void stampHanded(uint8_t simId, uint32_t captureTick) { this->session()->editLatencyBudgetDiagnostics().stampHandedAndLeft_Internal(simId, captureTick); }
+	void onLifecycleUnregistering(uint8_t simId) { this->session()->onSimNetLifecycleUnregistering(simId); }
+
+	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds)
+	{
+		this->session()->editLatencyBudgetDiagnostics().stampServerReceived_Internal(simId, captureTick, recvSeconds);
+	}
 
 	void publishRunnerRtt_GameThread()
 	{
 		checkf(IsInGameThread(),
-			TEXT("UESimNetLanesServerHost::publishRunnerRtt_GameThread: the game thread reads the driver's connections and "
+			TEXT("UESimNetServerHostPort::publishRunnerRtt_GameThread: the game thread reads the driver's connections and "
 				 "publishes each one's round trip for the authority runner, which reads only the published copy"));
 		size_t slot = 0u;
 		if (UOGNetDriver* const driver = this->driver())
@@ -571,4 +562,27 @@ private:
 	FRunnerRttTable m_runnerRtt;
 };
 
-#include "OGSimNet/SimNetServerHost.h"
+template <typename TraitsT>
+struct UESimNetServerHostParts
+{
+	UESimNetServerHostPort<TraitsT> m_port;
+};
+
+template <typename TraitsT>
+using UESimNetServerHostCore =
+	ogsimnet::SimNetServerHostCore<UESimNetServerHostPort<TraitsT>, UESimNetServerHostPort<TraitsT>, ognetunreal::SimLaneEndpoint>;
+
+template <typename TraitsT>
+class UESimNetLanesServerHost : private UESimNetServerHostParts<TraitsT>, public UESimNetServerHostCore<TraitsT>
+{
+	using Parts = UESimNetServerHostParts<TraitsT>;
+
+public:
+	UESimNetLanesServerHost(UOGNetDriver* ognetDriver, ognetunreal::SimLaneEndpoint& laneEndpoint, UESimulationSession<TraitsT>* worldSession)
+		: Parts{{ognetDriver, worldSession}}
+		, UESimNetServerHostCore<TraitsT>(this->m_port, laneEndpoint, worldSession != nullptr ? &this->m_port : nullptr)
+	{
+	}
+
+	void publishRunnerRtt_GameThread() { Parts::m_port.publishRunnerRtt_GameThread(); }
+};

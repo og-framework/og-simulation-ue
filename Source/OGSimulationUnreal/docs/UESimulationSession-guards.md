@@ -813,5 +813,5 @@ runner side (`run(Unregister&)`, above `if (!request.registerPosted)`). **Succes
 `onSimNetLifecycleUnregistering`, above the notified-set and storage test.
 
 **Why it retired.** As G-36: the authority's notified set moved into `SessionAuthorityLifecycle` with the hook's body
-(`onUnregistering`); `onSimNetLifecycleUnregistering` forwards to it (the og-sim-net server's host, `UESimNetLanesServerHost`,
-still calls it; task 31 moves that host). **Successor:** og-sim-session's `SessionLifecycle-guards.md` G-08.
+(`onUnregistering`); `onSimNetLifecycleUnregistering` forwards to it (the og-sim-net server's host calls it: og-sim-net's
+`SimNetServerHostCore` through Unreal's `UESimNetServerHostPort` since og-session-runtime task 31a; task 31 moves that host). **Successor:** og-sim-session's `SessionLifecycle-guards.md` G-08.

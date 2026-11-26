@@ -213,7 +213,8 @@ and the host calls through plain pointers. The session object must outlive its a
 - every other line goes through `routeSimNetHostLine` to `logHost`: a line that begins with `[Roster.` gets a `[Warning]` token
   first (og-input-latency task P5-7, from P5-4's F1: a token-less roster refusal or mismatch must reach an operator under
   `LogOGNet=Warning`), into a buffer the size of og-sim-net's roster line plus the token, and the printed text keeps the token as
-  every other host line does. Unreal's server host routes its lines through the same function (`ueSimNetHost::routeLine`);
+  every other host line does. og-sim-net's server host routes its lines through the same function
+  (`SimNetServerHost-guards.md` G-01);
 - the link's own disconnect line goes to `logRouted` with an `[Error]` token, so it stays at `LogOGNet` `Error` (Unreal's level
   lines gained the `[Error]` token for it, `UESimulationLogRoutes-rationale.md`).
 

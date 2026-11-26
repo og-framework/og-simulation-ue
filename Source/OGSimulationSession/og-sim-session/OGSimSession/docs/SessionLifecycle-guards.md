@@ -220,4 +220,5 @@ before `facade.unregister`).
 
 *Was `UESimulationSession-guards.md` G-41 (the authority's half of G-35, og-input-latency task P5-19; split by og-session-runtime
 task 29), moved by og-session-runtime task 30. The Unreal session's `onSimNetLifecycleUnregistering` forwards here; the og-sim-net
-server's host that calls it (`UESimNetLanesServerHost`, `UESimNetHost.h`) stays on the Unreal side until task 31.*
+server's host that calls it is og-sim-net's `SimNetServerHostCore` since og-session-runtime task 31a, through Unreal's
+`UESimNetServerHostPort` (`UESimNetHost.h`), until task 31 moves that host into the runtime.*

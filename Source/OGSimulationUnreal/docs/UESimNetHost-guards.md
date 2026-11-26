@@ -207,7 +207,7 @@ the lookup still passes; a graceful-leave smoke shows the `no UE connection` war
 
 ## G-13 — the loop's RTT publish asks the base host only from a connection's Join
 
-**Tag site:** `UESimNetHost.h`, `UESimNetLanesServerHost::publishedRttMs_GameThread`, the line above
+**Tag site:** `UESimNetHost.h`, `UESimNetServerHostPort::publishedRttMs_GameThread`, the line above
 `if (connection.ClientLoginState == EClientLoginState::ReceivedJoin)`.
 
 **The prohibition.** Do not call `Base::rttMs` (the base host's warning path) for a connection whose `ClientLoginState` is not

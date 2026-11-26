@@ -468,8 +468,8 @@ server's stamp sites are runner doors. Each door posts through the mailbox (§6'
 | `stampHandedAndLeft_Internal(lane, captureTick)` (§13's door) | `Handed` and `LeftProcess`, both at now (Input) | the base server host's game-thread `Handed` stamp, then `onPostTickFlush`'s `LeftProcess` |
 | `stampCorrectionHanded_Internal(lane, correctionTick, handed)` | `Handed` and `LeftProcess`, both at `handed` (State), once per new correction tick of the lane | `tick_GameThread`'s walk of the session's correction ticks at its own now, then `onPostTickFlush`'s `LeftProcess` |
 
-- **Who calls them.** The first two are the lanes' server host (`UESimNetLanes-rationale.md` §12), which og-sim-net calls on
-  the runner. The third is og-sim-session's `SessionNetHooks::afterBatch` (the session's `stampCorrectionsHanded_Runner` until
+- **Who calls them.** The first two are the server host's port (`UESimNetServerHostPort`, `UESimNetLanes-rationale.md` §12),
+  which og-sim-net's server host core calls on the runner. The third is og-sim-session's `SessionNetHooks::afterBatch` (the session's `stampCorrectionsHanded_Runner` until
   og-session-runtime task 26), after og-sim-net's `afterInlineBatch` has flushed the batch's corrections; it reads each
   character's correction tick from og-sim-net's own channel, the runner's object, with `SessionNetHooks::correctionTickOf`.
 - **`LeftProcess` is the hand-over.** The transport hands each relay and each correction to the og-net endpoint at once
