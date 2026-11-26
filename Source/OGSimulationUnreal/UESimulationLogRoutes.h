@@ -46,19 +46,7 @@ inline constexpr OGLogRouteEntry kOGAdapterLogRoutes[] = {
 	{ TEXT("SimulationManager:"),                OGLogRoute::Mgmt,            ELogVerbosity::Log },
 	{ TEXT("tryRegister:"),                      OGLogRoute::Mgmt,            ELogVerbosity::Log },
 	{ TEXT("NewFramework:"),                     OGLogRoute::Mgmt,            ELogVerbosity::Log },
-	{ TEXT("[SimHost."),                         OGLogRoute::SimHost,         ELogVerbosity::Log },
-	{ TEXT("[RelayDelayFloor]"),                 OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[StateRotation]"),                   OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[ResimGate]"),                       OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[LatencyKnobs]"),                    OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[ClockRecentre.Config]"),            OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[ClockSource.Config]"),              OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[Dilation.Config]"),                 OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[ConnectionTier]"),                  OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[ClockSource.Window]"),              OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[ClockSource.Held]"),                OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[Dilation.Window]"),                 OGLogRoute::Net,             ELogVerbosity::Log },
-	{ TEXT("[Dilation.Authority]"),              OGLogRoute::Net,             ELogVerbosity::Log }
+#include "OGSimSession/SessionLogRoutes.h"
 };
 
 inline constexpr OGLogRoute kOGLogRouteUnmapped = static_cast<OGLogRoute>(0xFF);
