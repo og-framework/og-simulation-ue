@@ -88,7 +88,9 @@ is `DrainInbox`, the step's; so the runtime's lifecycle port (`drainWhileStopped
 (a `StoppedDrainScope`, `SessionThreads.h`, since og-session-runtime task 31; two marker calls before), and between them each receipt door checks `SessionOp::DrainStopped`, the client's frame row (the authority has
 none: it has no such drain). `DrainInbox` itself is not widened: a receipt on the frame outside that window still fails (lead
 ruling under task 24, 02:25). The two markers check `DrainStopped` themselves. The flag is written and read on the frame thread;
-the step thread reads it only while no teardown runs (the steps are stopped before the marker is set).
+the step thread reads it only while no teardown runs (the steps are stopped before the marker is set). Since
+og-session-runtime task 37 `inStoppedDrain()` reads it for the runtime's `checkDiagnosticsOp`, so the latency diagnostics'
+receipt doors check `DrainStopped` in that drain too (`SessionLatencyDiagnostics-rationale.md` §3).
 
 ## §4 The effective input delay
 

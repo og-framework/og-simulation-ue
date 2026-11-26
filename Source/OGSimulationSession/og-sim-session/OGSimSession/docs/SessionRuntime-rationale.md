@@ -102,6 +102,11 @@ component map and maps the status onto the component's retry loop.
 Unreal session leaves it empty and the row keeps its older rule (not the frame, not a step). One scope guard,
 `StoppedDrainScope` (`SessionThreads.h`), now sets and clears the stopped-drain flag of both the clock and the lifecycle.
 
+**The latency diagnostics' thread checks** (og-session-runtime task 37). `checkDiagnosticsOp(op)` is what the Unreal
+diagnostics port's `checkOp` calls (`SessionLatencyDiagnostics-rationale.md` §3): before `start` it checks nothing (the table
+is built from the role at `start`); during a client's stopped drain (the clock's `inStoppedDrain`) it checks `DrainStopped`,
+the drain's own row, because og-sim-net's receive handlers reach the receipt doors there; otherwise the door's row.
+
 ## 8. Held components (task 29's L1)
 
 `SessionHeldForUnregister` (`SessionLifecycle.h`) holds each component an `AfterApplied` unregistration keeps, in order per id;

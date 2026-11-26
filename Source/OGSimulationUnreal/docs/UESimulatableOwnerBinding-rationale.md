@@ -209,9 +209,10 @@ sits next to. The template's own stamp points, their threads and errors are `UEL
 | `noteRelayedRingArrived`, which the sibling's `onRelayedInputRingArrived` calls after the owner-skip check, before the core callback | `ClientReceived` for every capture tick in the ring other than the `kNoInputCaptureTick` sentinel | client |
 | the callback `makeRingFlushedCallback` returns, which the sibling's `attachInputRelayHost` binds as the relay host's flush callback, authority only | `Handed` for every capture tick a flush published, other than the sentinel | authority |
 
-All five run on the game thread. Every stamp goes through `UELatencyBudgetDiagnostics::stamp` or, for the correction,
-`UELatencyBudgetDiagnostics::stampCorrectionReceived`, each of which `checkf`s the game thread, and every block reaches it through `UELatencyBudgetDiagnostics::withInstance`, which runs the block on the
-role's instance (the session owner's `editLatencyBudgetDiagnostics()`) when there is one. Where
+All five ran on the game thread. Every stamp went through the diagnostics' game-thread stamp door, `stamp`, or, for the
+correction, `UELatencyBudgetDiagnostics::stampCorrectionReceived` (both deleted by og-session-runtime task 14), each of which
+`checkf`ed the game thread, and every block reached it through `UELatencyBudgetDiagnostics::withInstance`, which runs the
+block on the role's instance (the session owner's `editLatencyBudgetDiagnostics()`) when there is one. Where
 `OG_LATENCY_BUDGET_DIAGNOSTICS` is 0 (Shipping) `withInstance` is an empty function, so the owner lookup each block
 makes only to stamp is not made (`UELatencyBudgetDiagnostics-rationale.md` §3). The relay host's flush callback is still
 bound on the authority; its body is the one `withInstance` call. The callback holds the game component weakly
@@ -437,7 +438,8 @@ That is not a convenience null-check. **Provider presence is the identity test**
   through the scheduled read, instead of extrapolating the last correction.
 
 The skeleton asks the game for a provider (`makeInputProvider`) only inside `if (isLocallyPredicted)`. The session wraps
-it for the latency stamps (`UELatencyBudgetDiagnostics::wrapInputProvider`) and keeps it in the pending record until
+it for the latency stamps (`SessionLatencyDiagnostics::wrapInputProvider`, og-sim-session's, which
+`UELatencyBudgetDiagnostics` inherits since og-session-runtime task 37) and keeps it in the pending record until
 the registration completes.
 
 ### 9.5 The spawn ordering, and the provider latch (retired by og-input-latency task P5-7)

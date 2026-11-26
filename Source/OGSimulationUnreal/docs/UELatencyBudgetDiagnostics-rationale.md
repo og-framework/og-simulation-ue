@@ -14,11 +14,19 @@
 <!-- lint-external-ref: PrivateDefinitions -- Unreal Build Tool module-rules list, outside every scan root -->
 <!-- lint-external-ref: net.IpConnectionUseSendTasks=1 -- Unreal Engine console variable and value, outside every scan root -->
 <!-- lint-external-ref: MaxNetTickRate -- Unreal Engine net-driver setting, outside every scan root -->
+<!-- lint-external-ref: Engine/World.h -- Unreal Engine header, outside every scan root (section 15's include list) -->
+<!-- lint-external-ref: HAL/PlatformTime.h -- Unreal Engine header, outside every scan root (section 15's include list) -->
 # `UELatencyBudgetDiagnostics` — rationale
 
 Companion to `UELatencyBudgetDiagnostics.h` and `UELatencyBudgetDiagnostics.cpp`. Both source files carry no prose: a
-two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` → an entry in
-`UELatencyBudgetDiagnostics-guards.md`.
+two-line docs pointer, code and assertion messages. Since og-session-runtime task 37 they carry no `⛔G-nn` tag: the four
+guards moved with their sites to og-sim-session (`UELatencyBudgetDiagnostics-guards.md` lists each with its successor).
+
+> **Read §15 first.** Since og-session-runtime task 37 the engine-free half of this class is og-sim-session's
+> `ogsession::SessionLatencyDiagnostics` (`OGSimulationSession/og-sim-session/OGSimSession/docs/SessionLatencyDiagnostics-rationale.md`),
+> and this header is its Unreal adapter. **§1–§14 are a record of the class as it stood at root `7d58a26`.** What they say of
+> the doors, the stamps, the mailbox, the threads and the window is still true of the engine-free class, except for the
+> differences §15 lists; their section numbers are kept because other documents cite them.
 
 > **Licence.** This tier is **MPL-2.0**, matching the code it describes.
 
@@ -38,6 +46,7 @@ two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` →
   deleted by og-session-runtime task 14).
 * **§13** is og-input-latency task P5-17: an immediate client's step-thread doors.
 * **§14** is og-input-latency task P5-20: the authority runner's doors, on every dedicated server since og-session-runtime task 14.
+* **§15** is og-session-runtime task 37: the adapter today, and what differs from §1–§14.
 
 ---
 
@@ -483,3 +492,46 @@ server's stamp sites are runner doors. Each door posts through the mailbox (§6'
 - **The single producer.** On a dedicated server every producer of the mailbox is the runner: these three doors, the capture
   wrapper (a dedicated server captures no input) and the step hooks. The game thread only drains.
 - **The gate.** With `OG_LATENCY_BUDGET_DIAGNOSTICS` at 0 the doors are empty, like the rest.
+
+---
+
+## §15 The adapter today (og-session-runtime task 37)
+
+`UELatencyBudgetDiagnostics<TraitsT>` derives from og-sim-session's
+`ogsession::SessionLatencyDiagnostics<TraitsT, UESimulationSession<TraitsT>, UELatencyBudgetPort<TraitsT>, kEnabled>` with
+`kEnabled = (OG_LATENCY_BUDGET_DIAGNOSTICS != 0)` (`UELatencyBudgetCore`). The engine-free class holds the doors, the mailbox,
+the probe and the window (`SessionLatencyDiagnostics-rationale.md` §1–§7); this header keeps what names an Unreal type:
+
+| kept here | what it does |
+|---|---|
+| `OG_LATENCY_BUDGET_DIAGNOSTICS` | the gate (§3), unchanged; it now picks the engine-free class's arm |
+| `LogOGLatencyBudget` | the category (§7), declared here and defined in the `.cpp`, both under `!UE_BUILD_SHIPPING` as before |
+| `UELatencyBudgetPort` | the port: `nowSeconds` is `FPlatformTime::Seconds()`, the clock og-net's receive times and the game's sample times use; `logLatency` is `UE_LOG(LogOGLatencyBudget, Warning, TEXT("%s"), …)`; `checkOp` asks the runtime's `checkDiagnosticsOp` |
+| `begin(UWorld&, bool)`, `end(UWorld&)` | `begin` calls the engine-free `begin` (the probe and mailboxes) and binds `onPostTickFlush` to `UWorld::OnPostTickFlush` with the session's actor as the weak object (§10); `end` unbinds it (`m_postTickFlushHandle`) |
+| `tick_GameThread()` | the frame-thread entry the session calls in `onPostPhysics`, which calls the engine-free `tickWindow_Frame` |
+| `instanceFor`, `withInstance` | the world-and-role lookup (§1, §10) |
+
+Every caller in Unreal (`UESimNetHost.h`'s `stampClientReceived`, `stampHanded`, `stampServerReceived` and the base host's
+`noteWireSample`; the session's unregistration's `forgetCharacter`; the session's `wrapInputProvider`; og-sim-session's step and
+correction stamps) calls the derived object, so name lookup finds the engine-free class's members.
+
+**What differs from §1–§14:**
+
+- **§1, §6 (threads).** Each door asks its `SessionOp` row first (`SessionThreads.h`; the table is
+  `SessionLatencyDiagnostics-rationale.md` §4). `noteWireSample`'s game-thread `checkf` is its `LatencyServerWireSample` row. Before
+  the runtime starts nothing is checked; during a client's stopped drain the check is `DrainStopped`.
+- **§1 (the verbs).** `tick_GameThread`'s body is the engine-free `tickWindow_Frame`, in the same order with the same returns.
+  `clockCountsInWindow` and `restartClockWindow` are the engine-free class's; nothing calls them today.
+- **§3 (the gate at 0).** The off arm's doors are the engine-free class's `kEnabled` false arm (no member, inline no-ops, the
+  presence `OG_CHECK` in `wrapInputProvider`); this header's off arm is only `begin`, `end`, `tick_GameThread` and `withInstance`.
+  The fence build of the game module at 0 compiled (og-session-runtime task 37).
+- **§4.** The const reference and its `static_assert` are the engine-free class's `m_owner`; the reads are the same accessors.
+  §4's "the session and its owner each declare the template a friend" was already false before this task: the session
+  declares no friend since og-session-runtime task 31, and every read is a public const accessor of the runtime.
+- **§6 (times).** Every "now" is the port's clock, `FPlatformTime::Seconds()`, as before.
+- **§7.** The three lines are formatted by the engine-free `sessionLatencyLines` with `std::snprintf` and printed by the port
+  under `LogOGLatencyBudget` at `Warning`: the text is byte for byte the old `TEXT()` formats (`SessionLatencyFormatParityTest.cpp`).
+- **§8.** The out-of-line definitions of the doors and the window are in `SessionLatencyDiagnostics.h`, in its own
+  `OGSIM_OPTIMIZE_OFF` pair; this header's pair holds `instanceFor`, `begin` and `end`. The include list is the engine-free
+  header, `HAL/PlatformTime.h`, `OGSimSession/SessionThreads.h` and, under the gate, `Engine/World.h`.
+- **The guards.** G-01, G-02, G-04 and G-05 moved to `SessionLatencyDiagnostics-guards.md` (G-01, G-02, G-03, G-04).

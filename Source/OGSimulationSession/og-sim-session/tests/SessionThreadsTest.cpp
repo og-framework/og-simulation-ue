@@ -46,7 +46,23 @@ constexpr std::array<ExpectedRow, kSessionOpCount> kExpected{ {
 	{ SessionOp::LinkFrameService,       "LinkFrameService",       SessionThread::Frame, SessionThread::Frame },
 	{ SessionOp::DrainStopped,           "DrainStopped",           SessionThread::Frame, std::nullopt },
 	{ SessionOp::FrameProbe,             "FrameProbe",             SessionThread::Frame, SessionThread::Step },
+	{ SessionOp::LatencyWrap,             "LatencyWrap",             SessionThread::Frame, std::nullopt },
+	{ SessionOp::LatencyCapture,          "LatencyCapture",          SessionThread::Step,  std::nullopt },
+	{ SessionOp::LatencyClientReceived,   "LatencyClientReceived",   SessionThread::Step,  std::nullopt },
+	{ SessionOp::LatencyClientWireSample, "LatencyClientWireSample", SessionThread::Step,  std::nullopt },
+	{ SessionOp::LatencyServerWireSample, "LatencyServerWireSample", std::nullopt,         SessionThread::Frame },
+	{ SessionOp::LatencyHanded,           "LatencyHanded",           SessionThread::Step,  SessionThread::Step },
+	{ SessionOp::LatencyServerReceived,   "LatencyServerReceived",   std::nullopt,         SessionThread::Step },
+	{ SessionOp::LatencyCorrectionHanded, "LatencyCorrectionHanded", std::nullopt,         SessionThread::Step },
+	{ SessionOp::LatencyAfterStep,        "LatencyAfterStep",        SessionThread::Step,  SessionThread::Step },
+	{ SessionOp::LatencyStepEnd,          "LatencyStepEnd",          SessionThread::Step,  SessionThread::Step },
+	{ SessionOp::LatencyForget,           "LatencyForget",           SessionThread::Frame, SessionThread::Frame },
+	{ SessionOp::LatencyPostTickFlush,    "LatencyPostTickFlush",    SessionThread::Frame, SessionThread::Frame },
+	{ SessionOp::LatencyWindow,           "LatencyWindow",           SessionThread::Frame, SessionThread::Frame },
 } };
+
+constexpr uint32_t kPredictionRowsWithoutAThread = 3u;
+constexpr uint32_t kAuthorityRowsWithoutAThread  = 6u;
 
 using Allowed = std::array<bool, kSessionOpCount>;
 
@@ -140,15 +156,17 @@ TEST_CASE("SessionThreads.APredictionOpPassesOnItsThreadAndOnNoOther", "[Session
 	{
 		const ExpectedRow& row = kExpected[index];
 		INFO(row.name);
-		REQUIRE(row.prediction.has_value());
-		CHECK(onFrame[index] == (*row.prediction == SessionThread::Frame));
-		CHECK(inStep[index] == (*row.prediction == SessionThread::Step));
-		CHECK(onNetIo[index] == (*row.prediction == SessionThread::NetIo));
+		CHECK(onFrame[index] == (row.prediction == SessionThread::Frame));
+		CHECK(inStep[index] == (row.prediction == SessionThread::Step));
+		CHECK(onNetIo[index] == (row.prediction == SessionThread::NetIo));
 		allowedCases += static_cast<uint32_t>(onFrame[index]) + inStep[index] + onNetIo[index];
 		forbiddenCases += static_cast<uint32_t>(!onFrame[index]) + !inStep[index] + !onNetIo[index];
 	}
-	CHECK(allowedCases == kSessionOpCount);
-	CHECK(forbiddenCases == 2u * kSessionOpCount);
+	CHECK(allowedCases == kSessionOpCount - kPredictionRowsWithoutAThread);
+	CHECK(forbiddenCases == 2u * kSessionOpCount + kPredictionRowsWithoutAThread);
+	CHECK_FALSE(inStep[static_cast<std::size_t>(SessionOp::LatencyServerReceived)]);
+	CHECK_FALSE(inStep[static_cast<std::size_t>(SessionOp::LatencyCorrectionHanded)]);
+	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::LatencyServerWireSample)]);
 }
 
 TEST_CASE("SessionThreads.AnAuthorityOpPassesOnItsThreadAndOnNoOther", "[Session]")
@@ -170,7 +188,10 @@ TEST_CASE("SessionThreads.AnAuthorityOpPassesOnItsThreadAndOnNoOther", "[Session
 		CHECK_FALSE(onOther[index]);
 		allowedCases += static_cast<uint32_t>(onFrame[index]) + onRunner[index] + onOther[index];
 	}
-	CHECK(allowedCases == kSessionOpCount - 2u);
+	CHECK(allowedCases == kSessionOpCount - kAuthorityRowsWithoutAThread);
+	CHECK_FALSE(onRunner[static_cast<std::size_t>(SessionOp::LatencyCapture)]);
+	CHECK_FALSE(onRunner[static_cast<std::size_t>(SessionOp::LatencyClientReceived)]);
+	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::LatencyWrap)]);
 	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::SampleInput)]);
 	CHECK_FALSE(onRunner[static_cast<std::size_t>(SessionOp::SampleInput)]);
 	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::DrainStopped)]);

@@ -309,6 +309,7 @@ public:
 	void endTierConsumer() { m_replicatedTierConsumer.reset(); }
 
 	[[nodiscard]] StoppedDrainScope stoppedDrain() { return StoppedDrainScope(m_inStoppedDrain, m_threads); }
+	bool inStoppedDrain() const { return m_inStoppedDrain.load(std::memory_order_relaxed); }
 
 	// ⛔G-02  docs/SessionClock-guards.md
 	void logRelayDelayFloorAdvisory(int32_t floorTicks)

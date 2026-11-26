@@ -45,6 +45,7 @@ client they are different threads.
 | the link's frame service | `LinkFrameService` |
 | the client's stopped drain at its teardown (og-session-runtime task 24) | `DrainStopped` |
 | the frame probe after the pump (og-session-runtime task 26) | `FrameProbe` |
+| the latency diagnostics' doors, one row per door (og-session-runtime task 37) | `LatencyWrap`, `LatencyCapture`, `LatencyClientReceived`, `LatencyClientWireSample`, `LatencyServerWireSample`, `LatencyHanded`, `LatencyServerReceived`, `LatencyCorrectionHanded`, `LatencyAfterStep`, `LatencyStepEnd`, `LatencyForget`, `LatencyPostTickFlush`, `LatencyWindow` |
 
 `kPredictionThreads` and `kAuthorityThreads` give each operation its thread, or none. They follow the design's table, with
 three readings taken from the code, through task 16's table (§7.1), and two rows the design's table does not have:
@@ -59,6 +60,14 @@ three readings taken from the code, through task 16's table (§7.1), and two row
   `Step`. The design's call order names it, but no row did: `RateDoor` is the rate door's, which runs at the same place but is
   another operation, so the probe got its own row rather than a wider one (og-session-runtime task 26). A fifth `static_assert`
   holds its shape.
+- **The latency diagnostics' doors** (the thirteen `Latency…` rows, after `FrameProbe`; og-session-runtime task 37): each door
+  of og-sim-session's `SessionLatencyDiagnostics` asks its own row first. A client's capture stamp, receipt, wire sample,
+  hand-over and step stamps are `Step`, its wrap, forget, post-tick flush and window `Frame`; the authority's server-host wire
+  sample is `Frame` and its hand-over, receipt, correction hand-over and step stamps `Step` (the runner); a door the role never
+  calls has no thread (`std::nullopt`): three on a client, four on the authority. The runtime routes the checks
+  (`SessionRuntime::checkDiagnosticsOp`): nothing before `start`, `DrainStopped` during a client's stopped drain. A sixth
+  `static_assert`, `latencyDoorsKeepTheirSide`, holds the step doors off the frame thread and the frame doors on it. Each row's
+  door and caller are `SessionLatencyDiagnostics-rationale.md` §4.
 
 The three readings:
 
@@ -134,8 +143,9 @@ item 3.)
 - `SessionThreads.APredictionOpPassesOnItsThreadAndOnNoOther` and `SessionThreads.AnAuthorityOpPassesOnItsThreadAndOnNoOther`:
   every operation is asked on the frame thread, on a step (a worker inside a `StepScope`; on the authority, the runner that
   configured the context) and on a plain thread. Each passes on its row's thread and on no other: every row has a case on
-  its thread and one on a forbidden thread (on the authority `SampleInput` has no thread, so both of its cases are
-  forbidden).
+  its thread and one on a forbidden thread (a row with no thread has every case forbidden: on the authority `SampleInput`,
+  `DrainStopped` and the four client-only latency rows, on a client the three authority-only latency rows; the cases count
+  them, og-session-runtime task 37).
 - `SessionThreads.WithoutTheRolesContextOnlyTheFrameRowsPass`: no context, or a client's context given to the authority.
 - `SessionThreads.CheckOpIsSilentOnTheRowsThreadAndTheSentinelHasNoRow`.
 - `SessionThreads.TheStoppedDrainIsAClientsFrameRowAndNoStepsOrAuthoritys` (og-session-runtime task 24): `DrainStopped` passes

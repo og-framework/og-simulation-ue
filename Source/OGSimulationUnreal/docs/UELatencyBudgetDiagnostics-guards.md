@@ -7,94 +7,34 @@ reused. The reasoning lives in `UELatencyBudgetDiagnostics-rationale.md`.
 
 **If this file and the source disagree, the source is authoritative and this file is stale.**
 
-Two properties are checked by the compiler, not here: the const access to production state (the `static_assert` beside
-`m_owner`, rationale §4) and provider presence (the `checkf` in `wrapInputProvider`, in both states of the gate,
-rationale §3).
-
----
-
-## G-01 — DIAGNOSTIC ONLY — READ BY NOTHING IN PRODUCTION
-
-**Site:** `std::unique_ptr<latencyBudget::LatencyBudgetProbe> m_probe;`, the first member of the block of data members
-that exists only while `OG_LATENCY_BUDGET_DIAGNOSTICS` is 1.
-
-**The prohibition.** ⛔ Every data member of this class sits in this one block, and nothing in production reads any of
-them. Do not add a member here that a production decision, a production log line or a replicated value reads, do not
-add an accessor that hands one of them to production code, and do not move a production value into this block. A value
-that both feeds a decision and a latency line stays production, outside this class (`DiagnosticsConventions.md` §4:
-the marker names the channel, never the fact).
-
-**The consequence.** The block is compiled out of Shipping (`(!UE_BUILD_SHIPPING)`) and out of the fence build. A
-production reader of one of these members either fails to compile there or, if it was itself gated to compile, makes
-Shipping behave differently from Development, which is exactly what the fence test (rationale §5) exists to rule out.
-
-**What breaks if the tag moves.** Nothing mechanical: the gate makes a Shipping or fence build fail to compile on an
-ungated reader, but an edit inside this class can still hand a member out. The fence test's harness sessions are the
-behavioural check.
-
-*Moved from the game module's latency class (its G-01, og-tickdriver task 18) by task 19a, with the block.*
-
-## G-02 — the input-sample source is resolved once, at wrap, outside the lambda
-
-**Site:** `typename TraitsT::InputSampleSource sampleSource = TraitsT::Game::inputSampleSource(owner);` in `wrap`, the
-statement before the lambda.
-
-**The prohibition.** ⛔ Do not move this statement into the lambda. The source is resolved here, once per
-registration, on the game thread; the lambda captures the result and only calls
-`TraitsT::Game::inputSampledSeconds(sampleSource)` per provider call, on the step's thread.
-
-**The consequence.** A resolution inside the lambda reads the component on the step's thread on every step: a new
-game-to-step-thread read of a game object that the threads table (rationale §6) does not have, and the lambda would
-have to capture the component, a lifetime edge from the core's container to it. The output would not change, so no
-harness session would show it.
-
-**What breaks if the tag moves.** Nothing mechanical; the two-phase shape is rationale §2. (Added by task 19a, from
-the design review's finding that a single per-call hook would not be statement-exact.)
-
-## G-04 — a resimulation's use stamps `Healed` only, never `Consumed`
-
-**Site:** `post_Internal(latencyBudget::Event::stampHealedIfPending(id, read.appliedCaptureTick, stepStartSeconds));`
-in `postRelayedReads_Internal`, the branch for an observation of an earlier tick that changed since the last step.
-
-**The prohibition.** ⛔ Do not post a `Consumed` stamp from this branch, and do not replace this statement with a plain
-`Event::stamp` of `Consumed` or of `Healed`. An observation of an earlier tick that changed since the last step was
-written by a resimulation's read; it ends `H6L` and never `H6`.
-
-**The consequence.** `H6` is the prediction-only hop: its end is a prediction step's scheduled read (rationale §6).
-A `Consumed` stamp from a resimulation redefines `H6`, which ruling Q7 = A (og-input-latency, 2026-11-11) rejected,
-because it breaks the comparison of every `H6` number with the archived ones. A plain stamp of `Healed` would
-create slots for captures the probe never saw received (`noStart` on `H6L`) and count every re-served capture as a
-duplicate in `[LatencyBudget.Window]`.
-
-**What breaks if the tag moves.** Nothing mechanical. The probe's own pending semantics are
-`LatencyBudgetProbe-rationale.md` §10; this site's place among the stamp points is rationale §11.
-
-## G-05 — the read shadow is the step thread's; `forgetCharacter` never touches it
-
-**Site:** the blank line after the lane forget (`m_probe->forgetLane(id);`) at the end of `forgetCharacter` (an absence
-tag). Re-sited by og-session-runtime task 14: the erase it followed (the in-frame server's game-thread last-handed map) went
-with its map.
-
-**The prohibition.** ⛔ Do not erase, clear or otherwise touch `m_seenReads_Physics` here, or anywhere else on the
-game thread, however natural it looks beside the forget above it. The same holds for `m_lastHandedCorrectionTick_Runner`
-(og-input-latency task P5-20): it is the authority runner's dedup map. Until og-session-runtime task 14 its game-thread twin
-was erased here, and that erase must not be copied to it.
-
-**The consequence.** `forgetCharacter` runs on the game thread. `m_seenReads_Physics` is read and written only by
-`postRelayedReads_Internal`, on the step's thread, with no lock and no mailbox. An erase here races a client step
-that is inserting into or iterating the same `std::unordered_map`: a crash on a rehash, not a wrong number. The
-map's size is bounded on the step's thread instead (rationale §11). `m_lastHandedCorrectionTick_Runner` is read and
-written only by `stampCorrectionHanded_Internal`, on the authority runner, so an erase here races the runner the same
-way; it holds at most one entry per sim id (1..255), and a stale entry costs at most one `Handed` stamp for a new
-character that reuses the id and whose first correction carries the remembered tick (rationale §14).
-
-**What breaks if the tag moves.** Nothing mechanical; the threads table is rationale §6.
+**Since og-session-runtime task 37 the header has no tagged site.** Its four guards moved with their sites into og-sim-session's
+`SessionLatencyDiagnostics.h`, whose guards are `OGSimulationSession/og-sim-session/OGSimSession/docs/SessionLatencyDiagnostics-guards.md`;
+each is retired below with its successor. What the compiler checks moved with them: the const access to production state (the
+`static_assert` beside the engine-free class's `m_owner`) and provider presence (the `OG_CHECK` in each arm's
+`wrapInputProvider`).
 
 ---
 
 ## §R — Retired ids
 
 ⛔ **An id is never reused.** A retired id may be named in prose; it may never again appear as a `⛔G-nn` tag.
+
+### G-01 — RETIRED by og-session-runtime task 37 (2026-11-26): moved to `SessionLatencyDiagnostics-guards.md` G-01
+
+**Was:** *"DIAGNOSTIC ONLY — READ BY NOTHING IN PRODUCTION"*. Its tag sat on `m_probe`, the first member of the block of data
+members that existed only while `OG_LATENCY_BUDGET_DIAGNOSTICS` was 1.
+
+**Why it retired.** Its site moved: the block (`m_probe` … `m_seenReads_Physics`) is the engine-free class's feature-arm state
+since task 37; the Unreal class keeps only `m_postTickFlushHandle`, which no production code reads either. The entry moved with
+its text, re-worded for the arms. **Successor:** `SessionLatencyDiagnostics-guards.md` G-01 (og-sim-session).
+
+### G-02 — RETIRED by og-session-runtime task 37 (2026-11-26): moved to `SessionLatencyDiagnostics-guards.md` G-02
+
+**Was:** *"the input-sample source is resolved once, at wrap, outside the lambda"*. Its tag sat on the
+`TraitsT::Game::inputSampleSource(owner)` statement in `wrap`.
+
+**Why it retired.** Its site moved: `wrap` and its lambda are the engine-free class's since task 37 (the source is still resolved
+through the traits; the class names no Unreal type). **Successor:** `SessionLatencyDiagnostics-guards.md` G-02 (og-sim-session).
 
 ### G-03 — RETIRED by og-input-latency task P5-5 (2026-11-17): moved to `UESimulationSession-guards.md` G-29
 
@@ -106,3 +46,19 @@ this skip, the correction-buffer read and the skip of tick 0) into the session's
 og-session-runtime task 14), which
 `tick_GameThread` now calls with the per-id `Handed` stamp. The entry moved with its text, re-worded only for the new site.
 **Successor:** `UESimulationSession-guards.md` G-29.
+
+### G-04 — RETIRED by og-session-runtime task 37 (2026-11-26): moved to `SessionLatencyDiagnostics-guards.md` G-03
+
+**Was:** *"a resimulation's use stamps `Healed` only, never `Consumed`"*. Its tag sat on the `stampHealedIfPending` post in
+`postRelayedReads_Internal`.
+
+**Why it retired.** Its site moved with `postRelayedReads_Internal` (task 37 (a) and (b)). **Successor:**
+`SessionLatencyDiagnostics-guards.md` G-03 (og-sim-session).
+
+### G-05 — RETIRED by og-session-runtime task 37 (2026-11-26): moved to `SessionLatencyDiagnostics-guards.md` G-04
+
+**Was:** *"the read shadow is the step thread's; `forgetCharacter` never touches it"*. Its tag sat on the blank line after the
+lane forget in `forgetCharacter`.
+
+**Why it retired.** Its site moved with `forgetCharacter` (task 37 (a) and (b)); `forgetCharacter`'s thread is its
+`LatencyForget` row since. **Successor:** `SessionLatencyDiagnostics-guards.md` G-04 (og-sim-session).

@@ -439,6 +439,13 @@ public:
 	const InputResolution& inputResolution() const { return m_inputResolution; }
 	Diagnostics&           diagnostics() { return m_diagnostics; }
 
+	void checkDiagnosticsOp(SessionOp op) const
+	{
+		if (!m_threads.has_value())
+			return;
+		m_threads->checkOp(m_clock.has_value() && m_clock->inStoppedDrain() ? SessionOp::DrainStopped : op);
+	}
+
 	auto* lifecycle() { return m_lifecycle.has_value() ? &*m_lifecycle : nullptr; }
 	auto* authorityLifecycle() { return m_authorityLifecycle.has_value() ? &*m_authorityLifecycle : nullptr; }
 

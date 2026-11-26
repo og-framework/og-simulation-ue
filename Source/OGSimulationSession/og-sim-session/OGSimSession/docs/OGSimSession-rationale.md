@@ -61,9 +61,9 @@ is the module's generated definitions header.
   og-simulation-jolt or any engine module (`module_tiers.psd1`, the `OGSimSession` row). Since og-session-runtime task 35
   `SessionKnobs.h` includes og-simulation's `Config/KnobTable.h` (the knob table, `KnobTable-rationale.md`).
 - **`Core` is a private dependency**, for the module macro in `OGSimulationSessionModule.cpp`.
-- **`OGSimulationSessionModule.cpp` includes the thirteen library headers** (`SessionClock.h` since og-session-runtime task 24,
+- **`OGSimulationSessionModule.cpp` includes the fourteen library headers** (`SessionClock.h` since og-session-runtime task 24,
   `SessionDisplay.h` and `SimulationDisplaySnapshot.h` since task 25, `SessionEngine.h`, `SessionGame.h`, `SessionKnobs.h` since
-  task 23, `SessionLifecycle.h` since task 29, `SessionLogRoutes.h` since task 36, `SessionNetHooks.h` and `SessionTickGame.h`
+  task 23, `SessionLatencyDiagnostics.h` since task 37, `SessionLifecycle.h` since task 29, `SessionLogRoutes.h` since task 36, `SessionNetHooks.h` and `SessionTickGame.h`
   since task 26, `SessionRuntime.h` since task 31, `SessionThreads.h`, `SessionTypes.h`), so every target that builds the module compiles each of them, with their
   self-check `static_assert`s, under that target's flags and after an engine header. That is where an identifier that
   collides with an engine macro would show first; it is why `SessionThreadChecks`' check is `checkOp`, not `check`

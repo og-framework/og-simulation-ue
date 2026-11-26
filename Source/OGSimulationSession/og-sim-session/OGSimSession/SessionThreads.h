@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <optional>
 #include <thread>
 
@@ -41,6 +42,19 @@ enum class SessionOp : uint8_t
 	LinkFrameService,
 	DrainStopped,
 	FrameProbe,
+	LatencyWrap,
+	LatencyCapture,
+	LatencyClientReceived,
+	LatencyClientWireSample,
+	LatencyServerWireSample,
+	LatencyHanded,
+	LatencyServerReceived,
+	LatencyCorrectionHanded,
+	LatencyAfterStep,
+	LatencyStepEnd,
+	LatencyForget,
+	LatencyPostTickFlush,
+	LatencyWindow,
 	Count,
 };
 
@@ -72,6 +86,19 @@ inline constexpr SessionThreadTable kPredictionThreads{ {
 	{ SessionOp::LinkFrameService,       SessionThread::Frame },
 	{ SessionOp::DrainStopped,           SessionThread::Frame },
 	{ SessionOp::FrameProbe,             SessionThread::Frame },
+	{ SessionOp::LatencyWrap,             SessionThread::Frame },
+	{ SessionOp::LatencyCapture,          SessionThread::Step },
+	{ SessionOp::LatencyClientReceived,   SessionThread::Step },
+	{ SessionOp::LatencyClientWireSample, SessionThread::Step },
+	{ SessionOp::LatencyServerWireSample, std::nullopt },
+	{ SessionOp::LatencyHanded,           SessionThread::Step },
+	{ SessionOp::LatencyServerReceived,   std::nullopt },
+	{ SessionOp::LatencyCorrectionHanded, std::nullopt },
+	{ SessionOp::LatencyAfterStep,        SessionThread::Step },
+	{ SessionOp::LatencyStepEnd,          SessionThread::Step },
+	{ SessionOp::LatencyForget,           SessionThread::Frame },
+	{ SessionOp::LatencyPostTickFlush,    SessionThread::Frame },
+	{ SessionOp::LatencyWindow,           SessionThread::Frame },
 } };
 
 inline constexpr SessionThreadTable kAuthorityThreads{ {
@@ -92,6 +119,19 @@ inline constexpr SessionThreadTable kAuthorityThreads{ {
 	{ SessionOp::LinkFrameService,       SessionThread::Frame },
 	{ SessionOp::DrainStopped,           std::nullopt },
 	{ SessionOp::FrameProbe,             SessionThread::Step },
+	{ SessionOp::LatencyWrap,             std::nullopt },
+	{ SessionOp::LatencyCapture,          std::nullopt },
+	{ SessionOp::LatencyClientReceived,   std::nullopt },
+	{ SessionOp::LatencyClientWireSample, std::nullopt },
+	{ SessionOp::LatencyServerWireSample, SessionThread::Frame },
+	{ SessionOp::LatencyHanded,           SessionThread::Step },
+	{ SessionOp::LatencyServerReceived,   SessionThread::Step },
+	{ SessionOp::LatencyCorrectionHanded, SessionThread::Step },
+	{ SessionOp::LatencyAfterStep,        SessionThread::Step },
+	{ SessionOp::LatencyStepEnd,          SessionThread::Step },
+	{ SessionOp::LatencyForget,           SessionThread::Frame },
+	{ SessionOp::LatencyPostTickFlush,    SessionThread::Frame },
+	{ SessionOp::LatencyWindow,           SessionThread::Frame },
 } };
 
 namespace sessionThreadTable
@@ -116,6 +156,25 @@ consteval bool stepWorkIsOffTheFrame(const SessionThreadTable& table)
 	}
 	return true;
 }
+
+consteval bool latencyDoorsKeepTheirSide(const SessionThreadTable& table)
+{
+	for (std::size_t index = static_cast<std::size_t>(SessionOp::LatencyCapture);
+		 index <= static_cast<std::size_t>(SessionOp::LatencyStepEnd); ++index)
+	{
+		if (index != static_cast<std::size_t>(SessionOp::LatencyServerWireSample)
+			&& table[index].thread == SessionThread::Frame)
+			return false;
+	}
+	for (const SessionOp op : { SessionOp::LatencyWrap, SessionOp::LatencyServerWireSample, SessionOp::LatencyForget,
+			 SessionOp::LatencyPostTickFlush, SessionOp::LatencyWindow })
+	{
+		const std::optional<SessionThread> thread = table[static_cast<std::size_t>(op)].thread;
+		if (thread.has_value() && *thread != SessionThread::Frame)
+			return false;
+	}
+	return true;
+}
 } // namespace sessionThreadTable
 
 static_assert(sessionThreadTable::isIndexedByOp(kPredictionThreads) && sessionThreadTable::isIndexedByOp(kAuthorityThreads),
@@ -134,6 +193,12 @@ static_assert(kPredictionThreads[static_cast<std::size_t>(SessionOp::FrameProbe)
 		&& kAuthorityThreads[static_cast<std::size_t>(SessionOp::FrameProbe)].thread == SessionThread::Step,
 	"kPredictionThreads, kAuthorityThreads: the frame probe runs where the pump does, after it: a client's frame thread "
 	"(startFrame), an authority's runner (each loop wake); it is not the step's work (og-session-runtime task 26)");
+static_assert(sessionThreadTable::latencyDoorsKeepTheirSide(kPredictionThreads)
+		&& sessionThreadTable::latencyDoorsKeepTheirSide(kAuthorityThreads),
+	"kPredictionThreads, kAuthorityThreads: the latency diagnostics' step doors (the capture stamp, a client's receipt and "
+	"wire sample, the hand-over, the server's receipt and correction hand-over, the step's start and end) never run on the "
+	"frame thread, and its frame doors (the wrap, the server host's wire sample, the forget, the post-tick flush, the window) "
+	"never run off it (og-session-runtime task 37)");
 
 class SessionThreadChecks
 {

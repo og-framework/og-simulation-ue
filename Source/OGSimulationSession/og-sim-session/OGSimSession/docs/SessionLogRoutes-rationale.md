@@ -40,7 +40,7 @@ for this block's rows. An engine maps each route to one of its categories in one
 |---|---|---|---|
 | `[ReleaseBatch]` | `Net` | `Verbose` | `SessionNetHooks.h` (`releaseForTick`, once per authority step) |
 | `SimulationManager:` | `Mgmt` | `Log` | `SessionRuntime.h` (the manager-initialized line) |
-| `tryRegister:` | `Mgmt` | `Log` | `SessionLifecycle.h` (its three `[Error]` lines) |
+| `tryRegister:` | `Mgmt` | `Log` | `SessionLifecycle.h` (its registered line and three `[Error]` lines) |
 | `[SimHost.` | `SimHost` | `Log` | `SessionRuntime.h` (`[SimHost.Backend]`) |
 | `[RelayDelayFloor]`, `[StateRotation]`, `[ResimGate]`, `[LatencyKnobs]`, `[ClockRecentre.Config]`, `[ClockSource.Config]`, `[Dilation.Config]` | `Net` | `Log` | `SessionKnobs.h` (the knob intake's start-up lines; `[RelayDelayFloor]` also `SessionClock.h`) |
 | `[ConnectionTier]`, `[ClockSource.Window]`, `[Dilation.Window]`, `[Dilation.Authority]` | `Net` | `Log` | `SessionClock.h` |
