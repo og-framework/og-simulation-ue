@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -287,6 +288,48 @@ static_assert(!SessionLifecyclePort<PortStoppedDrainReturnsCount>,
 static_assert(!SessionLifecyclePort<PortLogReturnsBool>, "SessionLifecyclePort self-check: logRouted(line) returns void");
 } // namespace sessionLifecycleSelfCheck
 
+template <typename HandleT>
+class SessionHeldForUnregister
+{
+public:
+	void hold(uint32_t simId, HandleT handle) { m_held[simId].push_back(std::move(handle)); }
+
+	template <typename ReleaseF>
+	bool releaseOldest(uint32_t simId, ReleaseF&& release)
+	{
+		const auto found = m_held.find(simId);
+		if (found == m_held.end())
+			return false;
+		HandleT handle = std::move(found->second.front());
+		found->second.pop_front();
+		if (found->second.empty())
+			m_held.erase(found);
+		release(simId, handle);
+		return true;
+	}
+
+	template <typename ReleaseF>
+	void releaseAll(ReleaseF&& release)
+	{
+		for (auto& entry : m_held)
+		{
+			for (HandleT& handle : entry.second)
+				release(entry.first, handle);
+		}
+		m_held.clear();
+	}
+
+	void clear() { m_held.clear(); }
+	size_t heldCount(uint32_t simId) const
+	{
+		const auto found = m_held.find(simId);
+		return found != m_held.end() ? found->second.size() : 0u;
+	}
+
+private:
+	std::unordered_map<uint32_t, std::deque<HandleT>> m_held;
+};
+
 template <SessionLifecyclePort PortT>
 class SessionLifecycle
 {
@@ -442,7 +485,7 @@ public:
 
 		if (Client* const client = m_port.client())
 		{
-			m_inStoppedDrain.store(true, std::memory_order_relaxed);
+			const StoppedDrainScope stoppedDrain(m_inStoppedDrain, m_threads);
 			applyRequestsUnchecked(*client);
 			std::vector<uint32_t> live;
 			for (const auto& entry : m_queued)
@@ -452,7 +495,6 @@ public:
 			for (const uint32_t id : live)
 				enqueueUnregister(*client, id);
 			m_port.drainWhileStopped();
-			m_inStoppedDrain.store(false, std::memory_order_relaxed);
 		}
 		pollOutcomes(onOutcome);
 		m_unregisterPending.clear();

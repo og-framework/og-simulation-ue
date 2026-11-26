@@ -22,7 +22,7 @@ The header is inline only: it holds no state, and its callers are the session's 
 ## 2. The line
 
 `kRefusedLineFormat` is formatted with `snprintf` into a `kRefusedLineBytes` (160) buffer and logged with `TEXT("%hs")`,
-the pattern of the `[SimNet.Host]` proof line's `kSimNetHostLineFormat` (`UESimulationSession.h`). The `static_assert`
+the pattern of the `[SimNet.Host]` proof line's `kSimNetHost` (`SessionRuntime.h` since og-session-runtime task 31). The `static_assert`
 sizes the buffer for the longest subject the session prints (`role=authority netMode=DedicatedServer`,
 og-session-runtime task 16b), an int32 value and the longest reason (`one-session-per-role-per-process`, task 16b). A longer subject is cut by
 `snprintf`, never written past the buffer.

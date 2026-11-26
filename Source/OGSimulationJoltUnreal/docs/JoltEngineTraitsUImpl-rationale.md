@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: PhysicsBackendUImpl.h -- deleted by og-session-runtime task 31 (the brawler's engine seam header: its binding concept and the EngineTraits and EngineBinding aliases moved to the top of BrawlerSessionTraitsUImpl.h, its rationale with it); kept in the history -->
 # `JoltEngineTraitsUImpl` — rationale
 
 Companion to `Plugins/OGSimulation/Source/OGSimulationJoltUnreal/JoltEngineTraitsUImpl.h` and `.cpp` (og-tickdriver task 15a; moved to the
@@ -12,7 +13,7 @@ OGSimulationJoltUnreal module by og-tickdriver task 15e). Its guards are `JoltEn
 The engine traits of the Jolt engine: everything an Unreal game needs to know about Jolt that does not depend on the
 game. It models og-simulation's `PhysicsEngineTraits` (`PhysicsEngineTraits-rationale.md` §2 in og-simulation's docs,
 since og-tickdriver task 15f), and a game's seam selects it as its
-engine traits in its Jolt configuration (the brawler's is `PhysicsBackendUImpl.h`). Nothing in it names a game type:
+engine traits in its Jolt configuration (the brawler's is `BrawlerSessionTraitsUImpl.h`, since og-session-runtime task 31). Nothing in it names a game type:
 a game's own Jolt glue is its binding's (og-simulation's `PhysicsEngineTraits-rationale.md` §3).
 
 | member | what it is | where it was before og-tickdriver task 15a |
@@ -28,7 +29,7 @@ a game's own Jolt glue is its binding's (og-simulation's `PhysicsEngineTraits-ra
 ## §2 The log sink
 
 `logEngineMessage` is the `JoltRuntime::LogFn` the tick-driver host puts in the world host's configuration
-(`config.log`, `TickDriverBackendUImpl::buildWorld`). It writes one `LogOGSimHost` line per message: at `Warning`
+(`config.log`, `TickDriverBackendUImpl::worldConfig`). It writes one `LogOGSimHost` line per message: at `Warning`
 when the message starts with `[Warning]`, otherwise at `Log`, with the text unchanged. The body is the old
 logJoltToSimHost, statement for statement.
 

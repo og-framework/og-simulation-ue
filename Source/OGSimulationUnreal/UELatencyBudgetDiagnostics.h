@@ -135,9 +135,9 @@ private:
 	const UESimulationSession<TraitsT>& m_owner;
 
 	static_assert(std::is_const_v<std::remove_reference_t<decltype(m_owner)>>,
-		"UELatencyBudgetDiagnostics reads its session's production state (m_manager, m_storage, m_inputResolution and "
-		"the client clock) through a CONST reference only. It is the session's friend, so a mutable reference here would be a write door from a "
-		"diagnostic into every private member of the session. Added by og-tickdriver task 18; moved to OGSimulationUnreal by "
+		"UELatencyBudgetDiagnostics reads its session's production state (the runtime's manager, storage, input resolution "
+		"and the client clock) through a CONST reference only, through the runtime's public const accessors (the session "
+		"declares no friend since og-session-runtime task 31). Added by og-tickdriver task 18; moved to OGSimulationUnreal by "
 		"task 19a; its owner became the session in og-ue-simulationcomponentandmanagersplit task 24a, the delayed-input "
 		"map the session's own in task 26a, and its loop the session's in og-input-latency task P5-5.");
 
@@ -285,7 +285,7 @@ void UELatencyBudgetDiagnostics<TraitsT>::stampClientReceived_Internal(
 	if (stream == latencyBudget::Stream::State)
 	{
 		const auto* store =
-			m_owner.m_inputResolution.template findRemoteInputCache<typename TraitsT::Simulatable>(lane);
+			m_owner.runtime().inputResolution().template findRemoteInputCache<typename TraitsT::Simulatable>(lane);
 		if (store != nullptr)
 		{
 			const auto latest = store->findLatest();
@@ -343,18 +343,18 @@ void UELatencyBudgetDiagnostics<TraitsT>::stampCorrectionHanded_Internal(unsigne
 template <typename TraitsT>
 void UELatencyBudgetDiagnostics<TraitsT>::stampAfterStep_Internal(double stepStartSeconds)
 {
-	if (!m_mailbox || !m_owner.m_manager.has_value())
+	if (!m_mailbox || !m_owner.runtime().getManager().has_value())
 		return;
 
-	const uint32 tick = m_owner.m_manager->currentIntegratedTick();
+	const uint32 tick = m_owner.runtime().getManager()->currentIntegratedTick();
 
-	if (!m_owner.m_manager->runsPrediction())
+	if (!m_owner.runtime().getManager()->runsPrediction())
 	{
-		m_owner.m_storage.template forEachSimulatable<typename TraitsT::Simulatable>(
+		m_owner.runtime().storage().template forEachSimulatable<typename TraitsT::Simulatable>(
 			[this, stepStartSeconds](unsigned int id, const auto&)
 			{
 				const uint32 captureTick =
-					m_owner.m_inputResolution.template getLastUsedCaptureTick<typename TraitsT::Simulatable>(id);
+					m_owner.runtime().inputResolution().template getLastUsedCaptureTick<typename TraitsT::Simulatable>(id);
 				if (captureTick != kNoInputCaptureTick)
 				{
 					post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::Input,
@@ -367,18 +367,18 @@ void UELatencyBudgetDiagnostics<TraitsT>::stampAfterStep_Internal(double stepSta
 	post_Internal(latencyBudget::Event::stampPending(latencyBudget::Stream::State,
 		latencyBudget::Point::ClientReceived, latencyBudget::Point::Consumed, stepStartSeconds));
 
-	m_owner.m_storage.template forEachSimulatable<typename TraitsT::Simulatable>(
+	m_owner.runtime().storage().template forEachSimulatable<typename TraitsT::Simulatable>(
 		[this, tick, stepStartSeconds](unsigned int id, const auto&)
 		{
 			const RelayedReadObservationRing* const ring =
-				m_owner.m_inputResolution.getDiagnostics().template relayedReadObservations<typename TraitsT::Simulatable>(id);
+				m_owner.runtime().inputResolution().getDiagnostics().template relayedReadObservations<typename TraitsT::Simulatable>(id);
 			if (ring != nullptr)
 				postRelayedReads_Internal(id, *ring, tick, stepStartSeconds);
 		});
 
 	if (m_clockMailbox)
 	{
-		const ClientPredictionClock& clock = m_owner.m_manager->getClientClock();
+		const ClientPredictionClock& clock = m_owner.runtime().getManager()->getClientClock();
 		ClockCounts counts;
 		counts.skips       = clock.getDiagnostics().skipCount();
 		counts.stalls      = clock.getDiagnostics().stallCount();
@@ -436,12 +436,12 @@ void UELatencyBudgetDiagnostics<TraitsT>::postRelayedReads_Internal(
 template <typename TraitsT>
 void UELatencyBudgetDiagnostics<TraitsT>::stampStepEnd_Internal()
 {
-	if (!m_mailbox || !m_owner.m_manager.has_value())
+	if (!m_mailbox || !m_owner.runtime().getManager().has_value())
 		return;
 
 	const double stepEndSeconds = FPlatformTime::Seconds();
-	const uint32 tick = m_owner.m_manager->currentIntegratedTick();
-	m_owner.m_storage.template forEachSimulatable<typename TraitsT::Simulatable>(
+	const uint32 tick = m_owner.runtime().getManager()->currentIntegratedTick();
+	m_owner.runtime().storage().template forEachSimulatable<typename TraitsT::Simulatable>(
 		[this, tick, stepEndSeconds](unsigned int id, const auto&)
 		{
 			post_Internal(latencyBudget::Event::stamp(latencyBudget::Stream::State,
@@ -464,7 +464,7 @@ void UELatencyBudgetDiagnostics<TraitsT>::onPostTickFlush()
 template <typename TraitsT>
 void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread()
 {
-	if (!m_probe || !m_mailbox || !m_owner.m_manager.has_value())
+	if (!m_probe || !m_mailbox || !m_owner.runtime().getManager().has_value())
 		return;
 
 	m_mailbox->drain([this](const PostedEvent& posted)
@@ -483,7 +483,7 @@ void UELatencyBudgetDiagnostics<TraitsT>::tick_GameThread()
 	}
 
 	const double nowSeconds = FPlatformTime::Seconds();
-	const bool isClient = m_owner.m_manager->runsPrediction();
+	const bool isClient = m_owner.runtime().getManager()->runsPrediction();
 
 	m_probe->stampNewestPending(latencyBudget::Stream::State,
 		latencyBudget::Point::StepEnd, latencyBudget::Point::Rendered, nowSeconds);

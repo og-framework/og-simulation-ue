@@ -33,6 +33,8 @@ concept SessionRunner = requires(R& r, const R& cr)
 	{ r.host() }           -> std::same_as<typename R::Host&>;
 	{ cr.stopRequested() } -> std::same_as<const std::atomic<bool>&>;
 	{ r.join() }           -> std::same_as<void>;
+	{ r.waitForStart() }   -> std::same_as<void>;
+	{ r.releaseStart() }   -> std::same_as<void>;
 };
 
 namespace sessionRunnerSelfCheck
@@ -44,6 +46,8 @@ struct Conforming
 	Host& host();
 	const std::atomic<bool>& stopRequested() const;
 	void join();
+	void waitForStart();
+	void releaseStart();
 };
 
 struct HostIsNoRunnerHost : Conforming
@@ -69,6 +73,28 @@ struct MissingJoin
 
 	Host& host();
 	const std::atomic<bool>& stopRequested() const;
+	void waitForStart();
+	void releaseStart();
+};
+
+struct MissingWaitForStart
+{
+	using Host = tickDriverRunnerHostSelfCheck::Conforming;
+
+	Host& host();
+	const std::atomic<bool>& stopRequested() const;
+	void join();
+	void releaseStart();
+};
+
+struct MissingReleaseStart
+{
+	using Host = tickDriverRunnerHostSelfCheck::Conforming;
+
+	Host& host();
+	const std::atomic<bool>& stopRequested() const;
+	void join();
+	void waitForStart();
 };
 
 static_assert(SessionRunner<Conforming>,
@@ -82,6 +108,12 @@ static_assert(!SessionRunner<StopRequestedByValue>,
 	"thread sets it");
 static_assert(!SessionRunner<MissingJoin>,
 	"SessionRunner self-check: join is required; the frame thread joins the runner it started");
+static_assert(!SessionRunner<MissingWaitForStart>,
+	"SessionRunner self-check: waitForStart is required; the frame thread waits on the start latch before its frame host "
+	"begins (og-session-runtime task 31)");
+static_assert(!SessionRunner<MissingReleaseStart>,
+	"SessionRunner self-check: releaseStart is required; the runner releases the start latch once its driver started "
+	"(og-session-runtime task 31)");
 } // namespace sessionRunnerSelfCheck
 
 template <typename E>

@@ -1,4 +1,13 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: slotKeyOf -- moved by og-session-runtime task 31 (the world build and the stepping to og-sim-session's SessionRuntime: buildWorld, startStepping, stopStepping; the static import to ueSessionEngine::importStatics; the present to UESessionPresentation; the world config to TickDriverBackendUImpl::worldConfig; slotKeyOf is slotKeyFor); kept in the history -->
+<!-- lint-external-ref: physicsBackendUImpl -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: PhysicsBackendHostUImpl.h -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: PhysicsBackendHost -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: PhysicsBackendHostUImpl-rationale.md -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: assertCompositionContracts -- moved by og-session-runtime task 31 (the world build and the stepping to og-sim-session's SessionRuntime: buildWorld, startStepping, stopStepping; the static import to ueSessionEngine::importStatics; the present to UESessionPresentation; the world config to TickDriverBackendUImpl::worldConfig; slotKeyOf is slotKeyFor); kept in the history -->
+<!-- lint-external-ref: PhysicsBackendUImpl-rationale.md -- deleted by og-session-runtime task 31 (the brawler's engine seam header: its binding concept and the EngineTraits and EngineBinding aliases moved to the top of BrawlerSessionTraitsUImpl.h, its rationale with it); kept in the history -->
+<!-- lint-external-ref: m_tickDriver -- moved by og-session-runtime task 31 (the world build and the stepping to og-sim-session's SessionRuntime: buildWorld, startStepping, stopStepping; the static import to ueSessionEngine::importStatics; the present to UESessionPresentation; the world config to TickDriverBackendUImpl::worldConfig; slotKeyOf is slotKeyFor); kept in the history -->
+<!-- lint-external-ref: PhysicsBackendUImpl.h -- deleted by og-session-runtime task 31 (the brawler's engine seam header: its binding concept and the EngineTraits and EngineBinding aliases moved to the top of BrawlerSessionTraitsUImpl.h, its rationale with it); kept in the history -->
 <!-- lint-external-ref: m_backendWorlds -- RENAMED by og-ue-simulationcomponentandmanagersplit task 35 to m_physicsBackendWorlds (the session's member); kept in §14's record of the rename -->
 # `TickDriverBackendUImpl` — rationale
 
@@ -12,6 +21,12 @@ two-line docs pointer, code, assertion messages, and one-line tags `⛔G-nn` →
 > written while the class was the brawler's Jolt host, and the brawler is still its one user: where they name a
 > brawler type, the type now comes from the game binding or the engine binding (§12).
 
+* **Since og-session-runtime task 31** this class is the Unreal bodies only: the body requests, the slot request
+  (`callWithSlotRequest`, `slotKeyFor`), the bodies' creation and release, the visualization volumes, the static world's
+  config (`worldConfig`). The world build, the stepping, the tick backend and its stop are og-sim-session's
+  `SessionRuntime` (`SessionRuntime-rationale.md`; the stop's wait is its G-05, this file's G-01 before), the static import
+  and the present are `UESessionEngine.h`'s (`UESessionEngine-rationale.md`), and the header also holds the runtime's Unreal
+  traits, `UESessionRuntimeTraits`. §1 to §16 record the class as it was, under the names it had.
 * **§1** says why the class exists, what it is, and why the Jolt host is two objects.
 * **§2** to **§9** moved here from `OGBrawlerSimulationManager-rationale.md` (§17, the map of the Jolt host, and §18's
   subsections on the Jolt configuration's world, stepping, render publish and apply, shadow world, render
@@ -349,7 +364,7 @@ says which is which.
   `TickSlotTable` inside the world host (`TickSlotTable-rationale.md`; the world host's `acquire`, its §6). This
   class supplies the brawler's half, in `callWithSlotRequest` (since og-tickdriver task 15e this class computes
   the key and the game binding's `callWithSlotRequest` the rest, with the same statements; §12):
-  - the key, the owning actor's address (`slotKeyOf`), and its name in UTF-8 for the lines;
+  - the key, the owning actor's address (`slotKeyFor`; `slotKeyOf` until og-session-runtime task 31), and its name in UTF-8 for the lines;
   - the role, the session's `GetNetMode() != NM_Client` (the owner's `HasAuthority` is poisoned where this
     statement is, §1);
   - the slot the peer already knows, the session's `physicsSlotFor(owner, key, storage key)`, after a `checkf` that
@@ -1093,7 +1108,7 @@ of every engine, and `PhysicsEngineBinding` the park snap of every binding.
 
 | statement before task 15e | now |
 |---|---|
-| `callWithSlotRequest`'s cast to `AOGBrawlerUECharacter`, its `checkf`, the name's UTF-8 buffer, `GetNetMode() != NM_Client`, `GetPhysicsSlot` and the `SetAuthoritativePhysicsSlot` publish | the game binding's `callWithSlotRequest`, the same statements in the same order, with the same message; this class computes the key (`slotKeyOf`) first and passes it in |
+| `callWithSlotRequest`'s cast to `AOGBrawlerUECharacter`, its `checkf`, the name's UTF-8 buffer, `GetNetMode() != NM_Client`, `GetPhysicsSlot` and the `SetAuthoritativePhysicsSlot` publish | the game binding's `callWithSlotRequest`, the same statements in the same order, with the same message; this class computes the key (`slotKeyFor`) first and passes it in |
 | `m_owner.m_staticData.m_movementStaticData.gravity` in `buildWorld` | the game binding's `gravity(session)`, the same read |
 | the static data's type in `createBodies_GameThread` | `GameBindingT::StaticData`; the call, `owner.getStaticData()`, is unchanged |
 | the cast in `onRegistered_GameThread` and the parameter types `UOGBrawlerSimulatableComponent&`, `AOGBrawlerUECharacter&` | `Character` and `Component`, the game binding's; `GetCapsuleComponent` (Unreal's `ACharacter`) stays |

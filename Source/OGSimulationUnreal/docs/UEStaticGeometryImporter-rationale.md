@@ -17,8 +17,8 @@ module. It names no game category and no physics backend. Its output type is og-
 (`StaticGeometry.h`), which it uses read-only.
 
 **Callers today:** the console command `og.sim.ImportStaticGeometry` in the same `.cpp` (§9), and the
-Jolt tick-driver host's world build (`TickDriverBackendUImpl::buildWorld`, `TickDriverBackendUImpl-rationale.md`), which
-imports the level with the game binding's category table and logs the report on every peer.
+session's static import (`ueSessionEngine::importStatics`, `UESessionEngine-rationale.md`, since og-session-runtime task 31;
+the Jolt tick-driver host's world build before), which imports the level with the game binding's category table and logs the report on every peer.
 
 ## 2. The category table is an input
 

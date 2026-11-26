@@ -448,6 +448,6 @@ table, no RTT warning before the Join: `UESimNetHost-guards.md` G-13).
 `UESimNetServerHost` (the game-thread round trip and its warnings), `UESimNetServerHostPort` (the old lanes' host's body, the
 runner's `rttMs` from `FRunnerRttTable` and its game-thread publish, now also the port's `logHost` and the session hooks, each one
 line to Unreal), and `UESimNetLanesServerHost`, the core over the port. The port sits in a private base,
-`UESimNetServerHostParts`, so it is built before the core stores its address, and is destroyed after it. The session names the
-host `SimNetLanes::ServerHost` and builds it from the driver, the endpoint and itself, unchanged. The server host is the world
-session's, not the link's; og-session-runtime task 31 moves it into the runtime's composition, which holds it on an authority.
+`UESimNetServerHostParts`, so it is built before the core stores its address, and is destroyed after it. The runtime names the
+host as its link's `ServerHost` (`UESimNetLanes::ServerHost`) and builds it from the driver, the endpoint and itself, unchanged. The server host is the world
+session's, not the link's; og-session-runtime task 31 moved it into the runtime's composition, which holds it on an authority.

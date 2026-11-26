@@ -1,4 +1,31 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: PhysicsBackend -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: getTimeConfigPtr -- deleted by og-session-runtime task 31 (no caller); kept in the history -->
+<!-- lint-external-ref: PhysicsBackend::TickGame::Manager -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: PhysicsBackendHost -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: PhysicsBackendHostUImpl.h -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: setOnTimingInfoReceivedCallback -- deleted by og-session-runtime task 31 (no caller); kept in the history -->
+<!-- lint-external-ref: getSystemsExec -- deleted by og-session-runtime task 31 (no caller); kept in the history -->
+<!-- lint-external-ref: getReceptionCoordinator -- deleted by og-session-runtime task 31 (no caller); kept in the history -->
+<!-- lint-external-ref: kInstanceSlots -- moved by og-session-runtime task 31 to UESessionRegistry and UESessionNoSession (UESessionRefusal.h); kept in the history -->
+<!-- lint-external-ref: m_registeredAsAuthority -- moved by og-session-runtime task 31 to UESessionRegistry and UESessionNoSession (UESessionRefusal.h); kept in the history -->
+<!-- lint-external-ref: m_registeredWorld -- moved by og-session-runtime task 31 to UESessionRegistry and UESessionNoSession (UESessionRefusal.h); kept in the history -->
+<!-- lint-external-ref: endStoppedDrain -- replaced by og-session-runtime task 31 with one scope guard, SessionClock::stoppedDrain (a StoppedDrainScope, SessionThreads.h); kept in the history -->
+<!-- lint-external-ref: beginStoppedDrain -- replaced by og-session-runtime task 31 with one scope guard, SessionClock::stoppedDrain (a StoppedDrainScope, SessionThreads.h); kept in the history -->
+<!-- lint-external-ref: knobLog -- moved by og-session-runtime task 31 (the session's composition, start and stop are og-sim-session's SessionRuntime; UESimulationSession is the thin Unreal adapter); kept in the history -->
+<!-- lint-external-ref: forgetSimNetCharacter -- moved by og-session-runtime task 31 (the session's composition, start and stop are og-sim-session's SessionRuntime; UESimulationSession is the thin Unreal adapter); kept in the history -->
+<!-- lint-external-ref: PhysicsBackendUImpl.h -- deleted by og-session-runtime task 31 (the brawler's engine seam header: its binding concept and the EngineTraits and EngineBinding aliases moved to the top of BrawlerSessionTraitsUImpl.h, its rationale with it); kept in the history -->
+<!-- lint-external-ref: BackendWorlds -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: PhysicsBackendWorlds -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: physicsBackendUImpl::Backend -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: BackendFor -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
+<!-- lint-external-ref: TickDriverBackendUImpl::slotKeyOf -- moved by og-session-runtime task 31 (the world build and the stepping to og-sim-session's SessionRuntime: buildWorld, startStepping, stopStepping; the static import to ueSessionEngine::importStatics; the present to UESessionPresentation; the world config to TickDriverBackendUImpl::worldConfig; slotKeyOf is slotKeyFor); kept in the history -->
+<!-- lint-external-ref: kSimNetHostLineFormat -- renamed by og-session-runtime task 31 to kSimNetHost (SessionRuntime.h); kept in the history -->
+<!-- lint-external-ref: onSimNetLanesStopping -- moved by og-session-runtime task 31 (the session's composition, start and stop are og-sim-session's SessionRuntime; UESimulationSession is the thin Unreal adapter); kept in the history -->
+<!-- lint-external-ref: m_noSessionRegisterRefused -- moved by og-session-runtime task 31 to UESessionRegistry and UESessionNoSession (UESessionRefusal.h); kept in the history -->
+<!-- lint-external-ref: m_noSessionReason -- moved by og-session-runtime task 31 to UESessionRegistry and UESessionNoSession (UESessionRefusal.h); kept in the history -->
+<!-- lint-external-ref: m_noSessionRegisterRaisesMessage -- moved by og-session-runtime task 31 to UESessionRegistry and UESessionNoSession (UESessionRefusal.h); kept in the history -->
+<!-- lint-external-ref: UESessionTickHost-rationale.md -- deleted by og-session-runtime task 31 (the tick game's Unreal host: its hooks are og-sim-session's SessionRuntimeHost port, which UESimulationSession models); kept in the history -->
 <!-- lint-external-ref: hasServerTierWiring -- deleted by og-session-runtime task 7b (no caller after task 3 deleted the brawler's Chaos host); kept in the history -->
 <!-- lint-external-ref: hasServerTierWiring() -- deleted by og-session-runtime task 7b (no caller after task 3 deleted the brawler's Chaos host); kept in the history -->
 <!-- lint-external-ref: editStorage -- deleted by og-session-runtime task 7b (no caller after task 3 deleted the brawler's Chaos backend); kept in the history -->
@@ -43,6 +70,13 @@ tags `⛔G-nn` → an entry in `UESimulationSession-guards.md` (the `.cpp` has n
 > **Licence.** This tier is **MPL-2.0**, matching the code it describes. The class and the text of §2 and §3 moved here
 > from the brawler's session actor and its rationale (BUSL-1.1); the user ruled the re-licensing on 2026-10-20.
 
+* **Since og-session-runtime task 31** the class is the thin Unreal adapter over og-sim-session's `SessionRuntime`
+  (`SessionRuntime-rationale.md`): it holds the runtime, the diagnostics, the frame host and its engine, the bodies, the
+  presentation, the registry and the component maps, models the runtime's `SessionRuntimeHost` port, and keeps the
+  refusals (`UESessionRefusal.h`) and the doors a game reads. The composition, `beginPlay`'s configuration and
+  `endPlay`'s order are the runtime's `start` and `stop`. §2 to §22 record the members and sequences as this class held
+  them, under the names they had (the runtime keeps most of them); the names task 31 deleted or renamed are escaped at
+  the top of this file.
 * **§1** says what the class is, as of og-ue-simulationcomponentandmanagersplit task 24a, and what it does not hold yet.
 * **§2** is the member order: construction, destruction, and the assertions that keep it.
 * **§3** is the backend's two members.

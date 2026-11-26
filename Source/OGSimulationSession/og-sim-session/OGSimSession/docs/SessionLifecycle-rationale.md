@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: forgetSimNetCharacter -- moved by og-session-runtime task 31 (the session's composition, start and stop are og-sim-session's SessionRuntime; UESimulationSession is the thin Unreal adapter); kept in the history -->
+<!-- lint-external-ref: slotKeyOf -- moved by og-session-runtime task 31 (the world build and the stepping to og-sim-session's SessionRuntime: buildWorld, startStepping, stopStepping; the static import to ueSessionEngine::importStatics; the present to UESessionPresentation; the world config to TickDriverBackendUImpl::worldConfig; slotKeyOf is slotKeyFor); kept in the history -->
 # `SessionLifecycle.h` — rationale
 
 Companion to og-sim-session's `OGSimSession/SessionLifecycle.h` (og-session-runtime tasks 29 and 30). Its prohibitions are in

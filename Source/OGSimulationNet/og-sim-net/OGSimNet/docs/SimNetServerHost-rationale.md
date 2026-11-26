@@ -102,8 +102,9 @@ and isolated none (review_SR5_31a, L3).
 `UESimNetHost.h` keeps the engine half (`UESimNetHost-rationale.md` §1, §13): `UESimNetServerHost` (the game-thread round trip
 and its warnings), `UESimNetServerHostPort` (both ports, plus the game-thread publish into `FRunnerRttTable`), and
 `UESimNetLanesServerHost`, the core over that port, held in a private base so the port is built before the core takes its
-address. The session still names its host `SimNetLanes::ServerHost` and builds it from the driver, the endpoint and itself, as
-before; it did not change in task 31a.
+address. The session still named its host as its lanes' `ServerHost` and built it from the driver, the endpoint and itself, as
+before; it did not change in task 31a. Since task 31 the runtime names it as its link's (`UESimNetLanes::ServerHost` on
+Unreal) and builds it the same way (`SessionRuntime.h`, `attachServerLink`).
 
 ## §5 Tests (`og-sim-net/tests/SimNetServerHostTest.cpp`, `[NetTransport][SimNetServerHost]`)
 

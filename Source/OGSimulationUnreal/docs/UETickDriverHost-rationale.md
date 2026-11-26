@@ -130,12 +130,14 @@ test and FPlatformTime::Seconds are thread-safe.
 
 ## 6. Lifecycle
 
-* `BeginPlay`, at its end (the brawler's `TickDriverBackendUImpl::startDriverStepping`): the game builds the driver over this
+* `BeginPlay`, at its end (og-sim-session's `SessionRuntime::startStepping`, then the session's `beginFrames`, since
+  og-session-runtime task 31): the runtime builds the driver over this
   engine, then calls `begin`, which records the owner for the deferred task's weak pointer and registers the two tick
   functions on the persistent level, the end function with the start function as prerequisite. A second `begin` is a
   `checkf`.
-* `EndPlay`, through the session's `endPlay`, its first statement (the brawler's `TickDriverBackendUImpl::onEndPlayBegin`): `unregisterTickFunctions`
-  first, so no new frame starts, and then the driver's `stop()` (`TickDriverBackendUImpl-guards.md` G-01).
+* `EndPlay`, through the session's `endPlay`, its first statement (og-sim-session's `SessionRuntime::stopStepping`, since
+  og-session-runtime task 31): the session's `endFrames` (`unregisterTickFunctions`) first, so no new frame starts, and
+  then the tick backend's `stop()` (`SessionRuntime-guards.md` G-05).
 
 The lines the driver prints through this engine (`[SimHost.Frame]`, the catch-up cap Warning, `[SimHost.FirstStep]`
 and `[SimHost.Window]`) are formatted by og-simulation's `TickDriverWindow`, byte for byte as the frame host printed

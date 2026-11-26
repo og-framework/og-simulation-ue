@@ -1695,3 +1695,34 @@ TEST_CASE("SessionLifecycle.ARosterRemovalHookOutsideADrainTripsTheCheck", "[.][
 	rig.session.lifecycle().onRegisteredRemoved(1u);
 	FAIL("SessionLifecycle::onRegisteredRemoved on the frame thread outside the stopped drain did NOT trip its DrainInbox check");
 }
+
+TEST_CASE("SessionLifecycle.EachHeldComponentIsReleasedByItsOwnUnregisterOutcome", "[Session][SessionLifecycle]")
+{
+	ogsession::SessionHeldForUnregister<int> held;
+	std::vector<std::pair<uint32_t, int>> released;
+	const auto record = [&released](uint32_t simId, int& handle) { released.emplace_back(simId, handle); };
+
+	held.hold(7u, 1);
+	held.hold(7u, 2);
+	held.hold(9u, 3);
+	CHECK(held.heldCount(7u) == 2u);
+	CHECK(held.heldCount(9u) == 1u);
+
+	REQUIRE(held.releaseOldest(7u, record));
+	CHECK(released.back() == std::make_pair(7u, 1));
+	REQUIRE(held.releaseOldest(7u, record));
+	CHECK(released.back() == std::make_pair(7u, 2));
+	CHECK_FALSE(held.releaseOldest(7u, record));
+	CHECK(held.heldCount(7u) == 0u);
+
+	held.hold(7u, 4);
+	held.releaseAll(record);
+	CHECK(held.heldCount(7u) == 0u);
+	CHECK(held.heldCount(9u) == 0u);
+	REQUIRE(released.size() == 4u);
+	std::vector<int> handles;
+	for (const auto& entry : released)
+		handles.push_back(entry.second);
+	std::sort(handles.begin(), handles.end());
+	CHECK(handles == std::vector<int>{ 1, 2, 3, 4 });
+}

@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <charconv>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -60,10 +61,28 @@ public:
 			m_thread.join();
 	}
 
+	void waitForStart()
+	{
+		std::unique_lock<std::mutex> lock(m_latchMutex);
+		m_latch.wait(lock, [this]() { return m_started; });
+	}
+
+	void releaseStart()
+	{
+		{
+			const std::lock_guard<std::mutex> lock(m_latchMutex);
+			m_started = true;
+		}
+		m_latch.notify_all();
+	}
+
 	bool highResolutionWait() const { return m_highResolutionWait; }
 	std::thread::id threadId() const { return m_threadId; }
 
 private:
+	std::mutex              m_latchMutex;
+	std::condition_variable m_latch;
+	bool                    m_started = false;
 	Host              m_host;
 	Body              m_body;
 	bool              m_highResolutionWait;

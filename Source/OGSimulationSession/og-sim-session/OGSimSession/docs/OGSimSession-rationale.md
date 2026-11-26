@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: UESessionTickHost.h -- deleted by og-session-runtime task 31 (the tick game's Unreal host: its hooks are og-sim-session's SessionRuntimeHost port, which UESimulationSession models); kept in the history -->
 # og-sim-session's module and test wiring — rationale
 
 og-sim-session is the engine-free session runtime (og-session-runtime design §3.1). Its library sources under `OGSimSession/`
@@ -78,7 +79,8 @@ is the module's generated definitions header.
   Since task 25 `UESimulationSession.h` includes `SessionDisplay.h` (the display) and `SimulationDisplaySnapshot.h` (moved here
   from og-simulation; `OGBrawlerUnreal`'s visualization readers reach it through the session). Since task 26
   `UESimulationSession.h` includes `SessionNetHooks.h` (the per-step net hooks) and `SessionTickGame.h`, and
-  `UESessionTickHost.h` (which `TickDriverBackendUImpl.h` includes) includes `SessionTickGame.h` (the tick driver's game the
+  `UESessionTickHost.h` (which `TickDriverBackendUImpl.h` included until og-session-runtime task 31, when the runtime took the
+  tick game) included `SessionTickGame.h` (the tick driver's game the
   backend holds). Since task 29 `UESimulationSession.h` includes `SessionLifecycle.h` (the prediction role's registration and
   unregistration), which includes og-sim-net's `SimNetBindings.h` (the bindings' verdict type, `BindVerdict`), and
   the root's `Source/OGSimulationTests/SessionKnobsFormatParityTest.cpp` includes it (the format parity).

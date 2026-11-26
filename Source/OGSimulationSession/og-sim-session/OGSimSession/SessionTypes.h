@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -35,6 +36,7 @@ struct SessionStart
 	bool                   highResolutionWait        = false;
 	StaticWorldDescription staticWorld;
 	std::vector<uint8_t>   physicsOnlyShapes;
+	std::thread::id        netIoThread{};
 };
 
 struct RegisterRequest

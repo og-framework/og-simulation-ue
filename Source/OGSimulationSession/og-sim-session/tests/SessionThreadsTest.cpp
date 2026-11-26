@@ -6,7 +6,9 @@
 #include "OGTickDriver/TickDriverThreadContext.h"
 
 #include <array>
+#include <condition_variable>
 #include <cstddef>
+#include <mutex>
 #include <optional>
 #include <thread>
 
@@ -267,4 +269,49 @@ TEST_CASE("SessionThreads.FrameProbeOnAnAuthoritysFrameThreadTripsTheCheck", "[.
 	rig.checks.checkOp(SessionOp::FrameProbe);
 	FAIL("SessionThreadChecks::checkOp(FrameProbe) on an authority's frame thread did NOT fire - the authority's frame "
 		 "probe runs on its runner");
+}
+
+TEST_CASE("SessionThreads.WithOgNetsIoThreadKnownAPredictionNetIoOpPassesOnThatThreadAlone", "[Session]")
+{
+	PredictionRig rig;
+	std::thread::id netIoThread;
+	Allowed onTheNetIoThread{};
+	std::mutex gate;
+	std::condition_variable known;
+	bool idKnown = false;
+	bool checked = false;
+	std::thread io(
+		[&]
+		{
+			{
+				const std::lock_guard<std::mutex> lock(gate);
+				netIoThread = std::this_thread::get_id();
+				idKnown = true;
+			}
+			known.notify_all();
+			std::unique_lock<std::mutex> lock(gate);
+			known.wait(lock, [&] { return checked; });
+			onTheNetIoThread = allowedHere(rig.checks);
+		});
+	{
+		std::unique_lock<std::mutex> lock(gate);
+		known.wait(lock, [&] { return idKnown; });
+	}
+	rig.checks.setNetIoThread(netIoThread);
+	{
+		const std::lock_guard<std::mutex> lock(gate);
+		checked = true;
+	}
+	known.notify_all();
+	io.join();
+	const Allowed onAnotherThread = allowedOnAPlainThread(rig.checks);
+	const Allowed onFrame = allowedHere(rig.checks);
+	const std::size_t serviceNet = static_cast<std::size_t>(SessionOp::ServiceNet);
+	CHECK(onTheNetIoThread[serviceNet]);
+	CHECK_FALSE(onAnotherThread[serviceNet]);
+	CHECK_FALSE(onFrame[serviceNet]);
+	uint32_t allowedElsewhere = 0u;
+	for (std::size_t index = 0u; index < kSessionOpCount; ++index)
+		allowedElsewhere += static_cast<uint32_t>(onAnotherThread[index]);
+	CHECK(allowedElsewhere == 0u);
 }

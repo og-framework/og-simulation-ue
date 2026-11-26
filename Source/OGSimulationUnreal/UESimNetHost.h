@@ -9,7 +9,6 @@
 #include "Engine/NetConnection.h"
 #include "GameFramework/Actor.h"
 #include "HAL/PlatformTime.h"
-#include "OGNet/NetTypes.h"
 #include "OGNetUnreal/Core/EngineLaneDriverCore.h"
 #include "OGNetUnreal/Core/SimLaneEndpoint.h"
 #include "OGNetUnreal/OGNetConnection.h"
@@ -20,6 +19,7 @@
 #include "OGSimNet/SimNetRoster.h"
 #include "OGSimNet/SimNetServerHost.h"
 #include "OGSimNet/SimNetTransport.h"
+#include "OGSimulation/OGAssert.h"
 #include "OGSimulation/LatencyBudgetProbe.h"
 #include "OGSimulation/Network/SimTransport.h"
 #include "OGSimulationUnreal/UELatencyBudgetDiagnostics.h"
@@ -35,6 +35,9 @@
 #include <cstring>
 
 template <typename TraitsT> class UESimulationSession;
+namespace ogsession { template <typename TraitsT> class SessionRuntime; }
+template <typename TraitsT> struct UESessionRuntimeTraits;
+template <typename TraitsT> using UESessionRuntime = ogsession::SessionRuntime<UESessionRuntimeTraits<TraitsT>>;
 
 inline constexpr uint64 kSimNetWireMismatchToastKey = 0x4F47574DF0000001ull;
 inline constexpr float kSimNetWireMismatchToastSeconds = 15.f;
@@ -303,7 +306,7 @@ template <typename TraitsT>
 class UESimNetServerHost
 {
 public:
-	using Session = UESimulationSession<TraitsT>;
+	using Session = UESessionRuntime<TraitsT>;
 
 	UESimNetServerHost(UOGNetDriver* ognetDriver, Session* worldSession) : m_driver(ognetDriver), m_session(worldSession) {}
 
@@ -331,7 +334,7 @@ public:
 		if (unavailable != EServerRttUnavailable::None)
 			warnRttUnavailableOnce(unavailable, conn);
 		if (m_session != nullptr)
-			m_session->editLatencyBudgetDiagnostics().noteWireSample(roundTripMs / 1000.0);
+			m_session->diagnostics().noteWireSample(roundTripMs / 1000.0);
 		return roundTripMs;
 	}
 
@@ -448,7 +451,7 @@ static_assert(ogsimnet::SimNetLinkServices<UESimNetLinkServices> && ogsimnet::kS
 template <typename TraitsT>
 struct UESimNetLinkSession
 {
-	UESimulationSession<TraitsT>* session = nullptr;
+	UESessionRuntime<TraitsT>* session = nullptr;
 
 	void onTimingInfo(uint32_t authorityTick, double roundTripSeconds) { session->onTimingInfoReceived(authorityTick, roundTripSeconds); }
 	void onRelayFloor(uint8_t floorTicks) { session->onRelayDelayFloorReceived(floorTicks); }
@@ -460,7 +463,7 @@ struct UESimNetLinkSession
 	{
 		const latencyBudget::Stream probeStream =
 			stream == ogsimnet::SimNetStream::State ? latencyBudget::Stream::State : latencyBudget::Stream::Input;
-		session->editLatencyBudgetDiagnostics().stampClientReceived_Internal(probeStream, simId, tick, recvSeconds);
+		session->diagnostics().stampClientReceived_Internal(probeStream, simId, tick, recvSeconds);
 	}
 };
 
@@ -469,7 +472,7 @@ inline constexpr size_t kRunnerRttSlots = 64u;
 class FRunnerRttTable
 {
 public:
-	static_assert(ognet::kInvalidConnection == 0u,
+	static_assert(kInvalidSimConnection == 0u,
 		"FRunnerRttTable: a word of 0 is an empty slot, and a connection's word holds its og-net id in the high half; og-net "
 		"never assigns id 0 (kInvalidConnection), so no connection's word reads as empty. A connection still without an "
 		"og-net id is not published, and id 0 is never read. Was review_P5-19 N2 (an id 0 with a round trip of 0 read as "
@@ -493,7 +496,7 @@ public:
 
 	double read(uint32 ogNetId) const
 	{
-		if (ogNetId == ognet::kInvalidConnection)
+		if (ogNetId == kInvalidSimConnection)
 			return kNoRttReadingMs;
 		for (const std::atomic<uint64_t>& slot : m_slots)
 		{
@@ -516,16 +519,25 @@ class UESimNetServerHostPort : public UESimNetServerHost<TraitsT>
 public:
 	using Base::Base;
 
+	typename Base::Session& checkedSession() const
+	{
+		OG_CHECK(this->session() != nullptr,
+			"UESimNetServerHostPort: the server host calls its session hooks only with a session attached (the runtime builds "
+			"it with its own address); a null session here is a host built for the RTT readings alone (og-session-runtime "
+			"task 31, review_SR5_31a item 3)");
+		return *this->session();
+	}
+
 	double rttMs(SimConnectionId conn) { return m_runnerRtt.read(conn); }
 	void logHost(const char* line) { RouteOGMessage(line); }
 
-	int32_t receptionTick() { return this->session()->getServerReceptionTick(); }
-	void stampHanded(uint8_t simId, uint32_t captureTick) { this->session()->editLatencyBudgetDiagnostics().stampHandedAndLeft_Internal(simId, captureTick); }
-	void onLifecycleUnregistering(uint8_t simId) { this->session()->onSimNetLifecycleUnregistering(simId); }
+	int32_t receptionTick() { return checkedSession().getServerReceptionTick(); }
+	void stampHanded(uint8_t simId, uint32_t captureTick) { checkedSession().diagnostics().stampHandedAndLeft_Internal(simId, captureTick); }
+	void onLifecycleUnregistering(uint8_t simId) { checkedSession().onSimNetLifecycleUnregistering(simId); }
 
 	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds)
 	{
-		this->session()->editLatencyBudgetDiagnostics().stampServerReceived_Internal(simId, captureTick, recvSeconds);
+		checkedSession().diagnostics().stampServerReceived_Internal(simId, captureTick, recvSeconds);
 	}
 
 	void publishRunnerRtt_GameThread()
@@ -539,7 +551,7 @@ public:
 			for (UNetConnection* const connection : driver->ClientConnections)
 			{
 				UOGNetConnection* const ognetConnection = Cast<UOGNetConnection>(connection);
-				if (ognetConnection == nullptr || ognetConnection->OGNetId == ognet::kInvalidConnection || slot == kRunnerRttSlots)
+				if (ognetConnection == nullptr || ognetConnection->OGNetId == kInvalidSimConnection || slot == kRunnerRttSlots)
 					continue;
 				m_runnerRtt.publish_GameThread(slot++, ognetConnection->OGNetId, publishedRttMs_GameThread(*ognetConnection));
 			}
@@ -578,7 +590,7 @@ class UESimNetLanesServerHost : private UESimNetServerHostParts<TraitsT>, public
 	using Parts = UESimNetServerHostParts<TraitsT>;
 
 public:
-	UESimNetLanesServerHost(UOGNetDriver* ognetDriver, ognetunreal::SimLaneEndpoint& laneEndpoint, UESimulationSession<TraitsT>* worldSession)
+	UESimNetLanesServerHost(UOGNetDriver* ognetDriver, ognetunreal::SimLaneEndpoint& laneEndpoint, UESessionRuntime<TraitsT>* worldSession)
 		: Parts{{ognetDriver, worldSession}}
 		, UESimNetServerHostCore<TraitsT>(this->m_port, laneEndpoint, worldSession != nullptr ? &this->m_port : nullptr)
 	{

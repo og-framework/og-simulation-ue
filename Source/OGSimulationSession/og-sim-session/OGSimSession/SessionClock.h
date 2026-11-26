@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // docs/SessionClock-rationale.md · docs/SessionClock-guards.md
 
+#include <atomic>
 #include <cmath>
 #include <concepts>
 #include <cstdint>
@@ -266,17 +267,7 @@ public:
 
 	void endTierConsumer() { m_replicatedTierConsumer.reset(); }
 
-	void beginStoppedDrain()
-	{
-		m_threads.checkOp(SessionOp::DrainStopped);
-		m_inStoppedDrain = true;
-	}
-
-	void endStoppedDrain()
-	{
-		m_threads.checkOp(SessionOp::DrainStopped);
-		m_inStoppedDrain = false;
-	}
+	[[nodiscard]] StoppedDrainScope stoppedDrain() { return StoppedDrainScope(m_inStoppedDrain, m_threads); }
 
 	// ⛔G-02  docs/SessionClock-guards.md
 	void logRelayDelayFloorAdvisory(int32_t floorTicks)
@@ -305,7 +296,10 @@ public:
 	TripleBuffer<DisplayTierReading>&       displayTier() { return *m_displayTier; }
 
 private:
-	SessionOp receiptOp() const { return m_inStoppedDrain ? SessionOp::DrainStopped : SessionOp::DrainInbox; }
+	SessionOp receiptOp() const
+	{
+		return m_inStoppedDrain.load(std::memory_order_relaxed) ? SessionOp::DrainStopped : SessionOp::DrainInbox;
+	}
 
 	int32_t applyReplicatedConnectionTier(uint8_t tier)
 	{
@@ -431,7 +425,7 @@ private:
 	ManagerT&           m_manager;
 	InputResolutionT&   m_inputResolution;
 	SessionThreadChecks m_threads;
-	bool                m_inStoppedDrain = false;
+	std::atomic<bool>   m_inStoppedDrain{ false };
 
 	std::optional<ReplicatedTierConsumer> m_replicatedTierConsumer;
 	int32_t                               m_lastPublishedEffectiveInputDelayTicks = 0;

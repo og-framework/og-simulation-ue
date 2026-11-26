@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
-// docs/UETickDriverHost-rationale.md
+// docs/UESessionEngine-rationale.md
 
 #include "UESessionEngine.h"
 
 #include "HAL/PlatformTime.h"
+#include "OGSimulation/ResimGateProbe.h"
+#include "OGSimulationUnreal/UESimulationLogRoutes.h"
 
 namespace
 {
@@ -66,4 +68,28 @@ void SimulationEngineUImpl::waitFor(const Handle& steps)
 		TEXT("SimulationEngineUImpl::waitFor: the tick driver waits only for a step task it dispatched, so the event is ")
 		TEXT("valid. Was the frame host's IsValid filter before its waits."));
 	FTaskGraphInterface::Get().WaitUntilTaskCompletes(steps, ENamedThreads::GameThread_Local);
+}
+
+void SimulationEngineUImpl::logRouted(const char* line)
+{
+	RouteOGLevelLine(line);
+}
+
+void ueSessionEngine::importStatics(UWorld& world, const std::vector<UEStaticCategoryChannel>& categoryChannels,
+	bool isAuthority, ogsession::SessionStart& start)
+{
+	UEStaticImportResult import = UEStaticGeometryImporter(categoryChannels).importWorld(world);
+	UEStaticGeometryImporter::logReport(import.report, isAuthority ? TEXT("authority") : TEXT("client"));
+	start.staticWorld = std::move(import.description);
+	start.physicsOnlyShapes = std::move(import.physicsOnly);
+}
+
+void ueSessionEngine::logResimProbeSession()
+{
+#if !NO_LOGGING
+	UE_LOG(LogOGResimProbe, Warning,
+		TEXT("[ResimProbe.Session] resim-gate probe LIVE — verbosity=%s verboseDetail=%s windowSamples=%u"),
+		ToString(LogOGResimProbe.GetVerbosity()), LogOGResimProbe.IsSuppressed(ELogVerbosity::Verbose) ? TEXT("off") : TEXT("on"),
+		static_cast<uint32>(kResimGateProbeWindowSamples));
+#endif
 }

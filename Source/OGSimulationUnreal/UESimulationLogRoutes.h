@@ -5,6 +5,7 @@
 
 #include "CoreMinimal.h"
 #include "OGSimulation/SimulationLogRoutes.h"
+#include "OGSimulationUnreal/OGSimulationUnreal.h"
 
 #include <array>
 #include <cstddef>
@@ -21,7 +22,7 @@ OGSIMULATIONUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(LogOGResimProbe, Log, All);
 
 enum class OGLogRoute : uint8
 {
-	SimTick, ResimProbe, Sim, Net, RelayProbe, DivergenceProbe, Mgmt
+	SimTick, ResimProbe, Sim, Net, RelayProbe, DivergenceProbe, Mgmt, SimHost
 };
 
 struct OGLogRouteEntry
@@ -45,6 +46,7 @@ inline constexpr OGLogRouteEntry kOGAdapterLogRoutes[] = {
 	{ TEXT("SimulationManager:"),                OGLogRoute::Mgmt,            ELogVerbosity::Log },
 	{ TEXT("tryRegister:"),                      OGLogRoute::Mgmt,            ELogVerbosity::Log },
 	{ TEXT("NewFramework:"),                     OGLogRoute::Mgmt,            ELogVerbosity::Log },
+	{ TEXT("[SimHost."),                         OGLogRoute::SimHost,         ELogVerbosity::Log },
 	{ TEXT("[RelayDelayFloor]"),                 OGLogRoute::Net,             ELogVerbosity::Log },
 	{ TEXT("[StateRotation]"),                   OGLogRoute::Net,             ELogVerbosity::Log },
 	{ TEXT("[ResimGate]"),                       OGLogRoute::Net,             ELogVerbosity::Log },
@@ -312,6 +314,7 @@ inline void RouteOGMessage(const char* msg)
 		case OGLogRoute::RelayProbe:       EMIT_OG(LogOGRelayProbe); break;
 		case OGLogRoute::DivergenceProbe:  EMIT_OG(LogOGDivergenceProbe); break;
 		case OGLogRoute::Mgmt:             EMIT_OG(LogOGMgmt); break;
+		case OGLogRoute::SimHost:          EMIT_OG(LogOGSimHost); break;
 		}
 		return;
 	}
@@ -422,6 +425,7 @@ inline void RouteOGLevelLine(const char* line)
 	case OGLogRoute::RelayProbe:       EMIT_OG_BODY(LogOGRelayProbe); break;
 	case OGLogRoute::DivergenceProbe:  EMIT_OG_BODY(LogOGDivergenceProbe); break;
 	case OGLogRoute::Mgmt:             EMIT_OG_BODY(LogOGMgmt); break;
+	case OGLogRoute::SimHost:          EMIT_OG_BODY(LogOGSimHost); break;
 	}
 
 #undef EMIT_OG_BODY

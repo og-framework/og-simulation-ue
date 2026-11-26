@@ -65,7 +65,7 @@ public:
 	using Transport        = typename Link::Transport;
 	using ServerHost       = UESimNetLanesServerHost<TraitsT>;
 	using Client           = typename Link::Client;
-	using Session          = UESimulationSession<TraitsT>;
+	using Session          = UESessionRuntime<TraitsT>;
 	using FFrameFn         = TFunction<void()>;
 
 	static_assert(std::is_same_v<Transport, UESimNetTransport> && std::is_same_v<typename Link::ClockServer, UESimNetClockServer>

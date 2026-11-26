@@ -32,7 +32,7 @@ header unchanged; step (b) made them this engine-free class. What changed in (b)
 
 ## §2 The port and the parameters
 
-| | what | Unreal (`UESimulationSession::NetPort`) |
+| | what | the runtime (`SessionRuntime::NetPort`; the Unreal session's until og-session-runtime task 31) |
 |---|---|---|
 | `SessionNetHooksPort` | `Lanes` (a `SessionNetLanes`: `client()`, a const `clientSessionBound()`, `drainClient_Step()`), `Server`, `Idle`, `Simulatable`; `lanes()` (const), `server()`, `idle()` (each a pointer, null when absent), `runRunnerRequests()`, `applyUnregisterRequests(client)`, `publishPresentation()`, `nowSeconds()` (const), `logRouted(line)` | the session's `m_simNetLanes`, `m_simNetServer`, `m_simNetIdle`; `runRunnerRequests_Owner`, `applyUnregisterRequests_Step`, `publishAuthorityPresentation_Runner`; `FPlatformTime::Seconds()`; `RouteOGLevelLine` |
 | `ManagerT` | `runsPrediction()`, `currentIntegratedTick()`, `getTimeConfig()`, `onPostSimulationGameThread()`, `getServerClock()` | the `SimulationManager` |

@@ -106,7 +106,6 @@ public:
 			m_session->onLifecycleUnregistering(simId);
 	}
 
-	ServicesT& services() { return m_services; }
 	SessionT* session() const { return m_session; }
 
 private:

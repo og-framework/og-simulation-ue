@@ -30,8 +30,8 @@ reading of them is `TickDriverBackendUImpl-rationale.md` §5 and §7.
 
 ## 2. When it is read
 
-Every frame, on the game thread: the brawler's `TickDriverBackendUImpl::beforePresent_GameThread` calls it as an
-argument of `present_GameThread`. Each variable is read with `GetValueOnGameThread`, in the field order of the table,
+Every frame, on the game thread: `UESessionPresentation::present` (since og-session-runtime task 31; the backend's
+present before) reads it and hands the runtime's present its controls. Each variable is read with `GetValueOnGameThread`, in the field order of the table,
 so a console change applies to the next frame. Until og-tickdriver task 15c the same body was the brawler's
 renderPresentControls, in TickDriverBackendUImpl.cpp (a historical name: the host's `.cpp`, deleted by og-tickdriver task 15e), with the same reads in the same order and on the same thread.
 

@@ -3,6 +3,7 @@
 // docs/SessionThreads-rationale.md
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -162,6 +163,8 @@ public:
 		const bool onFrame = std::this_thread::get_id() == m_frameThread;
 		if (thread == SessionThread::Frame)
 			return onFrame;
+		if (thread == SessionThread::NetIo && m_role == SessionRole::Prediction && m_netIoThread != std::thread::id{})
+			return std::this_thread::get_id() == m_netIoThread;
 		if (m_context == nullptr || m_context->roleBit() != roleBit())
 			return false;
 		if (m_role == SessionRole::Authority)
@@ -185,6 +188,8 @@ public:
 
 	SessionRole role() const { return m_role; }
 
+	void setNetIoThread(std::thread::id netIoThread) { m_netIoThread = netIoThread; }
+
 private:
 	uint8_t roleBit() const
 	{
@@ -194,5 +199,31 @@ private:
 	SessionRole                    m_role;
 	const TickDriverThreadContext* m_context;
 	std::thread::id                m_frameThread;
+	std::thread::id                m_netIoThread{};
+};
+
+class StoppedDrainScope
+{
+public:
+	StoppedDrainScope(std::atomic<bool>& inStoppedDrain, const SessionThreadChecks& threads)
+		: m_inStoppedDrain(inStoppedDrain)
+		, m_threads(threads)
+	{
+		m_threads.checkOp(SessionOp::DrainStopped);
+		m_inStoppedDrain.store(true, std::memory_order_relaxed);
+	}
+
+	~StoppedDrainScope()
+	{
+		m_threads.checkOp(SessionOp::DrainStopped);
+		m_inStoppedDrain.store(false, std::memory_order_relaxed);
+	}
+
+	StoppedDrainScope(const StoppedDrainScope&) = delete;
+	StoppedDrainScope& operator=(const StoppedDrainScope&) = delete;
+
+private:
+	std::atomic<bool>&         m_inStoppedDrain;
+	const SessionThreadChecks& m_threads;
 };
 } // namespace ogsession

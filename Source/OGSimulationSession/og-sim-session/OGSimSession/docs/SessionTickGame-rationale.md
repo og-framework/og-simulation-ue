@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: PhysicsBackendHostUImpl.h -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
 # `SessionTickGame.h` — rationale
 
 Companion to og-sim-session's `OGSimSession/SessionTickGame.h` (og-session-runtime task 26). Prohibitions:
@@ -35,7 +36,7 @@ The class holds its host by value and asks it for everything, on every call:
 | `SessionTickComponents<H, D>` | `threads()` (const), `clock()`, `display()`, `netHooks()`, `clockServer()` (each a pointer), `diagnostics()` (a `D&`, with `D` a `SessionStepStamps`), `sampleInput()`, `onFrameStepsDue(tick, steps)`, `onPostPhysics()` | a `static_assert` in the private `threads()`, which every door calls first, so it is evaluated where the doors are instantiated |
 
 **Why two.** The tick driver needs the game's `Manager`, `Storage` and `RenderSnapshot` where the driver's types are formed, and
-in the Unreal adapter that is early: the backend that holds this class (`TickDriverBackendUImpl`) is the session's member
+in the Unreal adapter (until og-session-runtime task 31, which moved this class into the runtime) that is early: the backend that held this class (`TickDriverBackendUImpl`) was the session's member
 `m_physicsBackend`, so it is instantiated while the session class is still being defined, and the brawler's
 `PhysicsBackendHostUImpl.h` names it (`extern template class TickDriverBackendUImpl<BrawlerSessionHooks, …>`) before the game's
 traits struct is complete. The host's component types are the session's own (its `SessionClock`, `SessionDisplay`,

@@ -803,17 +803,37 @@ void scenarioStoppedDrain()
 {
 	Rig rig(true, configWithFloor(2));
 	rig.beginTierConsumer();
-	rig.clock->beginStoppedDrain();
-	rig.transcribed.onConnectionTierReceived(0, 1);
-	rig.clock->onConnectionTier(0, 1);
-	rig.transcribed.onRelayDelayFloorReceived(3);
-	rig.clock->onRelayFloor(3);
-	rig.transcribed.onTimingInfoReceived(40u, 0.03, &rig.oldSide.link);
-	rig.clock->onAuthorityTick(40u, 0.03, rig.newSide.link);
-	rig.transcribed.onSimClockSample(sampleOf(0.031, 40u), &rig.oldSide.link);
-	rig.clock->onClockSample(sampleOf(0.031, 40u), rig.newSide.link);
-	rig.clock->endStoppedDrain();
+	{
+		const ogsession::StoppedDrainScope stoppedDrain = rig.clock->stoppedDrain();
+		rig.transcribed.onConnectionTierReceived(0, 1);
+		rig.clock->onConnectionTier(0, 1);
+		rig.transcribed.onRelayDelayFloorReceived(3);
+		rig.clock->onRelayFloor(3);
+		rig.transcribed.onTimingInfoReceived(40u, 0.03, &rig.oldSide.link);
+		rig.clock->onAuthorityTick(40u, 0.03, rig.newSide.link);
+		rig.transcribed.onSimClockSample(sampleOf(0.031, 40u), &rig.oldSide.link);
+		rig.clock->onClockSample(sampleOf(0.031, 40u), rig.newSide.link);
+	}
 	rig.compare("the stopped drain, on the frame thread");
+}
+
+void scenarioReceiptAfterTheStoppedDrain()
+{
+	Rig rig(true, configWithFloor(2));
+	rig.beginTierConsumer();
+	{
+		const ogsession::StoppedDrainScope stoppedDrain = rig.clock->stoppedDrain();
+		rig.clock->onConnectionTier(0, 1);
+	}
+	bool received = false;
+	std::thread worker([&rig, &received]()
+	{
+		const StepScope step(rig.context);
+		rig.clock->onRelayFloor(3);
+		received = true;
+	});
+	worker.join();
+	CHECK(received);
 }
 
 void scenarioAdvisoryAndStartUp()
@@ -885,6 +905,11 @@ TEST_CASE("SessionClock.TheAuthorityRateLineIsDueAtTheFirstPumpEveryWindowAndOnA
 TEST_CASE("SessionClock.TheStoppedDrainsReceiptsRunOnTheFrameThread", "[Session][SessionClock]")
 {
 	scenarioStoppedDrain();
+}
+
+TEST_CASE("SessionClock.AfterTheStoppedDrainAStepWorkersReceiptIsAStepReceipt", "[Session][SessionClock]")
+{
+	scenarioReceiptAfterTheStoppedDrain();
 }
 
 TEST_CASE("SessionClock.TheFloorAdvisoryAndTheTierCacheAtStartUp", "[Session][SessionClock]")

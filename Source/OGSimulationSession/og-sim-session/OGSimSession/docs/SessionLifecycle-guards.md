@@ -105,7 +105,7 @@ adapter's one call follows.*
 
 **The prohibition.** ⛔ The teardown's first statement after its once-only test stops the steps and waits for them. Do not move
 anything above it, and do not drop it on the grounds that the adapter's `endPlay` already stopped them: the og-net lanes' stop
-handler (`onSimNetLanesStopping`) reaches the teardown with the steps still running.
+handler (the runtime's `onLinkStopping`) reaches the teardown with the steps still running.
 
 **What breaks if the edit is made.** The teardown's frame-thread apply, its drain and its unregistrations then run while a step
 drains the same og-sim-net client and runs the same simulation on a worker: two drains (og-sim's `SimInbox::drain` `OG_CHECK`s a
