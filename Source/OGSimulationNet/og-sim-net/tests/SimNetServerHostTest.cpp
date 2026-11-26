@@ -136,11 +136,6 @@ struct Services
 
 	double nowSeconds() { return g_now + kServicesClockOffsetSeconds; }
 	void logHost(const char* line) { lines.emplace_back(line); }
-	double rttMs(SimConnectionId)
-	{
-		recorder->note("query");
-		return 40.0;
-	}
 };
 
 struct Session
@@ -167,17 +162,27 @@ struct Session
 		++unregistering[simId];
 		recorder->note("unregistering " + std::to_string(simId));
 	}
+	void noteWireSample(double roundTripSeconds) { wireSamples.push_back(roundTripSeconds); }
+
+	std::vector<double> wireSamples;
 };
 
 struct DeliveryEndpoint
 {
 	Recorder* recorder = nullptr;
 	std::vector<std::pair<double, double>> recvAndNow;
+	const NetEndpoint* statsSource = nullptr;
 
 	void noteDelivered(ognet::Lane lane, double recvSeconds, double nowSeconds)
 	{
 		recvAndNow.emplace_back(recvSeconds, nowSeconds);
 		recorder->note("delivered " + std::to_string(static_cast<unsigned>(lane)));
+	}
+
+	ognet::ConnectionStats stats(ognet::ConnectionId id) const
+	{
+		recorder->note("query");
+		return statsSource != nullptr ? statsSource->stats(id) : ognet::ConnectionStats{};
 	}
 };
 
@@ -247,6 +252,7 @@ struct HostRig
 
 		serverNetHost = std::make_unique<TestHost>(network.clock(), 100);
 		serverEndpoint = std::make_unique<NetEndpoint>(*serverNetHost, network.addHost(kServerHostIndex));
+		delivery.statsSource = serverEndpoint.get();
 		const ognet::EndpointConfig serverConfig = endpointConfig(ognet::Role::Server);
 		serverTransport = std::make_unique<Transport>(ogsimnet::simNetConfigFor(serverConfig));
 		serverTransport->installHandlers(*serverEndpoint);
@@ -434,6 +440,27 @@ TEST_CASE("SimNetServerHost.WithNoSessionTheHooksAreDroppedAndTheLinesStillRoute
 	CHECK(recorder.events == std::vector<std::string>{"delivered " + std::to_string(kSimInputLane)});
 	CHECK(services.lines == std::vector<std::string>{"[Warning][Roster.Refused] reason=Truncated", "[SimNet.Window] role=server"});
 	CHECK(host.session() == nullptr);
+}
+
+TEST_CASE("SimNetServerHost.TheRoundTripIsTheEndpointsSmoothedRttAndEachReadingIsAWireSample", "[NetTransport][SimNetServerHost]")
+{
+	HostRig rig;
+	rig.connect();
+	REQUIRE(rig.stepUntil([&] { return rig.serverEndpoint->stats(rig.serverConn).hasRttSample; }));
+	const ognet::ConnectionStats stats = rig.serverEndpoint->stats(rig.serverConn);
+	REQUIRE(stats.smoothedRttSeconds > 0.0);
+	rig.session.wireSamples.clear();
+	CHECK(rig.host->rttMs(rig.serverConn) == stats.smoothedRttSeconds * 1000.0);
+	CHECK(rig.session.wireSamples == std::vector<double>{stats.smoothedRttSeconds});
+	CHECK(rig.host->rttMs(rig.serverConn + 1000u) == ogsimnet::kSimNetServerNoRttMs);
+	CHECK(rig.session.wireSamples.size() == 1u);
+
+	Recorder recorder;
+	Services services{&recorder, {}};
+	DeliveryEndpoint delivery{&recorder, {}, rig.serverEndpoint.get()};
+	Host withoutSession(services, delivery, nullptr);
+	CHECK(withoutSession.rttMs(rig.serverConn) == stats.smoothedRttSeconds * 1000.0);
+	CHECK(rig.session.wireSamples.size() == 1u);
 }
 
 TEST_CASE("SimNetServerHost.ADoorOffTheServingThreadTripsTheCheck", "[.][SimNetServerHostDeath]")

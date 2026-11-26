@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // docs/SimLaneEndpoint-rationale.md · docs/SimLaneEndpoint-guards.md
 
+#include "OGNet/Connection/ConnectionStats.h"
 #include "OGNet/Endpoint/EndpointConfig.h"
 #include "OGNet/NetCheck.h"
 #include "OGNet/NetTypes.h"
@@ -23,6 +24,7 @@ struct SimLaneEndpointOps
 	const ognet::EndpointConfig& (*config)(const void* ctx) = nullptr;
 	ognet::ServiceResult (*serviceUntil)(void* ctx, double deadlineSeconds) = nullptr;
 	bool (*hasHighResolutionWait)(const void* ctx) = nullptr;
+	ognet::ConnectionStats (*stats)(const void* ctx, ognet::ConnectionId id) = nullptr;
 };
 
 struct SimLaneEndpoint
@@ -32,9 +34,10 @@ public:
 	{
 		OGNET_CHECK(m_ops.send != nullptr && m_ops.broadcastExcept != nullptr && m_ops.setLaneHandler != nullptr
 				&& m_ops.setConnectionHandler != nullptr && m_ops.disconnect != nullptr && m_ops.noteDelivered != nullptr
-				&& m_ops.config != nullptr && m_ops.serviceUntil != nullptr && m_ops.hasHighResolutionWait != nullptr,
-			"SimLaneEndpoint needs all nine operations: a missing one would be a null call on the first use. Was task P5-3's seven, "
-			"plus task P5-18's serviceUntil and hasHighResolutionWait");
+				&& m_ops.config != nullptr && m_ops.serviceUntil != nullptr && m_ops.hasHighResolutionWait != nullptr
+				&& m_ops.stats != nullptr,
+			"SimLaneEndpoint needs all ten operations: a missing one would be a null call on the first use. Was task P5-3's seven, "
+			"plus task P5-18's serviceUntil and hasHighResolutionWait, plus og-session-runtime task 39's stats");
 	}
 
 	// ⛔G-01  docs/SimLaneEndpoint-guards.md
@@ -67,6 +70,7 @@ public:
 
 	ognet::ServiceResult serviceUntil(double deadlineSeconds) { return m_ops.serviceUntil(m_ctx, deadlineSeconds); }
 	bool hasHighResolutionWait() const { return m_ops.hasHighResolutionWait(m_ctx); }
+	ognet::ConnectionStats stats(ognet::ConnectionId id) const { return m_ops.stats(m_ctx, id); }
 
 private:
 	void* m_ctx = nullptr;

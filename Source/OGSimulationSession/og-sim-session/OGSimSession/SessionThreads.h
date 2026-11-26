@@ -123,7 +123,7 @@ inline constexpr SessionThreadTable kAuthorityThreads{ {
 	{ SessionOp::LatencyCapture,          std::nullopt },
 	{ SessionOp::LatencyClientReceived,   std::nullopt },
 	{ SessionOp::LatencyClientWireSample, std::nullopt },
-	{ SessionOp::LatencyServerWireSample, SessionThread::Frame },
+	{ SessionOp::LatencyServerWireSample, SessionThread::Step },
 	{ SessionOp::LatencyHanded,           SessionThread::Step },
 	{ SessionOp::LatencyServerReceived,   SessionThread::Step },
 	{ SessionOp::LatencyCorrectionHanded, SessionThread::Step },
@@ -162,12 +162,11 @@ consteval bool latencyDoorsKeepTheirSide(const SessionThreadTable& table)
 	for (std::size_t index = static_cast<std::size_t>(SessionOp::LatencyCapture);
 		 index <= static_cast<std::size_t>(SessionOp::LatencyStepEnd); ++index)
 	{
-		if (index != static_cast<std::size_t>(SessionOp::LatencyServerWireSample)
-			&& table[index].thread == SessionThread::Frame)
+		if (table[index].thread == SessionThread::Frame)
 			return false;
 	}
-	for (const SessionOp op : { SessionOp::LatencyWrap, SessionOp::LatencyServerWireSample, SessionOp::LatencyForget,
-			 SessionOp::LatencyPostTickFlush, SessionOp::LatencyWindow })
+	for (const SessionOp op : { SessionOp::LatencyWrap, SessionOp::LatencyForget, SessionOp::LatencyPostTickFlush,
+			 SessionOp::LatencyWindow })
 	{
 		const std::optional<SessionThread> thread = table[static_cast<std::size_t>(op)].thread;
 		if (thread.has_value() && *thread != SessionThread::Frame)
@@ -196,9 +195,10 @@ static_assert(kPredictionThreads[static_cast<std::size_t>(SessionOp::FrameProbe)
 static_assert(sessionThreadTable::latencyDoorsKeepTheirSide(kPredictionThreads)
 		&& sessionThreadTable::latencyDoorsKeepTheirSide(kAuthorityThreads),
 	"kPredictionThreads, kAuthorityThreads: the latency diagnostics' step doors (the capture stamp, a client's receipt and "
-	"wire sample, the hand-over, the server's receipt and correction hand-over, the step's start and end) never run on the "
-	"frame thread, and its frame doors (the wrap, the server host's wire sample, the forget, the post-tick flush, the window) "
-	"never run off it (og-session-runtime task 37)");
+	"wire sample, the server host's wire sample, the hand-over, the server's receipt and correction hand-over, the step's start "
+	"and end) never run on the frame thread, and its frame doors (the wrap, the forget, the post-tick flush, the window) never "
+	"run off it (og-session-runtime task 37; the server host's wire sample left the frame doors in task 39, when the authority's "
+	"round trip moved to the runner)");
 
 class SessionThreadChecks
 {

@@ -25,7 +25,7 @@ link is handed, and the session hooks it attaches, are in `UESimNetHost.h` (`UES
 | a client's refused `SimTrafficImmediate=0` (§11) | no | yes |
 | whether the driver asked for host-serviced I/O (`hostServiced()`, §12) | true on a dedicated server | false |
 | the published og-net ack RTT (§13) | no | yes |
-| the authority runner's RTT publish and join (§12), the session's stop handler (§5) | while bound | the stop handler |
+| the authority runner's join (§12), the session's stop handler (§5) | while bound | the stop handler |
 
 The role is the link's (`m_link.isServer()`), the driver the lanes' (`driver()`): one owner each. The inbox has 2,048 slots
 (`kUESimNetInboxSlots` is og-sim-net's `kSimNetLinkInboxSlots`). With og-net's default 16 connections, og-sim-net's own
@@ -42,7 +42,7 @@ The transport and the client session live with the **driver** (in the link); the
   overflow there is counted as `drops`, in windows before steady state.
 - **Server.** The server's world and its listen happen in one map load (the engine's LoadMap), so no frame passes between the driver's start and the
   world's BeginPlay in which a client could have sent anything (the P5 design's inference, K4; not measured here). The world's session creates `SimNetServer` (which owns the
-  reception coordinator) on its authority runner and binds the runner's two functions here with `bindAuthorityRunner` (§12). The
+  reception coordinator) on its authority runner and binds the runner's join here with `bindAuthorityRunner` (§12). The
   lanes keep the functions, not the server: its type depends on the session's correction policy and its lifetime on the world.
 
 ## §3 The six call points
@@ -56,7 +56,7 @@ points below were the lanes' only calls until task P5-19 answered it). Each fram
 | `ioMode(bIsServer)` | `HostServiced` on a dedicated server, `OwnThread` on a listen server (§12) | `OwnThread` |
 | `beforeStart(endpoint)` | `m_link.start(endpoint)` | the refused knob's read (§11), then `m_link.start(endpoint)` |
 | `afterStart()` | `m_link.markStarted()` | the same |
-| `afterDispatch()` | the authority runner's RTT publish, if bound (§12) | `m_link.serviceFrame(...)`: the SimClock ping, then the ack-RTT and the server-RTT publishes (§13, §11), then the drain and a disconnect request only while no session is attached |
+| `afterDispatch()` | nothing (until og-session-runtime task 39 the authority runner's RTT publish, §12) | `m_link.serviceFrame(...)`: the SimClock ping, then the ack-RTT and the server-RTT publishes (§13, §11), then the drain and a disconnect request only while no session is attached |
 | `onTickFlush()` | `m_link.flushFrame()`, which does nothing on a server | `m_link.flushFrame()` |
 | `beforeStop()` | the authority runner's join, if bound (G-03); the session's stop handler; unbind the server session; `m_link.stop()` | the session's stop handler, then `m_link.stop()` (it detaches the client session) |
 
@@ -98,8 +98,9 @@ client session there and checks that the endpoint's role is the role the lanes w
 ## §6 The server session's binding
 
 A server session binds no frame points: it drains and sends on the authority runner, and og-sim-net's server has no
-frame-point calls (og-session-runtime task 15). It binds the runner's two functions (`bindAuthorityRunner`, §12), and `unbindServerSession()`
-clears them. On a server `afterDispatch` publishes the runner's RTT table while they are bound, and `onTickFlush` does nothing.
+frame-point calls (og-session-runtime task 15). It binds the runner's join (`bindAuthorityRunner`, §12), and `unbindServerSession()`
+clears it. On a server `afterDispatch` and `onTickFlush` do nothing (until og-session-runtime task 39 `afterDispatch` published the
+runner's RTT table while the runner was bound).
 The server session sets the stop handler too (§5); its handler asks the runner to unregister every character, sending the
 roster Removes over the still-running endpoint, then releases og-sim-net's server.
 
@@ -206,38 +207,22 @@ task 12 a frame-locked client published nothing: its drain read the connection i
 - **The hosts.** The client's host is og-sim-net's `SimNetLinkClientHost`, inside the link (`SimNetLink-rationale.md` §7).
   The server's, `ServerHost`, is `UESimNetLanesServerHost` (`UESimNetHost.h`; `UESimNetHost-rationale.md` §13): og-sim-net's
   `SimNetServerHostCore` (og-session-runtime task 31a, `SimNetServerHost-rationale.md`) over Unreal's `UESimNetServerHostPort`.
-  The port answers og-sim-net's optional `onLifecycleUnregistering(simId)` by forwarding it to the world session, answers
-  `rttMs` from `FRunnerRttTable`, and posts the two probe stamps through the latency mailbox: `stampServerReceived` through
+  The port answers og-sim-net's optional `onLifecycleUnregistering(simId)` by forwarding it to the world session, takes each
+  round trip's wire sample (`noteWireSample`, the diagnostics' `noteServerWireSample_Internal`), and posts the two probe stamps
+  through the latency mailbox: `stampServerReceived` through
   `stampServerReceived_Internal` and `stampHanded` through `stampHandedAndLeft_Internal` (the hand-over is the send at once, on
   the runner; `UELatencyBudgetDiagnostics-rationale.md` §14). og-sim-net calls the host from the runner, the thread that builds
-  it, and the core checks every call against that thread.
-- **The RTT table.** `FRunnerRttTable` is 64 lock-free 64-bit words, each an og-net id and a `float` round trip in
-  milliseconds, so the runner never reads one connection's id with another's reading. The game thread fills it in `afterDispatch`
-  (`publishRunnerRtt_GameThread`): one word per og-net client connection, its value the base host's `rttMs` (which also feeds
-  the probe's WIRE sample and keeps the base's one-shot warnings) from the connection's Join and a quiet read before it (next
-  bullet), and clears the rest. A connection not in the table reads
-  `kNoRttReadingMs`, which the tier table skips. The reading is up to one frame old. This is the final shape of the per-connection
-  RTT on the loop (og-input-latency task P5-20: "per-connection RTT reaches the runner through atomics the game thread
-  publishes each frame").
-- **No RTT warning before the Join** (og-input-latency task P5-20, rework 1: the lead's 17:55 line, from P5-21 F6). The publish
-  runs every frame for every connection og-net has accepted, while the retired in-frame server asked for a round trip only when a
-  received input bundle names the connection, so after its Join. UE fills a connection's round-trip accumulator from the acks
-  it reads (the engine's packet-info pass, ReadPacketInfo in NetConnection.cpp), so a connection that is still logging in can have no reading, and the base's
-  read answers `AccumulatorEmpty`. Its warning is one-shot per cause (`TRttCauseWarnings`, `UESimNetHost.h`): asked then, the
-  base printed a false `[RttSample] SERVER ... accumulator is empty` line about 0.17 s before the first `Login request` and spent
-  the warning a later outage needs. So until UE sets the connection's `ClientLoginState` to `ReceivedJoin` (`UWorld`'s
-  `NMT_Join` handler, once the player controller exists) the publish reads `readRoundTripMs` itself and publishes what it
-  reads, with no warning and no WIRE sample (the in-frame server took none before the Join either), and a closing connection
-  reads `kNoRttReadingMs`, as in the base. From the Join it asks the base (`UESimNetHost-guards.md` G-13), so every warning there means what it says;
-  a configuration fault (`NoNetPing`, `RoundTripNotEnabled`) is warned at the Join instead of at the accept. The base `rttMs` is
-  untouched.
-- **A word of 0 is an empty slot.** The high half is the og-net id, and og-net never assigns 0 (`ognet::kInvalidConnection`, a
-  `static_assert` in the table), so no connection's word is 0, even with a round trip of 0. A `UOGNetConnection` whose og-net id
-  is still 0 is not published, and `read(0)` answers `kNoRttReadingMs` without a scan (review_P5-19 N2).
-- **`bindAuthorityRunner(publishRunnerRtt, joinRunner)`** is the session's, and `checkf`s that the lanes are host-serviced:
-  `afterDispatch` calls the first, and `beforeStop` calls the second first of all (G-03), because og-net's stop must run after
-  the servicing thread has stopped (`EndpointCore.cpp`'s stop check; `OGNetSimLanes-rationale.md` §2). `unbindServerSession`
-  clears both.
+  it, and the core checks every call against that thread. The round trip is the core's: og-net's smoothed RTT from the lanes'
+  endpoint's stats, on the runner (`SimNetServerHost-rationale.md` §6, og-session-runtime task 39).
+- **The runner's RTT table (retired by og-session-runtime task 39).** From og-input-latency task P5-20 the game thread published
+  each og-net client connection's engine ping in `afterDispatch`, one lock-free word per connection, read quietly before the
+  connection's Join and through the base host's warning path from it (P5-20's rework 1), and the runner read that copy, up to one
+  frame old. Since task 39 the runner reads og-net's stats itself (`SimNetServerHost-rationale.md` §6): no game-thread data reaches
+  the authority runner, and nothing is published. Its rules went with it (`UESimNetHost-guards.md` §R, G-13).
+- **`bindAuthorityRunner(joinRunner)`** is the session's, and `checkf`s that the lanes are host-serviced: `beforeStop` calls it
+  first of all (G-03), because og-net's stop must run after the servicing thread has stopped (`EndpointCore.cpp`'s stop check;
+  `OGNetSimLanes-rationale.md` §2). `unbindServerSession` clears it. Until og-session-runtime task 39 it also took the RTT publish,
+  which `afterDispatch` called.
 - **The driver's destructor does not call `beforeStop`** (`OGNetDriver-rationale.md` §8). A host-serviced driver destroyed
   without `LowLevelDestroy` while its runner still runs would fail og-net's stop check; the session joins its runner in its own
   `endPlay` too, and a map load destroys the driver through `LowLevelDestroy`, so no path in the tree reaches it.

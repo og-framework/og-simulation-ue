@@ -61,6 +61,45 @@ Unreal (og-session-runtime task 31a moved the call here; `UESimNetHost-rationale
 
 ---
 
+## G-03 — the no-reading round trip is the negative sentinel, never 0
+
+**Tag site:** `SimNetServerHost.h`, `SimNetServerHostCore::rttMs`, the line above `return kSimNetServerNoRttMs;`.
+
+**The prohibition.** Do not return `0.0`, or any other non-negative value, when og-net's stats for the connection have no RTT
+sample, and do not return `stats.smoothedRttSeconds * 1000.0` there: before the first sample it is 0.
+
+**The consequence.** og-sim-net passes `rttMs` straight into the reception coordinator's `noteRttSample`, which skips a negative
+reading and publishes no tier. A 0 is a perfect 0 ms ping to it: the connection is put on the lowest tier from a reading that does
+not exist, and since og-input-latency P6-2 the first reading is always published, so the client is told tier 0 before og-net has
+measured anything.
+
+**What breaks if it moves.** `SimNetServerTest.cpp`'s `SimNetServer.TheTierFollowsOgNetsRoundTripFromNoneTo10To120MsAndTheFirstSampleSendsTierZero`
+fails: a tier is sent while og-net has no sample, and an id without stats reads 0 (og-session-runtime task 39's seen failing).
+
+Was `UESimNetHost-guards.md` G-01, the engine read's "no connection" sentinel (og-session-runtime task 39 moved the read here).
+
+---
+
+## G-04 — the round trip is og-net's smoothed RTT, with nothing on top
+
+**Tag site:** `SimNetServerHost.h`, `SimNetServerHostCore::rttMs`, the line above `return stats.smoothedRttSeconds * 1000.0;`.
+
+**The prohibition.** Insert nothing between og-net's smoothed round trip and the return: no estimator, EMA, clamp or offset. The
+only change the value takes is seconds to milliseconds.
+
+**The consequence.** og-net smooths its round trip already (`srtt`, rationale §6), and the tier table smooths its input once more
+(`rttSmoothingAlpha`). A further smoothing here delays every tier transition behind og-net's own reading; a clamp or an offset moves
+every connection's tier boundaries; either way the server's `WIRE` sample, which the session gets in seconds from the same stats,
+no longer matches the round trip the tier was derived from.
+
+**What breaks if it moves.** The same tier test fails on its last reading (`rttMs` of 120 ms reads less, seen failing with an
+extra EMA); its tier transitions are checked against a model that has the tier table's smoothing only.
+
+Was `UESimNetHost-guards.md` G-10, "the server's RTT is the engine's raw reading, with nothing smoothed on top"
+(og-session-runtime task 39 moved the read here).
+
+---
+
 ## R. Retired ids
 
 None.

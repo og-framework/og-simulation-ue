@@ -5,6 +5,7 @@
 
 #include "CoreMinimal.h"
 #include "Misc/ConfigCacheIni.h"
+#include "OGNetUnreal/Core/EngineLaneDriverCore.h"
 #include "OGNetUnreal/Core/SimLaneEndpoint.h"
 #include "OGNetUnreal/OGNetDriver.h"
 #include "OGNetUnreal/OGNetSimLanes.h"
@@ -105,11 +106,7 @@ public:
 	virtual void afterDispatch() override
 	{
 		if (m_link.isServer())
-		{
-			if (m_publishRunnerRtt)
-				m_publishRunnerRtt();
 			return;
-		}
 		m_link.serviceFrame([this]() {
 			publishAckSrtt_GameThread();
 			m_services.publishServerRtt_GameThread();
@@ -149,18 +146,13 @@ public:
 
 	void setStopHandler(FFrameFn onStop) { m_onStop = MoveTemp(onStop); }
 
-	void unbindServerSession()
-	{
-		m_publishRunnerRtt = nullptr;
-		m_joinRunner = nullptr;
-	}
+	void unbindServerSession() { m_joinRunner = nullptr; }
 
-	void bindAuthorityRunner(FFrameFn publishRunnerRtt, FFrameFn joinRunner)
+	void bindAuthorityRunner(FFrameFn joinRunner)
 	{
-		checkf(m_link.isServer() && m_hostServiced && static_cast<bool>(publishRunnerRtt) && static_cast<bool>(joinRunner),
-			TEXT("UESimNetLanes::bindAuthorityRunner: only a dedicated server's host-serviced lanes hold the runner's RTT publish "
-				 "and its join"));
-		m_publishRunnerRtt = MoveTemp(publishRunnerRtt);
+		checkf(m_link.isServer() && m_hostServiced && static_cast<bool>(joinRunner),
+			TEXT("UESimNetLanes::bindAuthorityRunner: only a dedicated server's host-serviced lanes hold the runner's join. Was "
+				 "the runner's RTT publish and its join (og-session-runtime task 39)"));
 		m_joinRunner = MoveTemp(joinRunner);
 	}
 
@@ -194,7 +186,6 @@ private:
 	UESimNetLinkServices m_services;
 	UESimNetLinkSession<TraitsT> m_sessionHooks;
 	Link m_link;
-	FFrameFn m_publishRunnerRtt;
 	FFrameFn m_joinRunner;
 	FFrameFn m_onStop;
 };

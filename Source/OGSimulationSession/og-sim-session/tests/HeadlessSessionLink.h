@@ -23,16 +23,15 @@ using Channel = ogsimnet::SessionChannel<SimT, ogsimnet::SimNetTransport<Endpoin
 template <typename RuntimeT>
 struct ServerPort
 {
-	RuntimeT* runtime  = nullptr;
-	Endpoint* endpoint = nullptr;
+	RuntimeT* runtime = nullptr;
 
 	double  nowSeconds() { return monotonicSeconds(); }
 	void    logHost(const char* line) { logLine(line); }
-	double  rttMs(SimConnectionId conn) { return endpoint->srttMs(conn); }
 	int32_t receptionTick() { return runtime->getServerReceptionTick(); }
 	void    stampServerReceived(uint8_t, uint32_t, double) {}
 	void    stampHanded(uint8_t, uint32_t) {}
 	void    onLifecycleUnregistering(uint8_t simId) { runtime->onSimNetLifecycleUnregistering(simId); }
+	void    noteWireSample(double) {}
 };
 
 template <typename RuntimeT>
@@ -45,13 +44,11 @@ template <typename RuntimeT>
 class ServerHost : private ServerPortPart<RuntimeT>, public ogsimnet::SimNetServerHostCore<ServerPort<RuntimeT>, ServerPort<RuntimeT>, Endpoint>
 {
 public:
-	ServerHost(std::nullptr_t, Endpoint& endpoint, RuntimeT* runtime)
-		: ServerPortPart<RuntimeT>{ { runtime, &endpoint } }
+	ServerHost(Endpoint& endpoint, RuntimeT* runtime)
+		: ServerPortPart<RuntimeT>{ { runtime } }
 		, ogsimnet::SimNetServerHostCore<ServerPort<RuntimeT>, ServerPort<RuntimeT>, Endpoint>(this->m_port, endpoint, &this->m_port)
 	{
 	}
-
-	void publishRunnerRtt_GameThread() {}
 };
 
 template <typename GameTraitsT>
@@ -109,8 +106,6 @@ public:
 	{
 		if (!Link::isServer())
 			Link::serviceFrame([] {});
-		else if (m_publishRunnerRtt)
-			m_publishRunnerRtt();
 	}
 
 	void beforeStop()
@@ -124,19 +119,14 @@ public:
 	}
 
 	bool           hostServiced() const { return Link::isServer(); }
-	std::nullptr_t driver() const { return nullptr; }
 	double         ackSrttSeconds() const { return Link::isServer() ? ogsimnet::kSimNetLinkNoRttSeconds : this->m_linkServices.endpoint->serverSrttSeconds(); }
 	void           drainClient_Step() { Link::drainForStep(); }
 	void           drainClientWhileStopped_GameThread() { Link::drainWhileStopped(); }
 	void           setStopHandler(FrameFn onStop) { m_onStop = std::move(onStop); }
-	void           unbindServerSession() { m_publishRunnerRtt = m_joinRunner = nullptr; }
+	void           unbindServerSession() { m_joinRunner = nullptr; }
 	void           unbindClientSession() { Link::detachSession(); }
 
-	void bindAuthorityRunner(FrameFn publishRunnerRtt, FrameFn joinRunner)
-	{
-		m_publishRunnerRtt = std::move(publishRunnerRtt);
-		m_joinRunner = std::move(joinRunner);
-	}
+	void bindAuthorityRunner(FrameFn joinRunner) { m_joinRunner = std::move(joinRunner); }
 
 	void bindClientSession(Runtime<GameTraitsT>& runtime)
 	{
@@ -145,7 +135,6 @@ public:
 	}
 
 private:
-	FrameFn m_publishRunnerRtt;
 	FrameFn m_joinRunner;
 	FrameFn m_onStop;
 };

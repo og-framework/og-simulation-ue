@@ -50,7 +50,7 @@ constexpr std::array<ExpectedRow, kSessionOpCount> kExpected{ {
 	{ SessionOp::LatencyCapture,          "LatencyCapture",          SessionThread::Step,  std::nullopt },
 	{ SessionOp::LatencyClientReceived,   "LatencyClientReceived",   SessionThread::Step,  std::nullopt },
 	{ SessionOp::LatencyClientWireSample, "LatencyClientWireSample", SessionThread::Step,  std::nullopt },
-	{ SessionOp::LatencyServerWireSample, "LatencyServerWireSample", std::nullopt,         SessionThread::Frame },
+	{ SessionOp::LatencyServerWireSample, "LatencyServerWireSample", std::nullopt,         SessionThread::Step },
 	{ SessionOp::LatencyHanded,           "LatencyHanded",           SessionThread::Step,  SessionThread::Step },
 	{ SessionOp::LatencyServerReceived,   "LatencyServerReceived",   std::nullopt,         SessionThread::Step },
 	{ SessionOp::LatencyCorrectionHanded, "LatencyCorrectionHanded", std::nullopt,         SessionThread::Step },
@@ -192,6 +192,8 @@ TEST_CASE("SessionThreads.AnAuthorityOpPassesOnItsThreadAndOnNoOther", "[Session
 	CHECK_FALSE(onRunner[static_cast<std::size_t>(SessionOp::LatencyCapture)]);
 	CHECK_FALSE(onRunner[static_cast<std::size_t>(SessionOp::LatencyClientReceived)]);
 	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::LatencyWrap)]);
+	CHECK(onRunner[static_cast<std::size_t>(SessionOp::LatencyServerWireSample)]);
+	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::LatencyServerWireSample)]);
 	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::SampleInput)]);
 	CHECK_FALSE(onRunner[static_cast<std::size_t>(SessionOp::SampleInput)]);
 	CHECK_FALSE(onFrame[static_cast<std::size_t>(SessionOp::DrainStopped)]);

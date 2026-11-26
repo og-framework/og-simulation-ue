@@ -24,7 +24,7 @@ Every requirement is an exact return type (`std::same_as`), so a host cannot ret
 | service | what the server session uses it for |
 |---|---|
 | `nowSeconds() → double` | the `[SimNet.Window]` period (10 s of this clock) |
-| `rttMs(conn) → double` | the RTT sample for each character bundle from `conn`, in milliseconds. A negative value means "no reading yet", which the coordinator never samples. Ph3 keeps the engine's ping as the source |
+| `rttMs(conn) → double` | the RTT sample for each character bundle from `conn`, in milliseconds. A negative value means "no reading yet", which the coordinator never samples. Ph3 kept the engine's ping as the source; since og-session-runtime task 39 the session's host reads og-net's smoothed RTT (`SimNetServerHost-rationale.md` §6) |
 | `receptionTick() → int32_t` | the server tick passed with each RTT sample, the value today's input path reads from the server clock (`getServerReceptionTick`) |
 | `log(const char*)` | every line the session and the objects it owns emit: the coordinator's, the stagers' `[RelayFlush]`, `[Roster.InputRefused]` and `[SimNet.Window]`. A leading `[Warning]` or `[Verbose]` is the og-simulation severity convention; the host routes by tag |
 | `stampServerReceived(simId, captureTick, recvSeconds)` | once per slot of every accepted bundle, before the coordinator sees it. `recvSeconds` is og-net's receive time for the whole message, for the host's NetReceived point |

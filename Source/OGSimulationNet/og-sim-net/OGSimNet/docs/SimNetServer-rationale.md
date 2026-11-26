@@ -121,7 +121,9 @@ For each `(simId, bundle)` of an accepted set, in the set's order:
    it is counted as `badDecode`; the envelope's own length check already bounds it.
 3. **One ServerReceived stamp per slot**, `stampServerReceived(simId, captureTick, recvSeconds)`, with the receive time the
    transport recorded for the whole message. The host turns that into its ServerReceived and NetReceived points.
-4. **One RTT sample per bundle** (G-02): `noteRttSample(handle, simId, host.receptionTick(), host.rttMs(sender), *this)`.
+4. **One RTT sample per bundle** (G-02): `noteRttSample(handle, simId, host.receptionTick(), host.rttMs(sender), *this)`. On the
+   session's host the round trip is og-net's smoothed RTT for the sender, −1 until og-net has a sample (`SimNetServerHost-rationale.md`
+   §6, og-session-runtime task 39).
 5. **`receiveInputBundle<SimT>(simId, handle, localIndex, bundle, *this, *this, recvSeconds)`**, with the local index from
    the roster, the session as both the delivery and the relay sink, and the message's receive time, which the coordinator
    appends to each `[ServerReceive]` line as ` recvSeconds=` (`ServerReceptionCoordinator-rationale.md` §8; og-input-latency
@@ -311,8 +313,11 @@ its first pump (§7):
   so duplicates; one out-of-domain capture; one late capture; one truncated set; then a slot-8 bundle through the coordinator)
   give the same coordinator log, the same deliveries, the same relay rings and the same tier per frame as a coordinator fed
   directly with the engine path's arguments.
-- The roster check; the tier once per connection change, and again after a reconnect; the floor on every change, a first 0
-  included; the reap at the next dwell boundary; removal; the window line; the over-budget count; each receiver's candidate
+- The roster check; the tier once per connection change, and again after a reconnect; the tier over og-sim-net's own server host
+  core with og-net's stats as the round trip (og-session-runtime task 39): no tier while og-net has no sample, the first sample
+  (10 ms) sends tier 0, and a step to 120 ms sends tier 1, then 2, at the samples an independent model of the tier rule
+  (seed, `rttSmoothingAlpha`, the boundaries plus `tierHysteresisMs`, `tierMinDwellTicks`) predicts, one wire sample per reading;
+  the floor on every change, a first 0 included; the reap at the next dwell boundary; removal; the window line; the over-budget count; each receiver's candidate
   age, with only attached connections asked; and, over `VirtualNetwork`, the Snapshot and floor before deltas, the relay to
   all but the owner, corrections once per write to every connection, and the clock once per changed tick.
 - `addCharacter`'s refusal: a live sim id (of either simulatable type) and a live slot are refused, counted and logged, and

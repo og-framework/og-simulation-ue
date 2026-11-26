@@ -209,11 +209,7 @@ public:
 		return stats.hasRttSample ? stats.smoothedRttSeconds : ogsimnet::kSimNetLinkNoRttSeconds;
 	}
 
-	double srttMs(ognet::ConnectionId id) const
-	{
-		const ognet::ConnectionStats stats = m_net.stats(id);
-		return stats.hasRttSample ? stats.smoothedRttSeconds * 1000.0 : ogsimnet::kSimNetLinkNoRttSeconds;
-	}
+	ognet::ConnectionStats stats(ognet::ConnectionId id) const { return m_net.stats(id); }
 
 	void setConnectionHandler(ognet::ConnectionHandler handler)
 	{

@@ -58,7 +58,7 @@ The header holds the licence, the docs pointer, code, five guard tags and these 
 | `serviceUntil(deadline)` | `HostServiced` mode only (`OGNET_CHECK`): the caller services the endpoint, as og-net's mode B (§13). |
 | `hasHighResolutionWait()` | the backend's `hasHighResolutionWait()` when `BackendT` has one (`if constexpr` on a `requires`), else false; false before `start` (§13). |
 | `stats()` | `DriverStats`, the core's counters (§9). |
-| `connectionStats(id)`, `endpointStats()`, `engineLaneStats()`, `localAddress()` | og-net's own figures, passed through; `localAddress` exists when the backend reports one (`ognet::ReportsLocalAddress`). |
+| `connectionStats(id)`, `endpointStats()`, `engineLaneStats()`, `localAddress()` | og-net's own figures, passed through (`connectionStats` is also the sim endpoint's `stats` operation, which the Ph4 server's runner reads, `SimLaneEndpoint-rationale.md` §2); `localAddress` exists when the backend reports one (`ognet::ReportsLocalAddress`). |
 | `isStarted()`, `isStopped()`, `mode()`, `serverConnection()` | state; `serverConnection()` is the client's og-net id once it is up, else 0. |
 
 The callbacks are plain function pointers with one context (`DriverCallbacks`): `accept`, `deliver`, `closed`,

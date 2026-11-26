@@ -29,7 +29,8 @@ tags `⛔G-nn` → an entry in `SessionLatencyDiagnostics-guards.md`.
 windows and percentiles) for one session. It is the engine-free half of what was Unreal's `UELatencyBudgetDiagnostics`, moved
 here by og-session-runtime task 37:
 
-- **the doors**: the capture wrapper (`wrapInputProvider` and the lambda it returns), `forgetCharacter`, `noteWireSample`,
+- **the doors**: the capture wrapper (`wrapInputProvider` and the lambda it returns), `forgetCharacter`,
+  `noteServerWireSample_Internal` (`noteWireSample`, a frame door, until og-session-runtime task 39),
   `post_Internal`, `stampClientReceived_Internal`, `noteWireSample_Internal`, `stampHandedAndLeft_Internal`,
   `stampServerReceived_Internal`, `stampCorrectionHanded_Internal`, `stampAfterStep_Internal` (with the relayed-read shadow,
   `postRelayedReads_Internal`) and `stampStepEnd_Internal`;
@@ -122,7 +123,7 @@ door, so the check stops a call there.
 | the wrapped provider | `InputSampled` (when the game's time is above 0), then `Captured` at now (Input) | `LatencyCapture` | step | — | the core's input collection, at capture |
 | `stampClientReceived_Internal(stream, lane, tick, recv)` | `ClientReceived` at now; for State, a heal-by-correction item when the relay store has a newest arrival; then `NetReceived` at `recv` | `LatencyClientReceived` | step | — | `UESimNetLinkSession::stampClientReceived` (`UESimNetHost.h`), og-sim-net's client drain |
 | `noteWireSample_Internal(rtt)` | a `Wire` sample, half the round trip | `LatencyClientWireSample` | step | — | `SessionRuntime::onTimingInfoReceived` (og-sim-net's client drain) |
-| `noteWireSample(rtt)` | a `Wire` sample straight to the probe (no mailbox) | `LatencyServerWireSample` | — | frame | the base server host's `rttMs` (`UESimNetHost.h`), from the RTT publish |
+| `noteServerWireSample_Internal(rtt)` | a `Wire` sample, half the round trip | `LatencyServerWireSample` | — | runner | the server host port's `noteWireSample` (`UESimNetHost.h`), which og-sim-net's `SimNetServerHostCore::rttMs` calls with each reading of og-net's smoothed RTT (og-session-runtime task 39; until then `noteWireSample`, straight to the probe on the frame thread, from the base server host's game-thread `rttMs`) |
 | `stampHandedAndLeft_Internal(lane, captureTick)` | `Handed` and `LeftProcess` at now (Input) | `LatencyHanded` | step | runner | a client channel's handed callback (the runtime's `installInputStamps`); the server host port's `stampHanded` |
 | `stampServerReceived_Internal(lane, captureTick, recv)` | `ServerReceived` at now, then `NetReceived` at `recv` (Input) | `LatencyServerReceived` | — | runner | the server host port's `stampServerReceived` (`UESimNetHost.h`) |
 | `stampCorrectionHanded_Internal(lane, tick, handed)` | `Handed` and `LeftProcess` at `handed` (State), once per new correction tick of the lane | `LatencyCorrectionHanded` | — | runner | `SessionNetHooks::stampCorrectionsHanded`, after each authority batch |

@@ -176,7 +176,7 @@ public:
 	void begin(bool isAuthority);
 	void forgetCharacter(unsigned int id);
 
-	void noteWireSample(double roundTripSeconds);
+	void noteServerWireSample_Internal(double roundTripSeconds);
 	void post_Internal(const latencyBudget::Event& event);
 	void stampClientReceived_Internal(latencyBudget::Stream stream, unsigned int lane, uint32_t tick, double recvSeconds);
 	void noteWireSample_Internal(double roundTripSeconds);
@@ -282,7 +282,7 @@ public:
 	void begin(bool) {}
 	void forgetCharacter(unsigned int) {}
 
-	void noteWireSample(double) {}
+	void noteServerWireSample_Internal(double) {}
 	void post_Internal(const latencyBudget::Event&) {}
 	void stampClientReceived_Internal(latencyBudget::Stream, unsigned int, uint32_t, double) {}
 	void noteWireSample_Internal(double) {}
@@ -360,11 +360,10 @@ SessionLatencyDiagnostics<TraitsT, OwnerT, PortT, true>::wrap(
 }
 
 template <typename TraitsT, typename OwnerT, typename PortT>
-void SessionLatencyDiagnostics<TraitsT, OwnerT, PortT, true>::noteWireSample(double roundTripSeconds)
+void SessionLatencyDiagnostics<TraitsT, OwnerT, PortT, true>::noteServerWireSample_Internal(double roundTripSeconds)
 {
 	m_port.checkOp(SessionOp::LatencyServerWireSample);
-	if (m_probe)
-		m_probe->addSample(latencyBudget::Hop::Wire, roundTripSeconds * 0.5);
+	post_Internal(latencyBudget::Event::sample(latencyBudget::Hop::Wire, roundTripSeconds * 0.5));
 }
 
 template <typename TraitsT, typename OwnerT, typename PortT>

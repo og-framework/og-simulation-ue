@@ -1192,15 +1192,14 @@ void SessionRuntime<TraitsT>::attachServerLink()
 		"the og-net driver, whose link is host-serviced. Was the detached server and the in-frame server's frame-point lanes "
 		"(og-session-runtime task 14)");
 	const auto& endpointConfig = lanes->endpoint().config();
-	m_simNetServerHost.emplace(lanes->driver(), lanes->endpoint(), this);
+	m_simNetServerHost.emplace(lanes->endpoint(), this);
 	m_simNetServer.emplace(*m_simNetServerHost, lanes->transport(), m_manager->getTimeConfig(),
 		ogsimnet::correctionAllowanceBytes(endpointConfig.lanes, endpointConfig.budget,
 			static_cast<double>(NetConfig::tickFrequencyHz)));
 	m_simNetServer->bindLifecycle(m_storage, m_reconciliation, m_inputResolution, m_netSync);
 	m_clockServer = lanes->clockServer();
 	m_simNetIdle.emplace(lanes->endpoint());
-	lanes->bindAuthorityRunner([this]() { m_simNetServerHost->publishRunnerRtt_GameThread(); },
-		[this]()
+	lanes->bindAuthorityRunner([this]()
 		{
 			joinRunner();
 			m_runnerStopped = true;

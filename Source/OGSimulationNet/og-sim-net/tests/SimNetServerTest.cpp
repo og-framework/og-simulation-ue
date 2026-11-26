@@ -9,6 +9,7 @@
 #include "OGSimNet/SimNetHost.h"
 #include "OGSimNet/SimNetRoster.h"
 #include "OGSimNet/SimNetServer.h"
+#include "OGSimNet/SimNetServerHost.h"
 #include "OGSimNet/SimNetTransport.h"
 #include "OGSimulation/CorrectionStateBufferCodec.h"
 #include "OGSimulation/InputRedundancyBundleCodec.h"
@@ -623,6 +624,174 @@ TEST_CASE("SimNetServer.TheTierGoesOncePerConnectionChangeAndTheFirstValueGoesEv
 	CHECK(f.server->stats().tiersSent == 8u);
 	f.server->publishTier(kConnA, 1u);
 	CHECK(f.server->stats().tiersSent == 9u);
+}
+
+namespace simNetServerTest
+{
+struct StatsServices
+{
+	std::vector<std::string> lines;
+
+	double nowSeconds() { return 0.0; }
+	void logHost(const char* line) { lines.emplace_back(line); }
+};
+
+struct StatsSession
+{
+	std::int32_t tick = 0;
+	std::vector<double> wireSamples;
+
+	std::int32_t receptionTick() { return tick; }
+	void stampServerReceived(std::uint8_t, std::uint32_t, double) {}
+	void stampHanded(std::uint8_t, std::uint32_t) {}
+	void onLifecycleUnregistering(std::uint8_t) {}
+	void noteWireSample(double roundTripSeconds) { wireSamples.push_back(roundTripSeconds); }
+};
+
+struct StatsEndpoint
+{
+	std::unordered_map<ognet::ConnectionId, double> smoothedRttSeconds;
+	mutable std::size_t reads = 0u;
+
+	void noteDelivered(ognet::Lane, double, double) {}
+	ognet::ConnectionStats stats(ognet::ConnectionId id) const
+	{
+		++reads;
+		ognet::ConnectionStats out;
+		const auto found = smoothedRttSeconds.find(id);
+		if (found == smoothedRttSeconds.end())
+			return out;
+		out.id = id;
+		out.hasRttSample = true;
+		out.smoothedRttSeconds = found->second;
+		return out;
+	}
+};
+
+using StatsHost = ogsimnet::SimNetServerHostCore<StatsServices, StatsSession, StatsEndpoint>;
+using StatsServer = ogsimnet::SimNetServer<MockGame, StatsHost, FakeTransport>;
+
+struct TierModel
+{
+	explicit TierModel(const TimeConfig& configIn) : config(configIn) {}
+
+	int sample(double rttMs)
+	{
+		if (!seeded)
+		{
+			seeded = true;
+			smoothedMs = rttMs;
+		}
+		else
+		{
+			smoothedMs += config.rttSmoothingAlpha * (rttMs - smoothedMs);
+		}
+		++samplesInTier;
+		int desired = tier;
+		if (tier < 3 && smoothedMs > config.rttTierBoundariesMs[tier] + config.tierHysteresisMs)
+			desired = tier + 1;
+		else if (tier > 0 && smoothedMs < config.rttTierBoundariesMs[tier - 1] - config.tierHysteresisMs)
+			desired = tier - 1;
+		if (desired != tier && samplesInTier >= config.tierMinDwellTicks)
+		{
+			tier = desired;
+			samplesInTier = 0;
+		}
+		return tier;
+	}
+
+	const TimeConfig& config;
+	bool seeded = false;
+	double smoothedMs = 0.0;
+	int tier = 0;
+	int samplesInTier = 0;
+};
+} // namespace simNetServerTest
+
+TEST_CASE("SimNetServer.TheTierFollowsOgNetsRoundTripFromNoneTo10To120MsAndTheFirstSampleSendsTierZero", "[NetTransport][SimNetServer]")
+{
+	// og-session-runtime task 39: the authority's round trip is og-net's smoothed RTT, read by SimNetServerHostCore::rttMs
+	// from the endpoint's stats on the thread that drives the server; none until og-net has a sample (P6-2: the first
+	// sample still sends its tier, tier 0 included)
+	const TimeConfig config = testTimeConfig();
+	StatsServices services;
+	StatsSession session;
+	StatsEndpoint stats;
+	RecordingEndpoint wire;
+	FakeTransport transport(ogsimnet::SimNetConfig{});
+	transport.installHandlers(wire);
+	transport.markEndpointStarted();
+	StatsHost host(services, stats, &session);
+	StatsServer server(host, transport, config, std::size_t{4096});
+	transport.inbox().pushEvent(InboundKind::Connected, kConnA, ogsimnet::kNoReceiveSeconds);
+	REQUIRE(server.addCharacter<SimA>(kSimA0, 0u, kConnA, 0u, "charA") != nullptr);
+
+	std::vector<std::byte> storage;
+	auto tiersSent = [&] {
+		std::vector<std::uint8_t> out;
+		for (const RecordingEndpoint::Call& call : wire.on(ognet::Lane::Control))
+		{
+			const DecodedSimMessage decoded = decodeDown(SimLane::Control, call.bytes, storage);
+			if (decoded.kind == SimMessageKind::ConnectionTier)
+			{
+				CHECK(call.id == kConnA);
+				out.push_back(static_cast<std::uint8_t>(decoded.value));
+			}
+		}
+		return out;
+	};
+	std::int32_t frame = 0;
+	auto bundle = [&] {
+		const std::uint32_t captureTick = static_cast<std::uint32_t>(100 + frame);
+		session.tick = 100 + frame;
+		REQUIRE(transport.inbox().pushMessage(kConnA, SimLane::SimInput, kPushSeconds, inputSet({{kSimA0, {{captureTick, 1}}}})));
+		server.drain();
+		server.afterInlineBatch(session.tick);
+		++frame;
+	};
+
+	for (int i = 0; i < 5; ++i)
+		bundle();
+	CHECK(stats.reads == 5u);
+	CHECK(tiersSent().empty());
+	CHECK(session.wireSamples.empty());
+
+	TierModel model(config);
+	std::vector<std::uint8_t> expectedSends;
+	auto sampled = [&](double rttMs) {
+		const int before = model.tier;
+		const bool first = !model.seeded;
+		const int after = model.sample(rttMs);
+		if (first || after != before)
+		{
+			expectedSends.push_back(static_cast<std::uint8_t>(after));
+			if (after > before)
+				CHECK(model.smoothedMs > config.rttTierBoundariesMs[before] + config.tierHysteresisMs);
+		}
+		bundle();
+	};
+
+	stats.smoothedRttSeconds[kConnA] = 0.010;
+	for (int i = 0; i < 6; ++i)
+		sampled(10.0);
+	CHECK(tiersSent() == std::vector<std::uint8_t>{0u});
+	CHECK(server.coordinator().lookupTierIndex(server.handleFor(kConnA)) == 0);
+
+	stats.smoothedRttSeconds[kConnA] = 0.120;
+	for (int i = 0; i < 30; ++i)
+		sampled(120.0);
+	CHECK(expectedSends == std::vector<std::uint8_t>{0u, 1u, 2u});
+	CHECK(tiersSent() == expectedSends);
+	CHECK(server.coordinator().lookupTierIndex(server.handleFor(kConnA)) == 2);
+	CHECK(model.smoothedMs > config.rttTierBoundariesMs[1] + config.tierHysteresisMs);
+	CHECK(model.smoothedMs < config.rttTierBoundariesMs[2]);
+
+	REQUIRE(session.wireSamples.size() == 36u);
+	CHECK(session.wireSamples.front() == 0.010);
+	CHECK(session.wireSamples.back() == 0.120);
+	CHECK(host.rttMs(kConnB) == ogsimnet::kSimNetServerNoRttMs);
+	CHECK(host.rttMs(kConnA) == 120.0);
+	CHECK(session.wireSamples.size() == 37u);
 }
 
 TEST_CASE("SimNetServer.TheFloorGoesToAttachedConnectionsOnEveryChangeIncludingAFirstZero", "[NetTransport][SimNetServer]")

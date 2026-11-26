@@ -384,6 +384,7 @@ private:
 		ops.config = [](const void* ctx) -> const ognet::EndpointConfig& { return static_cast<const EngineLaneDriverCore*>(ctx)->m_config; };
 		ops.serviceUntil = [](void* ctx, double deadlineSeconds) { return coreOf(ctx).serviceUntil(deadlineSeconds); };
 		ops.hasHighResolutionWait = [](const void* ctx) { return static_cast<const EngineLaneDriverCore*>(ctx)->hasHighResolutionWait(); };
+		ops.stats = [](const void* ctx, ognet::ConnectionId id) { return static_cast<const EngineLaneDriverCore*>(ctx)->connectionStats(id); };
 		return ops;
 	}
 

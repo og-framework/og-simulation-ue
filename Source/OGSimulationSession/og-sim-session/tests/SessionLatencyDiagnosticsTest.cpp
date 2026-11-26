@@ -567,14 +567,17 @@ TEST_CASE("SessionLatencyDiagnostics.ForgetDropsTheLaneAndLeavesTheStepThreadsMa
 	CHECK(Inspector::lastHanded(rig.diagnostics) == 1u);
 }
 
-TEST_CASE("SessionLatencyDiagnostics.TheServersWireSampleGoesStraightToTheProbe", "[Session][SessionLatency]")
+TEST_CASE("SessionLatencyDiagnostics.TheServersWireSampleIsPostedAndTheWindowFilesHalfTheRoundTrip", "[Session][SessionLatency]")
 {
-	// UELatencyBudgetDiagnostics.h:260-267 (noteWireSample: no mailbox; its game-thread checkf is the LatencyServerWireSample row)
+	// og-session-runtime task 39: the server host's wire sample (noteServerWireSample_Internal) runs on the authority's
+	// runner, so it posts to the mailbox like the client's; the window's drain files it. Was noteWireSample, a frame door
+	// straight to the probe (UELatencyBudgetDiagnostics.h:260-267)
 	Rig rig(true, false);
 	rig.log.now = 0.0;
 	rig.diagnostics.tickWindow_Frame();
-	rig.diagnostics.noteWireSample(0.010);
-	CHECK(Inspector::drain(rig.diagnostics).empty());
+	rig.log.ops.clear();
+	rig.diagnostics.noteServerWireSample_Internal(0.010);
+	CHECK(rig.log.ops == std::vector<SessionOp>{ SessionOp::LatencyServerWireSample });
 	rig.log.now = 10.0;
 	rig.diagnostics.tickWindow_Frame();
 	bool sawWire = false;
@@ -648,7 +651,7 @@ TEST_CASE("SessionLatencyDiagnostics.EveryDoorChecksItsOwnRow", "[Session][Sessi
 	Rig rig(true, false);
 	rig.log.ops.clear();
 	rig.diagnostics.forgetCharacter(1u);
-	rig.diagnostics.noteWireSample(0.01);
+	rig.diagnostics.noteServerWireSample_Internal(0.01);
 	rig.diagnostics.stampClientReceived_Internal(Stream::Input, 1u, 1u, 1.0);
 	rig.diagnostics.noteWireSample_Internal(0.01);
 	rig.diagnostics.stampHandedAndLeft_Internal(1u, 1u);
@@ -679,7 +682,7 @@ TEST_CASE("SessionLatencyDiagnostics.TheOffArmIsEmptyKeepsPresenceAndNeverCallsT
 		[](const SimulationTimeStep&, const LocalInputCache<Input>&) { return Input{}; })));
 	diagnostics.begin(true);
 	diagnostics.forgetCharacter(1u);
-	diagnostics.noteWireSample(0.01);
+	diagnostics.noteServerWireSample_Internal(0.01);
 	diagnostics.post_Internal(Event{});
 	diagnostics.stampClientReceived_Internal(Stream::State, 1u, 1u, 1.0);
 	diagnostics.noteWireSample_Internal(0.01);

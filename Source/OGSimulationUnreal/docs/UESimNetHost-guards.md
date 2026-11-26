@@ -1,12 +1,12 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 <!-- lint-external-ref: UEConnectionHandle.h -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
 <!-- lint-external-ref: IndexOfByKey -- Unreal Engine symbol or file, outside every scan root -->
-<!-- lint-external-ref: UNetConnection::Close -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: AssignConnectionHandle -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: UChildConnection::InitChildConnection -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: Engine/Private/NetConnection.cpp -- Unreal Engine symbol or file, outside every scan root -->
-<!-- lint-external-ref: EPingType::RoundTripExclFrame -- Unreal Engine symbol or file, outside every scan root -->
-<!-- lint-external-ref: UNetConnection::ReadPacketInfo -- Unreal Engine symbol or file, outside every scan root -->
+<!-- lint-external-ref: readRoundTripMs -- the server's engine-ping read, deleted by og-session-runtime task 39 (og-sim-net's SimNetServerHostCore::rttMs reads og-net's stats); named in this file's retired entries -->
+<!-- lint-external-ref: kNoRttReadingMs -- the server's ms sentinel, og-sim-net's kSimNetServerNoRttMs since og-session-runtime task 39; named in this file's retired entries -->
+<!-- lint-external-ref: publishedRttMs_GameThread -- the per-connection reader of the runner's RTT publish, deleted by og-session-runtime task 39; named in this file's retired entries -->
 # `UESimNetHost.h` — guards
 
 Every prohibition that governs a line of `UESimNetHost.h`. Each entry has an **opaque, stable id**. In the source a single
@@ -19,21 +19,6 @@ the source to match it.
 number is spent forever.
 
 ⛔ **Nothing in this file is a rationale.** The reasons live in `UESimNetHost-rationale.md`.
-
----
-
-## G-01 — the server's "no connection" RTT is the negative sentinel, never 0
-
-**Tag site:** `UESimNetHost.h`, `UESimNetServerHost::rttMs`, the line above `return kNoRttReadingMs;`.
-
-**The prohibition.** Do not return `0.0`, or any other non-negative value, when the og-net id has no Unreal connection.
-
-**The consequence.** og-sim-net passes `rttMs` straight into the reception coordinator's `noteRttSample`, which skips a
-negative reading and publishes no tier. A `0.0` is a perfect 0 ms ping to it: the connection is put on the lowest tier and
-its input delay derived from a reading that does not exist. That is the silent-zero failure `readRoundTripMs` was changed to
-end (rationale §2).
-
-**What breaks if it moves.** The automation test `OGBrawler.SimNet.Hosts` fails its sentinel case.
 
 ---
 
@@ -124,108 +109,6 @@ character fails that check instead of aliasing a valid index; a wrapped value wo
 
 ---
 
-## G-09 — the RTT is read from `EPingType::RoundTrip`; the "ExclFrame" type is not the fix it looks like
-
-**Tag site:** `UESimNetHost.h`, `readRoundTripMs`, the line above `const UE::Net::FPingValues pingVals = netPing->GetPingValues(EPingType::RoundTrip);`.
-The type check two statements above it (`EnumHasAnyFlags(netPing->GetPingTypes(), EPingType::RoundTrip)`) is its partner and
-carries no tag: the two must name the same type.
-
-**The prohibition, as it stood in the source** (`UEConnectionHandle.h`, moved here by og-input-latency task P5-9):
-
-> READ THIS BEFORE "FIXING" THE PING TYPE. The enum names are INVERTED relative to what the engine feeds them. Verified against
-> UE 5.6.1 source (unmodified in this tree) by og-netcode-v2-input-relay T21, whose entire stated purpose was to switch these
-> reads to EPingType::RoundTripExclFrame and which was reversed by this finding.
-
-**The prohibition.** Do not switch this read (or its type check) to `EPingType::RoundTripExclFrame` to exclude frame time.
-
-**The consequence.** In `UNetConnection::ReadPacketInfo` the frame-time-subtracted value goes to `RoundTrip` and the raw,
-frame-time-inclusive one to `RoundTripExclFrame`, and with `net.PingExcludeFrameTime` at its default 0 both receive the same
-sample. On this server-side read the subtracted term is structurally zero anyway. So the switch excludes nothing and changes
-only the averaging configured in `Config/DefaultEngine.ini` (`RoundTrip=PlayerStateAvg`, `RoundTripExclFrame=MovingAverage`):
-a smoothing change with no evidence behind it. The derivation is in the rationale §11.5.
-
-**What breaks if it moves.** Nothing at compile time and no test.
-
----
-
-## G-10 — the server's RTT is the engine's raw reading, with nothing smoothed on top
-
-**Tag site:** `UESimNetHost.h`, `readRoundTripMs`, the line above `outMs = pingVals.Current * 1000.0;` (a `return` of the
-same expression until og-input-latency task P5-26 made the reading an out parameter; "the return" below is that write).
-
-**The prohibition, as it stood in the source** (`UEConnectionHandle.h`, moved here by og-input-latency task P5-9):
-
-> SINGLE-SMOOTHING (Option A, load-bearing — UNCHANGED by the T21 edit): this returns the engine's RAW RoundTrip value with NO
-> NetworkTimeEstimator EMA on top; the tier table's own rttSmoothingAlpha EMA is the only smoothing in this path.
-> Double-smoothing would reintroduce exactly the client/server asymmetry Option A removes. The T21 change added only a validity
-> gate in front of the value; nothing was inserted between the read and the return.
-
-**The prohibition.** Insert nothing between the read and the return: no estimator, EMA, clamp or offset. The only change the
-value takes is seconds to milliseconds.
-
-**The consequence.** The tier table smooths its input once (`rttSmoothingAlpha`). A second smoothing makes the server's tier
-lag the client's view of the same round trip.
-
-**What breaks if it moves.** Nothing at compile time and no test.
-
----
-
-## G-11 — a closing connection is skipped before the read, with no warning and no wire sample
-
-**Tag site:** `UESimNetHost.h`, `UESimNetServerHost::rttMs`, the line above `if (found.connection->IsClosingOrClosed())`.
-
-**The prohibition.** Do not delete this check, and do not move it below `readRoundTripMs` or below the wire sample.
-
-**The consequence.** In the frame of a graceful close `UNetConnection::Close` has set `USOCK_Closed` and reset the
-connection's `FNetPing`, while `FindConnection` still finds it and og-sim-net can still drain the leaving client's input. Without
-the check the read reports "no FNetPing on the connection - check net.NetPingEnabled": a false cause, which spends that cause's
-one warning (rationale §2), so a later genuine loss of the ping on any connection is silent, and a −1 ms wire sample reaches the
-latency probe on every graceful leave. Moved below the read, the warning fires; moved below the wire sample, the sample is taken.
-
-**What breaks if it moves.** Nothing at compile time and no test: a graceful-leave smoke shows the warning return.
-
-## G-12 — the server finds a connection through the host's lookup, never the driver's `FindConnection` directly
-
-**Tag site:** `UESimNetHost.h`, `UESimNetServerHost::rttMs`, the line above
-`const FServerConnectionFound found = m_connections.find(m_driver, conn, nowSeconds());`.
-
-**The prohibition.** Do not replace `m_connections.find(m_driver, conn, nowSeconds())` with `m_driver->FindConnection(conn)`.
-
-**The consequence.** In the frame of a graceful leave the driver can drop the leaving client's og-net id before og-sim-net
-drains that client's last input bundle and asks `rttMs` for it: `UOGNetConnection::CleanUp` calls `UOGNetDriver::engineClosed`,
-which removes the id, and og-net's own close removes it too. `FindConnection` then misses, and a bare miss reads as "no UE
-connection for og-net id": a routine leave that spends the `NoConnection` cause's one warning (rationale §2), so a later
-genuine no-connection outage on that server is silent. The lookup remembers each og-net id it found and reports a miss of a
-remembered one with no cause (`missingCause` is `None`): no warning, and the sentinel is still returned (G-01). Calling the
-driver directly skips the remembering as well as the check.
-
-**What breaks if it moves.** Nothing at compile time. The automation test `OGBrawler.SimNet.Hosts` checks the lookup itself
-(a graceful leave, then an unknown id, through one `FServerRttWarnings`), not `rttMs`'s use of it, so a `rttMs` that bypasses
-the lookup still passes; a graceful-leave smoke shows the `no UE connection` warning return.
-
----
-
-## G-13 — the loop's RTT publish asks the base host only from a connection's Join
-
-**Tag site:** `UESimNetHost.h`, `UESimNetServerHostPort::publishedRttMs_GameThread`, the line above
-`if (connection.ClientLoginState == EClientLoginState::ReceivedJoin)`.
-
-**The prohibition.** Do not call `Base::rttMs` (the base host's warning path) for a connection whose `ClientLoginState` is not
-yet `ReceivedJoin`, and do not drop the gate to publish `Base::rttMs` for every connection. Before the Join read the round
-trip without a warning.
-
-**The consequence.** `publishRunnerRtt_GameThread` asks every frame from the frame og-net accepts a connection. Before the
-Join UE may have sampled no ack, so the base's read answers `AccumulatorEmpty`, and its warning is one-shot per cause: the
-server logs a false `[RttSample] SERVER tier RTT source unavailable (... accumulator is empty (no ack sampled yet))` line
-before the first login, and a later real `AccumulatorEmpty` outage is silent for the rest of the session.
-
-**What breaks if it moves.** Nothing at compile time, and the published values do not change. A dedicated server's log
-carries the false warning shortly before its first `Login request`.
-
-Was `UESimNetLanes-guards.md` G-04 (og-session-runtime task 28's step (a) moved the function unchanged from `UESimNetLanes.h`).
-
----
-
 ## §R — Retired ids
 
 ⛔ **An id is never reused.** A retired id may be named in prose; it may never again appear as a `⛔G-nn` tag.
@@ -247,3 +130,41 @@ Was `UESimNetLanes-guards.md` G-04 (og-session-runtime task 28's step (a) moved 
 
 **Was:** *"a latched floor is applied as received: it pays for an increase"*. Its tag sat in `UESimNetHost.h`'s client host's
 `onRelayFloor`, above the session's floor call.
+
+### G-01 — RETIRED by og-session-runtime task 39 (2026-11-26): moved to `SimNetServerHost-guards.md` G-03 with the read
+
+**Was:** *"the server's "no connection" RTT is the negative sentinel, never 0"*. Its tag sat in `UESimNetServerHost::rttMs`,
+above `return kNoRttReadingMs;` for an og-net id with no Unreal connection. The authority's round trip is og-sim-net's
+`SimNetServerHostCore::rttMs` since, from og-net's stats, and its no-reading return is og-sim-net's G-03.
+
+### G-09 — RETIRED by og-session-runtime task 39 (2026-11-26): the server's engine-ping read is deleted
+
+**Was:** *"the RTT is read from `EPingType::RoundTrip`; the "ExclFrame" type is not the fix it looks like"*. Its tag sat in
+`readRoundTripMs`, above its `GetPingValues(EPingType::RoundTrip)`. The derivation still holds for the client's engine-ping shadow
+figure, `UESimNetLinkServices::readServerRoundTrip`, which reads the same type for the same reason, untagged
+(`UESimNetHost-rationale.md` §11.5).
+
+### G-10 — RETIRED by og-session-runtime task 39 (2026-11-26): moved to `SimNetServerHost-guards.md` G-04 with the read
+
+**Was:** *"the server's RTT is the engine's raw reading, with nothing smoothed on top"*. Its tag sat in `readRoundTripMs`, above
+its write of the ping's current value times 1000 into the out parameter. The rule (nothing between the source's reading and the return but the unit) is og-sim-net's
+G-04 over og-net's smoothed round trip.
+
+### G-11 — RETIRED by og-session-runtime task 39 (2026-11-26): its premise, the engine ping of a closing connection, is gone
+
+**Was:** *"a closing connection is skipped before the read, with no warning and no wire sample"*. Its tag sat in
+`UESimNetServerHost::rttMs`, above `if (found.connection->IsClosingOrClosed())`. og-net's stats of a closing connection still
+carry its last smoothed round trip, a real reading; there is no engine ping to lose and no cause to warn.
+
+### G-12 — RETIRED by og-session-runtime task 39 (2026-11-26): its premise, the driver's connection lookup, is gone
+
+**Was:** *"the server finds a connection through the host's lookup, never the driver's `FindConnection` directly"*. Its tag sat in
+`UESimNetServerHost::rttMs`, above its `m_connections.find(m_driver, conn, nowSeconds())`. The round trip is og-net's stats of the
+og-net id; an id og-net no longer publishes reads the sentinel with no warning.
+
+### G-13 — RETIRED by og-session-runtime task 39 (2026-11-26): the runner's RTT publish is deleted
+
+**Was:** *"the loop's RTT publish asks the base host only from a connection's Join"*. Its tag sat in the port's
+`publishedRttMs_GameThread`, above `if (connection.ClientLoginState == EClientLoginState::ReceivedJoin)`. Was
+`UESimNetLanes-guards.md` G-04 before og-session-runtime task 28. The runner reads og-net's stats itself; nothing is published.
+

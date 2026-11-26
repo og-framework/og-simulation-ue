@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: readRoundTripMs -- the server's engine-ping read, deleted by og-session-runtime task 39 (the authority's round trip is og-net's smoothed RTT); kept in the history -->
 <!-- lint-external-ref: TickDriverBackendWorldsUImpl -- og-tickdriver task 15b's worlds pair (the world host's engine beside the host), folded into og-sim-session's SessionRuntime::Worlds by og-session-runtime task 31; its last mention in code, the Worlds engine < host row, went with that engine in task 33b; kept in the history -->
 <!-- lint-external-ref: PhysicsBackend -- deleted by og-session-runtime task 31 (the brawler's backend selector: the PhysicsBackendHost concept, BackendFor, BackendWorlds, the traits' PhysicsBackend and PhysicsBackendWorlds, and the host's extern instantiation; the tick backend is og-sim-session's SessionRuntime member, the Unreal bodies TickDriverBackendUImpl, named by UESessionRuntimeTraits); kept in the history -->
 <!-- lint-external-ref: getTimeConfigPtr -- deleted by og-session-runtime task 31 (no caller); kept in the history -->
@@ -1891,8 +1892,8 @@ factory (the brawler's `makeBrawlerSimNetLanes`), which makes `UESimNetLanes<Tra
   a 15 s message and started no session; until og-session-runtime task 14 it then ran detached server lanes, and a standalone
   world did so silently). Then the host, then the server, with the manager's `TimeConfig` and og-sim-net's
   `correctionAllowanceBytes` for the endpoint's lane table and budget at `NetConfig::tickFrequencyHz`; then the lanes get the
-  runner's two functions (`bindAuthorityRunner`, §19.3; the in-frame server's two frame functions until task 14) and the
-  session's stop handler.
+  runner's join (`bindAuthorityRunner`, §19.3; with the runner's RTT publish until og-session-runtime task 39, and the in-frame
+  server's two frame functions until task 14) and the session's stop handler.
 - **Client** (`beginClientSimNet`, where `replayLatchedClientValues` stood): a `checkf` that the manager and the tier
   consumer exist (the bind replays into both; this replaced guard G-07), and one that the lanes exist (the start rule's
   `role=client` refusal, §23; detached client lanes until og-session-runtime task 14). Then the session's handler for a roster Remove
@@ -1904,8 +1905,10 @@ factory (the brawler's `makeBrawlerSimNetLanes`), which makes `UESimNetLanes<Tra
   unchanged (`kSimNetHostLineFormat`, design Q7), and since og-session-runtime task 14 its two mode fields are constant:
   `immediate=0` was the frame-locked mode (the only one until og-input-latency task P5-17, which made the digit the lanes'
   decision, §18.1; a client printed `immediate=1` from og-session-runtime task 12, every session from task 14), and
-  `driver=detached` the detached session's (until task 14); `rttSource=EnginePing` is a fixed field that names WIRE's source (the connection's FNetPing, D13, which
-  the hosts read in `readRoundTripMs` and `readServerRoundTrip`, `UESimNetHost.h`). It is **not** the clock's RTT source:
+  `driver=detached` the detached session's (until task 14); `rttSource=EnginePing` is a fixed field that named WIRE's source (the connection's FNetPing, D13, which
+  the client host reads in `readServerRoundTrip`, `UESimNetHost.h`, and the server host read in `readRoundTripMs` until
+  og-session-runtime task 39). Since task 39 a server's WIRE is og-net's smoothed RTT (`SimNetServerHost-rationale.md` §6), so on a
+  server the field no longer names it; the line's text is unchanged (proof lines stay byte-identical, design Q7). It is **not** the clock's RTT source:
   that is `[OGNetcode] ClockRttSource` (§20), and the session reports it on its own line,
   `[ClockSource.Config] clockRttSource=<Engine|SimClock> …`. Under `ClockRttSource=SimClock` the line still reads `EnginePing`
   (og-input-latency task P3-10 part B F5).
@@ -2314,7 +2317,7 @@ before) and touches no `UObject` but the world's driver, which it only reads.
 
 - **No frame points.** og-sim-net's server has no frame drain or flush (since og-session-runtime task 15); the session binds
   the runner's two lanes functions instead (`bindAuthorityRunner`: the RTT publish and the join, `UESimNetLanes-rationale.md`
-  §12).
+  §12; the join alone since og-session-runtime task 39).
 - **The game binding's hooks** (`BrawlerSessionHooksUImpl-rationale.md` §10):
   - `idleUntil(deadline)` is og-sim-net's `SimNetIdle` over the lanes' endpoint (`m_simNetIdle`), one `serviceUntil` per call:
     og-net's handlers, the SimClock answer and the relay at receipt run there, on the runner (P2-19);

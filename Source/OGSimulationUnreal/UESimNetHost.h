@@ -9,9 +9,7 @@
 #include "Engine/NetConnection.h"
 #include "GameFramework/Actor.h"
 #include "HAL/PlatformTime.h"
-#include "OGNetUnreal/Core/EngineLaneDriverCore.h"
 #include "OGNetUnreal/Core/SimLaneEndpoint.h"
-#include "OGNetUnreal/OGNetConnection.h"
 #include "OGNetUnreal/OGNetDriver.h"
 #include "OGSimNet/SimNetBindings.h"
 #include "OGSimNet/SimNetHost.h"
@@ -27,9 +25,7 @@
 #include "Runtime/Engine/Public/Net/NetPing.h"
 #include "Templates/Function.h"
 
-#include <array>
 #include <atomic>
-#include <bit>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -44,12 +40,11 @@ inline constexpr float kSimNetWireMismatchToastSeconds = 15.f;
 
 OGSIMULATIONUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(LogOGRtt, Log, All);
 
-inline constexpr double kNoRttReadingMs = -1.0;
 inline constexpr double kNoRttReadingSeconds = -1.0;
-static_assert(kNoRttReadingMs < 0.0 && kNoRttReadingSeconds < 0.0,
-	"The no-reading RTT sentinels are negative: ServerReceptionCoordinator::noteRttSample skips rttMs < 0, and "
-	"NetworkTimeEstimator::updateRTT rejects and counts a negative sample, while 0 is a real 0 ms ping. Was "
-	"UEConnectionHandle.h's sentinel comment, moved here by og-input-latency task P5-9");
+static_assert(kNoRttReadingSeconds < 0.0,
+	"The client's no-reading RTT sentinel is negative: NetworkTimeEstimator::updateRTT rejects and counts a negative sample, "
+	"while 0 is a real 0 ms ping. Was UEConnectionHandle.h's sentinel comment, moved here by og-input-latency task P5-9; its "
+	"server half, kNoRttReadingMs, is og-sim-net's kSimNetServerNoRttMs since og-session-runtime task 39");
 
 inline UNetConnection* GetRootNetConnection(AActor* actor)
 {
@@ -100,30 +95,6 @@ inline uint8 GetPlayerSlotForActor(AActor* actor)
 	return static_cast<uint8>(childId > 255u ? 255u : childId);
 }
 
-enum class EServerRttUnavailable : uint8
-{
-	None,
-	NoNetPing,
-	RoundTripNotEnabled,
-	AccumulatorEmpty,
-	NoConnection,
-	NoDriver,
-	Count
-};
-
-inline const TCHAR* serverRttUnavailableText(EServerRttUnavailable cause)
-{
-	switch (cause)
-	{
-	case EServerRttUnavailable::NoNetPing:           return TEXT("no FNetPing on the connection - check net.NetPingEnabled");
-	case EServerRttUnavailable::RoundTripNotEnabled: return TEXT("EPingType::RoundTrip not enabled - check net.NetPingTypes");
-	case EServerRttUnavailable::AccumulatorEmpty:    return TEXT("EPingType::RoundTrip enabled but its accumulator is empty (no ack sampled yet)");
-	case EServerRttUnavailable::NoConnection:        return TEXT("no UE connection for og-net id");
-	case EServerRttUnavailable::NoDriver:            return TEXT("no og-net driver; og-net id");
-	default:                                         return TEXT("");
-	}
-}
-
 template <typename CauseT>
 class TRttCauseWarnings
 {
@@ -145,110 +116,6 @@ public:
 private:
 	uint32 m_warned = 0u;
 };
-
-using FServerRttWarnings = TRttCauseWarnings<EServerRttUnavailable>;
-
-inline void logServerRttUnavailable(const TCHAR* causeText)
-{
-	UE_LOG(LogOGRtt, Warning,
-		TEXT("[RttSample] SERVER tier RTT source unavailable (%s). No tier will be ")
-		TEXT("derived or published for this connection, so it stays on the default ")
-		TEXT("tier 0. One-shot warning."),
-		causeText);
-}
-
-inline void logServerRttUnavailableForId(const TCHAR* causeText, SimConnectionId ogNetId)
-{
-	UE_LOG(LogOGRtt, Warning,
-		TEXT("[RttSample] SERVER tier RTT source unavailable (%s %u). No tier will be derived or published for this ")
-		TEXT("connection, so it stays on the default tier 0. One-shot warning."),
-		causeText, static_cast<unsigned>(ogNetId));
-}
-
-struct FServerConnectionFound
-{
-	UOGNetConnection* connection = nullptr;
-	EServerRttUnavailable missingCause = EServerRttUnavailable::None;
-};
-
-inline constexpr double kServerGoneConnectionForgetSeconds = 10.0;
-static_assert(kServerGoneConnectionForgetSeconds > ognetunreal::kDrainedCloseSeconds,
-	"FServerConnectionLookup forgets a closed og-net id only after og-net's drained close has delivered that connection's last "
-	"sim records: forgotten sooner, the leaver's last input bundle warns NoConnection again. Was og-input-latency task P5-26's "
-	"finding F-1, a graceful leave that spent the NoConnection warning");
-
-class FServerConnectionLookup
-{
-public:
-	FServerConnectionFound find(UOGNetDriver* driver, uint32 ogNetId, double nowSeconds)
-	{
-		if (driver == nullptr)
-			return {nullptr, EServerRttUnavailable::NoDriver};
-		UOGNetConnection* const connection = driver->FindConnection(ogNetId);
-		if (connection != nullptr)
-		{
-			noteFound(*driver, ogNetId, nowSeconds);
-			return {connection, EServerRttUnavailable::None};
-		}
-		double* const goneSinceSeconds = m_foundIds.Find(ogNetId);
-		if (goneSinceSeconds == nullptr)
-			return {nullptr, EServerRttUnavailable::NoConnection};
-		if (*goneSinceSeconds < 0.0)
-			*goneSinceSeconds = nowSeconds;
-		return {nullptr, EServerRttUnavailable::None};
-	}
-
-	void noteFound(UOGNetDriver& driver, uint32 ogNetId, double nowSeconds)
-	{
-		if (m_foundIds.Contains(ogNetId))
-			return;
-		for (auto it = m_foundIds.CreateIterator(); it; ++it)
-		{
-			if (it.Value() < 0.0)
-			{
-				if (driver.FindConnection(it.Key()) == nullptr)
-					it.Value() = nowSeconds;
-			}
-			else if (nowSeconds - it.Value() > kServerGoneConnectionForgetSeconds)
-			{
-				it.RemoveCurrent();
-			}
-		}
-		m_foundIds.Add(ogNetId, kStillFound);
-	}
-
-private:
-	static constexpr double kStillFound = -1.0;
-
-	TMap<uint32, double> m_foundIds;
-};
-
-inline EServerRttUnavailable readRoundTripMs(UNetConnection& conn, double& outMs)
-{
-	outMs = kNoRttReadingMs;
-
-	UE::Net::FNetPing* netPing = conn.GetNetPing();
-	if (netPing == nullptr)
-	{
-		return EServerRttUnavailable::NoNetPing;
-	}
-
-	if (!EnumHasAnyFlags(netPing->GetPingTypes(), EPingType::RoundTrip))
-	{
-		return EServerRttUnavailable::RoundTripNotEnabled;
-	}
-
-	// ⛔G-09  docs/UESimNetHost-guards.md
-	const UE::Net::FPingValues pingVals = netPing->GetPingValues(EPingType::RoundTrip);
-	if (pingVals.Current < 0.0)
-	{
-		return EServerRttUnavailable::AccumulatorEmpty;
-	}
-
-	// ⛔G-10  docs/UESimNetHost-guards.md
-	outMs = pingVals.Current * 1000.0;
-	return EServerRttUnavailable::None;
-}
 
 enum class EClientRttUnavailable : uint8
 {
@@ -301,64 +168,6 @@ inline void routeLine(const char* line)
 	ogsimnet::routeSimNetHostLine(line, [](const char* routed) { RouteOGMessage(routed); });
 }
 } // namespace ueSimNetHost
-
-template <typename TraitsT>
-class UESimNetServerHost
-{
-public:
-	using Session = UESessionRuntime<TraitsT>;
-
-	UESimNetServerHost(UOGNetDriver* ognetDriver, Session* worldSession) : m_driver(ognetDriver), m_session(worldSession) {}
-
-	UESimNetServerHost(const UESimNetServerHost&) = delete;
-	UESimNetServerHost& operator=(const UESimNetServerHost&) = delete;
-
-	double nowSeconds() { return FPlatformTime::Seconds(); }
-
-	double rttMs(SimConnectionId conn)
-	{
-		// ⛔G-12  docs/UESimNetHost-guards.md
-		const FServerConnectionFound found = m_connections.find(m_driver, conn, nowSeconds());
-		if (found.connection == nullptr)
-		{
-			if (found.missingCause != EServerRttUnavailable::None)
-				warnRttUnavailableOnce(found.missingCause, conn);
-			// ⛔G-01  docs/UESimNetHost-guards.md
-			return kNoRttReadingMs;
-		}
-		// ⛔G-11  docs/UESimNetHost-guards.md
-		if (found.connection->IsClosingOrClosed())
-			return kNoRttReadingMs;
-		double roundTripMs = kNoRttReadingMs;
-		const EServerRttUnavailable unavailable = readRoundTripMs(*found.connection, roundTripMs);
-		if (unavailable != EServerRttUnavailable::None)
-			warnRttUnavailableOnce(unavailable, conn);
-		if (m_session != nullptr)
-			m_session->diagnostics().noteWireSample(roundTripMs / 1000.0);
-		return roundTripMs;
-	}
-
-	UOGNetDriver* driver() const { return m_driver; }
-	Session* session() const { return m_session; }
-
-private:
-	void warnRttUnavailableOnce(EServerRttUnavailable cause, SimConnectionId conn)
-	{
-		if (!m_rttWarnings.first(cause))
-			return;
-		if (cause == EServerRttUnavailable::NoConnection || cause == EServerRttUnavailable::NoDriver)
-		{
-			logServerRttUnavailableForId(serverRttUnavailableText(cause), conn);
-			return;
-		}
-		logServerRttUnavailable(serverRttUnavailableText(cause));
-	}
-
-	UOGNetDriver* m_driver;
-	Session* m_session;
-	FServerConnectionLookup m_connections;
-	FServerRttWarnings m_rttWarnings;
-};
 
 class UESimNetLinkServices
 {
@@ -467,111 +276,43 @@ struct UESimNetLinkSession
 	}
 };
 
-inline constexpr size_t kRunnerRttSlots = 64u;
-
-class FRunnerRttTable
-{
-public:
-	static_assert(kInvalidSimConnection == 0u,
-		"FRunnerRttTable: a word of 0 is an empty slot, and a connection's word holds its og-net id in the high half; og-net "
-		"never assigns id 0 (kInvalidConnection), so no connection's word reads as empty. A connection still without an "
-		"og-net id is not published, and id 0 is never read. Was review_P5-19 N2 (an id 0 with a round trip of 0 read as "
-		"absent)");
-	static_assert(std::atomic<uint64_t>::is_always_lock_free,
-		"FRunnerRttTable: one connection's reading is one lock-free 64-bit word (og-net id, float milliseconds), so the runner "
-		"never reads an id with another connection's round trip. Was the runner's call into the driver's connection map, "
-		"which is game-thread state");
-
-	void publish_GameThread(size_t slot, uint32 ogNetId, double roundTripMs)
-	{
-		m_slots[slot].store((static_cast<uint64_t>(ogNetId) << 32u) | std::bit_cast<uint32_t>(static_cast<float>(roundTripMs)),
-			std::memory_order_release);
-	}
-
-	void clearFrom_GameThread(size_t firstSlot)
-	{
-		for (size_t slot = firstSlot; slot < kRunnerRttSlots; ++slot)
-			m_slots[slot].store(0u, std::memory_order_release);
-	}
-
-	double read(uint32 ogNetId) const
-	{
-		if (ogNetId == kInvalidSimConnection)
-			return kNoRttReadingMs;
-		for (const std::atomic<uint64_t>& slot : m_slots)
-		{
-			const uint64_t word = slot.load(std::memory_order_acquire);
-			if (word != 0u && static_cast<uint32>(word >> 32u) == ogNetId)
-				return static_cast<double>(std::bit_cast<float>(static_cast<uint32_t>(word & 0xFFFFFFFFu)));
-		}
-		return kNoRttReadingMs;
-	}
-
-private:
-	std::array<std::atomic<uint64_t>, kRunnerRttSlots> m_slots{};
-};
-
 template <typename TraitsT>
-class UESimNetServerHostPort : public UESimNetServerHost<TraitsT>
+class UESimNetServerHostPort
 {
-	using Base = UESimNetServerHost<TraitsT>;
-
 public:
-	using Base::Base;
+	using Session = UESessionRuntime<TraitsT>;
 
-	typename Base::Session& checkedSession() const
+	UESimNetServerHostPort(Session* worldSession) : m_session(worldSession) {}
+
+	UESimNetServerHostPort(const UESimNetServerHostPort&) = delete;
+	UESimNetServerHostPort& operator=(const UESimNetServerHostPort&) = delete;
+
+	Session* session() const { return m_session; }
+
+	Session& checkedSession() const
 	{
-		OG_CHECK(this->session() != nullptr,
+		OG_CHECK(m_session != nullptr,
 			"UESimNetServerHostPort: the server host calls its session hooks only with a session attached (the runtime builds "
-			"it with its own address); a null session here is a host built for the RTT readings alone (og-session-runtime "
-			"task 31, review_SR5_31a item 3)");
-		return *this->session();
+			"it with its own address, and a host built with none, as the hosts concept test's, is given no session port). Was "
+			"og-session-runtime task 31's check, review_SR5_31a item 3");
+		return *m_session;
 	}
 
-	double rttMs(SimConnectionId conn) { return m_runnerRtt.read(conn); }
+	double nowSeconds() { return FPlatformTime::Seconds(); }
 	void logHost(const char* line) { RouteOGMessage(line); }
 
 	int32_t receptionTick() { return checkedSession().getServerReceptionTick(); }
 	void stampHanded(uint8_t simId, uint32_t captureTick) { checkedSession().diagnostics().stampHandedAndLeft_Internal(simId, captureTick); }
 	void onLifecycleUnregistering(uint8_t simId) { checkedSession().onSimNetLifecycleUnregistering(simId); }
+	void noteWireSample(double roundTripSeconds) { checkedSession().diagnostics().noteServerWireSample_Internal(roundTripSeconds); }
 
 	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds)
 	{
 		checkedSession().diagnostics().stampServerReceived_Internal(simId, captureTick, recvSeconds);
 	}
 
-	void publishRunnerRtt_GameThread()
-	{
-		checkf(IsInGameThread(),
-			TEXT("UESimNetServerHostPort::publishRunnerRtt_GameThread: the game thread reads the driver's connections and "
-				 "publishes each one's round trip for the authority runner, which reads only the published copy"));
-		size_t slot = 0u;
-		if (UOGNetDriver* const driver = this->driver())
-		{
-			for (UNetConnection* const connection : driver->ClientConnections)
-			{
-				UOGNetConnection* const ognetConnection = Cast<UOGNetConnection>(connection);
-				if (ognetConnection == nullptr || ognetConnection->OGNetId == kInvalidSimConnection || slot == kRunnerRttSlots)
-					continue;
-				m_runnerRtt.publish_GameThread(slot++, ognetConnection->OGNetId, publishedRttMs_GameThread(*ognetConnection));
-			}
-		}
-		m_runnerRtt.clearFrom_GameThread(slot);
-	}
-
 private:
-	double publishedRttMs_GameThread(UOGNetConnection& connection)
-	{
-		// ⛔G-13  docs/UESimNetHost-guards.md
-		if (connection.ClientLoginState == EClientLoginState::ReceivedJoin)
-			return Base::rttMs(connection.OGNetId);
-		double roundTripMs = kNoRttReadingMs;
-		if (!connection.IsClosingOrClosed())
-			readRoundTripMs(connection, roundTripMs);
-		return roundTripMs;
-	}
-
-	FRunnerRttTable m_runnerRtt;
+	Session* m_session;
 };
 
 template <typename TraitsT>
@@ -590,11 +331,9 @@ class UESimNetLanesServerHost : private UESimNetServerHostParts<TraitsT>, public
 	using Parts = UESimNetServerHostParts<TraitsT>;
 
 public:
-	UESimNetLanesServerHost(UOGNetDriver* ognetDriver, ognetunreal::SimLaneEndpoint& laneEndpoint, UESessionRuntime<TraitsT>* worldSession)
-		: Parts{{ognetDriver, worldSession}}
+	UESimNetLanesServerHost(ognetunreal::SimLaneEndpoint& laneEndpoint, UESessionRuntime<TraitsT>* worldSession)
+		: Parts{{worldSession}}
 		, UESimNetServerHostCore<TraitsT>(this->m_port, laneEndpoint, worldSession != nullptr ? &this->m_port : nullptr)
 	{
 	}
-
-	void publishRunnerRtt_GameThread() { Parts::m_port.publishRunnerRtt_GameThread(); }
 };

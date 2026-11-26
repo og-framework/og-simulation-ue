@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: UESimNetLanesServerHost::publishedRttMs_GameThread -- the runner RTT publish's per-connection reader, deleted by og-session-runtime task 39; named in this file's retired G-04 -->
 # `UESimNetLanes.h` — guards
 
 Every prohibition that governs a line of `UESimNetLanes.h`. Each entry has an **opaque, stable id**. In the source a single
@@ -54,4 +55,5 @@ return (og-sim-net's `SimNetLink::serviceFrame`)
 step (a) moved unchanged into `UESimNetHost.h`
 
 **Was:** *"the loop's RTT publish asks the base host only from a connection's Join"*. Its tag sat in `UESimNetLanes.h`'s
-`UESimNetLanesServerHost::publishedRttMs_GameThread`, above the `ReceivedJoin` gate.
+`UESimNetLanesServerHost::publishedRttMs_GameThread`, above the gate on the connection's Join. Its successor, `UESimNetHost-guards.md`
+G-13, is itself retired by og-session-runtime task 39 with the publish.

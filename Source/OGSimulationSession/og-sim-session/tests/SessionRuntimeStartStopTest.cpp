@@ -442,10 +442,8 @@ struct RtClient
 struct RtServerHost
 {
 	template <typename RuntimeT>
-	RtServerHost(std::nullptr_t, RtEndpoint&, RuntimeT*) { g_recorder.add("serverHost.ctor"); }
+	RtServerHost(RtEndpoint&, RuntimeT*) { g_recorder.add("serverHost.ctor"); }
 	~RtServerHost() { g_recorder.add("serverHost.dtor"); }
-
-	void publishRunnerRtt_GameThread() {}
 };
 
 struct RtServer
@@ -518,7 +516,6 @@ struct RtLink
 	bool isServer() const { return server; }
 	bool hostServiced() const { return server; }
 	RtEndpoint& endpoint() { return laneEndpoint; }
-	std::nullptr_t driver() const { return nullptr; }
 	RtTransport& transport() { return laneTransport; }
 	RtClockServer* clockServer() { return server ? &clockServerObject : nullptr; }
 	const RtClockClient* clockClient() const { return server ? nullptr : &clockClientObject; }
@@ -530,8 +527,8 @@ struct RtLink
 	void drainClient_Step() {}
 	void drainClientWhileStopped_GameThread() { g_recorder.add("link.drainWhileStopped"); }
 
-	template <typename PublishF, typename JoinF>
-	void bindAuthorityRunner(PublishF&&, JoinF&&) { g_recorder.add("link.bindAuthorityRunner"); }
+	template <typename JoinF>
+	void bindAuthorityRunner(JoinF&&) { g_recorder.add("link.bindAuthorityRunner"); }
 
 	template <typename F>
 	void setStopHandler(F&& handler)

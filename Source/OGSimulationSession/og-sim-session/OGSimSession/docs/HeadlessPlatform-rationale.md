@@ -59,10 +59,13 @@ have.
 
 ## §5 Round trips
 
-The link's services ask for the server's round trip, and the server host's port for each connection's. Both read og-net's own
-connection statistics (`ConnectionStats::smoothedRttSeconds`), which og-net publishes under a lock, so any thread may read
-them. A connection without a sample reads `ogsimnet::kSimNetLinkNoRttSeconds`. This is og-net's ping, not the engine ping Unreal
-uses (`rttSource=EnginePing` on the `[SimNet.Host]` line is the runtime's text and does not change).
+The link's services ask for the server's round trip (`Endpoint::serverSrttSeconds`), and og-sim-net's server host core reads each
+connection's through the endpoint's `stats` (`SimNetServerHost-rationale.md` §6; the server host's port read it until
+og-session-runtime task 39). Both read og-net's own connection statistics (`ConnectionStats::smoothedRttSeconds`), which og-net
+publishes under a lock, so any thread may read them. A connection without a sample reads `ogsimnet::kSimNetLinkNoRttSeconds` on
+the client and `ogsimnet::kSimNetServerNoRttMs` on the server. Unreal's server reads the same since task 39; Unreal's client keeps
+the engine ping for its timing info (`rttSource=EnginePing` on the `[SimNet.Host]` line is the runtime's text and does not
+change).
 
 ## §6 `NullRenderSink`
 

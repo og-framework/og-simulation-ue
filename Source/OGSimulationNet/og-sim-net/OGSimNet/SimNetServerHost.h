@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // docs/SimNetServerHost-rationale.md · docs/SimNetServerHost-guards.md
 
+#include "OGNet/Connection/ConnectionStats.h"
 #include "OGNet/NetTypes.h"
 #include "OGSimNet/SimNetHost.h"
 #include "OGSimNet/SimNetLink.h"
@@ -11,15 +12,24 @@
 #include <concepts>
 #include <cstdint>
 #include <thread>
+#include <type_traits>
 
 namespace ogsimnet
 {
+inline constexpr double kSimNetServerNoRttMs = -1.0;
+static_assert(kSimNetServerNoRttMs < 0.0,
+	"SimNetServerHostCore::rttMs's no-reading round trip is negative: ServerReceptionCoordinator::noteRttSample skips rttMs < 0 "
+	"and publishes no tier, while 0 is a real 0 ms ping. Was UESimNetHost.h's kNoRttReadingMs and its G-01 (og-session-runtime "
+	"task 39)");
+static_assert(std::is_same_v<SimConnectionId, ognet::ConnectionId>,
+	"SimNetServerHostCore::rttMs asks og-net's endpoint for the stats of a sim connection id as is: og-sim-net's connection "
+	"ids are og-net's (og-session-runtime task 39)");
+
 template <class S>
-concept SimNetServerHostServices = requires(S& services, const char* line, SimConnectionId conn)
+concept SimNetServerHostServices = requires(S& services, const char* line)
 {
 	{ services.nowSeconds() } -> std::same_as<double>;
 	{ services.logHost(line) } -> std::same_as<void>;
-	{ services.rttMs(conn) } -> std::same_as<double>;
 };
 
 template <class H>
@@ -29,12 +39,14 @@ concept SimNetServerHostSession = requires(H& session, uint8_t simId, uint32_t t
 	{ session.stampServerReceived(simId, tick, seconds) } -> std::same_as<void>;
 	{ session.stampHanded(simId, tick) } -> std::same_as<void>;
 	{ session.onLifecycleUnregistering(simId) } -> std::same_as<void>;
+	{ session.noteWireSample(seconds) } -> std::same_as<void>;
 };
 
 template <class E>
-concept SimNetServerHostEndpoint = requires(E& endpoint, ognet::Lane lane, double seconds)
+concept SimNetServerHostEndpoint = requires(E& endpoint, ognet::Lane lane, double seconds, SimConnectionId conn)
 {
 	{ endpoint.noteDelivered(lane, seconds, seconds) } -> std::same_as<void>;
+	{ endpoint.stats(conn) } -> std::same_as<ognet::ConnectionStats>;
 };
 
 template <SimNetServerHostServices ServicesT, SimNetServerHostSession SessionT, SimNetServerHostEndpoint EndpointT>
@@ -58,7 +70,16 @@ public:
 	double rttMs(SimConnectionId conn)
 	{
 		checkServingThread();
-		return m_services.rttMs(conn);
+		const ognet::ConnectionStats stats = m_endpoint.stats(conn);
+		if (!stats.hasRttSample)
+		{
+			// ⛔G-03  docs/SimNetServerHost-guards.md
+			return kSimNetServerNoRttMs;
+		}
+		if (m_session != nullptr)
+			m_session->noteWireSample(stats.smoothedRttSeconds);
+		// ⛔G-04  docs/SimNetServerHost-guards.md
+		return stats.smoothedRttSeconds * 1000.0;
 	}
 
 	int32_t receptionTick()
@@ -128,39 +149,22 @@ struct ReferenceServices
 {
 	double nowSeconds();
 	void logHost(const char* line);
-	double rttMs(SimConnectionId conn);
 };
 
 struct ServicesWithoutNowSeconds
 {
 	void logHost(const char* line);
-	double rttMs(SimConnectionId conn);
 };
 
 struct ServicesWithoutLogHost
 {
 	double nowSeconds();
-	double rttMs(SimConnectionId conn);
-};
-
-struct ServicesWithoutRttMs
-{
-	double nowSeconds();
-	void logHost(const char* line);
 };
 
 struct ServicesWithAFloatNowSeconds
 {
 	float nowSeconds();
 	void logHost(const char* line);
-	double rttMs(SimConnectionId conn);
-};
-
-struct ServicesWithAFloatRttMs
-{
-	double nowSeconds();
-	void logHost(const char* line);
-	float rttMs(SimConnectionId conn);
 };
 
 struct ReferenceSession
@@ -169,6 +173,7 @@ struct ReferenceSession
 	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds);
 	void stampHanded(uint8_t simId, uint32_t captureTick);
 	void onLifecycleUnregistering(uint8_t simId);
+	void noteWireSample(double roundTripSeconds);
 };
 
 struct SessionWithoutReceptionTick
@@ -176,6 +181,7 @@ struct SessionWithoutReceptionTick
 	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds);
 	void stampHanded(uint8_t simId, uint32_t captureTick);
 	void onLifecycleUnregistering(uint8_t simId);
+	void noteWireSample(double roundTripSeconds);
 };
 
 struct SessionWithoutStampServerReceived
@@ -183,6 +189,7 @@ struct SessionWithoutStampServerReceived
 	int32_t receptionTick();
 	void stampHanded(uint8_t simId, uint32_t captureTick);
 	void onLifecycleUnregistering(uint8_t simId);
+	void noteWireSample(double roundTripSeconds);
 };
 
 struct SessionWithoutStampHanded
@@ -190,6 +197,7 @@ struct SessionWithoutStampHanded
 	int32_t receptionTick();
 	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds);
 	void onLifecycleUnregistering(uint8_t simId);
+	void noteWireSample(double roundTripSeconds);
 };
 
 struct SessionWithoutUnregistering
@@ -197,6 +205,15 @@ struct SessionWithoutUnregistering
 	int32_t receptionTick();
 	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds);
 	void stampHanded(uint8_t simId, uint32_t captureTick);
+	void noteWireSample(double roundTripSeconds);
+};
+
+struct SessionWithoutNoteWireSample
+{
+	int32_t receptionTick();
+	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds);
+	void stampHanded(uint8_t simId, uint32_t captureTick);
+	void onLifecycleUnregistering(uint8_t simId);
 };
 
 struct SessionWithAnUnsignedReceptionTick
@@ -205,11 +222,13 @@ struct SessionWithAnUnsignedReceptionTick
 	void stampServerReceived(uint8_t simId, uint32_t captureTick, double recvSeconds);
 	void stampHanded(uint8_t simId, uint32_t captureTick);
 	void onLifecycleUnregistering(uint8_t simId);
+	void noteWireSample(double roundTripSeconds);
 };
 
 struct ReferenceEndpoint
 {
 	void noteDelivered(ognet::Lane lane, double recvSeconds, double nowSeconds);
+	ognet::ConnectionStats stats(ognet::ConnectionId id) const;
 };
 
 struct ServicesWhoseLogHostReturnsBool : ReferenceServices
@@ -232,6 +251,11 @@ struct SessionWhoseUnregisteringReturnsBool : ReferenceSession
 	bool onLifecycleUnregistering(uint8_t simId);
 };
 
+struct SessionWhoseNoteWireSampleReturnsBool : ReferenceSession
+{
+	bool noteWireSample(double roundTripSeconds);
+};
+
 struct EndpointWhoseNoteDeliveredReturnsBool : ReferenceEndpoint
 {
 	bool noteDelivered(ognet::Lane lane, double recvSeconds, double nowSeconds);
@@ -240,30 +264,37 @@ struct EndpointWhoseNoteDeliveredReturnsBool : ReferenceEndpoint
 struct EndpointWithATwoArgumentNoteDelivered
 {
 	void noteDelivered(ognet::Lane lane, double recvSeconds);
+	ognet::ConnectionStats stats(ognet::ConnectionId id) const;
+};
+
+struct EndpointWithoutStats
+{
+	void noteDelivered(ognet::Lane lane, double recvSeconds, double nowSeconds);
+};
+
+struct EndpointWhoseStatsIsTheRoundTripInSeconds : ReferenceEndpoint
+{
+	double stats(ognet::ConnectionId id) const;
 };
 
 using ReferenceHost = SimNetServerHostCore<ReferenceServices, ReferenceSession, ReferenceEndpoint>;
 
 static_assert(SimNetServerHostServices<ReferenceServices>,
-	"SimNetServerHostServices self-check: the reference shape (nowSeconds, logHost, rttMs) must satisfy the concept");
+	"SimNetServerHostServices self-check: the reference shape (nowSeconds, logHost) must satisfy the concept");
 static_assert(!SimNetServerHostServices<ServicesWithoutNowSeconds>,
 	"SimNetServerHostServices self-check: nowSeconds() is required (the host's clock and the delivery note's now)");
 static_assert(!SimNetServerHostServices<ServicesWithoutLogHost>,
 	"SimNetServerHostServices self-check: logHost(line) is required (og-sim-net's server lines, printed with their token). Was "
 	"UESimNetServerHost::log's RouteOGMessage sink");
-static_assert(!SimNetServerHostServices<ServicesWithoutRttMs>,
-	"SimNetServerHostServices self-check: rttMs(conn) is required (the round trip the reception coordinator files per bundle)");
 static_assert(!SimNetServerHostServices<ServicesWithAFloatNowSeconds>,
 	"SimNetServerHostServices self-check: nowSeconds returns double; a float clock of seconds since start loses milliseconds within "
 	"hours, and the delivery note's residence is a difference of two such times");
-static_assert(!SimNetServerHostServices<ServicesWithAFloatRttMs>,
-	"SimNetServerHostServices self-check: rttMs returns double, the type the tier table smooths (SimNetServerHost's own rule)");
 static_assert(!SimNetServerHostServices<ServicesWhoseLogHostReturnsBool>,
 	"SimNetServerHostServices self-check: logHost(line) returns void; the host discards any result");
 
 static_assert(SimNetServerHostSession<ReferenceSession>,
-	"SimNetServerHostSession self-check: the reference shape (receptionTick, the two stamps, onLifecycleUnregistering) must "
-	"satisfy the concept");
+	"SimNetServerHostSession self-check: the reference shape (receptionTick, the two stamps, onLifecycleUnregistering, "
+	"noteWireSample) must satisfy the concept");
 static_assert(!SimNetServerHostSession<SessionWithoutReceptionTick>,
 	"SimNetServerHostSession self-check: receptionTick() is required (the tick the coordinator files an RTT sample under)");
 static_assert(!SimNetServerHostSession<SessionWithoutStampServerReceived>,
@@ -275,6 +306,9 @@ static_assert(!SimNetServerHostSession<SessionWithoutStampHanded>,
 static_assert(!SimNetServerHostSession<SessionWithoutUnregistering>,
 	"SimNetServerHostSession self-check: onLifecycleUnregistering(simId) is required (the session's notify before og-sim-net's "
 	"facade unregisters a queue-registered character)");
+static_assert(!SimNetServerHostSession<SessionWithoutNoteWireSample>,
+	"SimNetServerHostSession self-check: noteWireSample(roundTripSeconds) is required (the latency probe's server WIRE sample, "
+	"one per round trip read). Was UESimNetServerHost::rttMs's noteWireSample call (og-session-runtime task 39)");
 static_assert(!SimNetServerHostSession<SessionWithAnUnsignedReceptionTick>,
 	"SimNetServerHostSession self-check: receptionTick returns int32_t, the tick type SimNetServerHost hands the coordinator");
 static_assert(!SimNetServerHostSession<SessionWhoseStampServerReceivedReturnsBool>,
@@ -283,15 +317,23 @@ static_assert(!SimNetServerHostSession<SessionWhoseStampHandedReturnsBool>,
 	"SimNetServerHostSession self-check: stampHanded returns void; the host discards any result");
 static_assert(!SimNetServerHostSession<SessionWhoseUnregisteringReturnsBool>,
 	"SimNetServerHostSession self-check: onLifecycleUnregistering returns void; the host discards any result");
+static_assert(!SimNetServerHostSession<SessionWhoseNoteWireSampleReturnsBool>,
+	"SimNetServerHostSession self-check: noteWireSample returns void; the host discards any result");
 
 static_assert(SimNetServerHostEndpoint<ReferenceEndpoint>,
-	"SimNetServerHostEndpoint self-check: the reference shape (og-net's noteDelivered(lane, recvSeconds, nowSeconds)) must "
-	"satisfy the concept");
+	"SimNetServerHostEndpoint self-check: the reference shape (og-net's noteDelivered(lane, recvSeconds, nowSeconds) and "
+	"stats(id)) must satisfy the concept");
 static_assert(!SimNetServerHostEndpoint<EndpointWithATwoArgumentNoteDelivered>,
 	"SimNetServerHostEndpoint self-check: noteDelivered takes the receive time and now (the endpoint's [OGNet.Window] residence "
 	"rows)");
 static_assert(!SimNetServerHostEndpoint<EndpointWhoseNoteDeliveredReturnsBool>,
 	"SimNetServerHostEndpoint self-check: noteDelivered returns void; the host discards any result");
+static_assert(!SimNetServerHostEndpoint<EndpointWithoutStats>,
+	"SimNetServerHostEndpoint self-check: stats(id) is required (og-net's per-connection stats, whose smoothed round trip is the "
+	"core's rttMs). Was SimNetServerHostServices' rttMs(conn), the engine's game-thread copy (og-session-runtime task 39)");
+static_assert(!SimNetServerHostEndpoint<EndpointWhoseStatsIsTheRoundTripInSeconds>,
+	"SimNetServerHostEndpoint self-check: stats(id) returns og-net's ognet::ConnectionStats, whose hasRttSample tells a first "
+	"sample from none; a bare round trip cannot (og-session-runtime task 39)");
 
 static_assert(SimNetServerHost<ReferenceHost> && SimNetDeliveryHook<ReferenceHost> && SimNetDeliveryHookWellFormed<ReferenceHost>
 		&& SimNetLifecycleUnregisteringHook<ReferenceHost> && SimNetLifecycleUnregisteringHookWellFormed<ReferenceHost>,

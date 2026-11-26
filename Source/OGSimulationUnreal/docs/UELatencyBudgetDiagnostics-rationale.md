@@ -234,14 +234,14 @@ send and receive sites, its step hooks) are the game's documentation; these are 
 | `Healed` (the client's `H6L` end), by a correction | `stampClientReceived_Internal`'s State branch, which the og-net client host calls at the correction's drain, with the same time as its `ClientReceived` (the step's thread, §13; the game-thread correction door until og-session-runtime task 12, deleted by task 14) | `dA` is the newest relayed capture's delay stamp for that character, one value for the lane (§11). |
 | `StepEnd` (the `H5` end, the `H7` start) | `stampStepEnd_Internal`, at each step's end, per simulatable, for `currentIntegratedTick` (PT) | `noEnd` counts the ticks a simulatable's state was not written; a correction rotation skips some on purpose. |
 | `Rendered` (the `H7` end) | `tick_GameThread`: the newest pending tick per simulatable only (GT) | Not the photon: the render poses interpolate behind the simulation, and the render thread and GPU add one or two frames more. |
-| `WIRE` | `noteWireSample`, half the round trip it is given (GT): the server host's base `rttMs`, from the runner's RTT publish; a client's `noteWireSample_Internal` (§13) | Half of a round trip assumes symmetric paths. |
+| `WIRE` | `noteWireSample`, half the round trip it is given (GT): the server host's base `rttMs`, from the runner's RTT publish (since og-session-runtime task 39 og-sim-session's `noteServerWireSample_Internal`, posted on the runner, §15); a client's `noteWireSample_Internal` (§13) | Half of a round trip assumes symmetric paths. |
 
 **Threads — the probe adds no unsynchronized crossing.** The probe is **game-thread-owned** and has no internal lock.
 Everything reaches it one of three ways:
 
 | path | used by | synchronization |
 |---|---|---|
-| `noteWireSample` | the server host's base `rttMs`, from the RTT publish (until og-session-runtime task 14 also the game-thread stamp doors, every game-thread stamp site's) | same thread as the owner; it `checkf`s that it runs on the game thread |
+| `noteWireSample` | the server host's base `rttMs`, from the RTT publish (until og-session-runtime task 14 also the game-thread stamp doors, every game-thread stamp site's); since og-session-runtime task 39 the runner's `noteServerWireSample_Internal`, through the mailbox (§15) | same thread as the owner; it `checkf`s that it runs on the game thread |
 | `post_Internal` → `m_mailbox` → drained in `tick_GameThread` | every step-thread site | the mailbox's release/acquire pair (`LatencyBudgetProbe-guards.md` G-01) |
 | `m_clockMailbox` | the client clock's skip/stall/hard-resync counts | the same mailbox type |
 
@@ -511,15 +511,19 @@ the probe and the window (`SessionLatencyDiagnostics-rationale.md` §1–§7); t
 | `tick_GameThread()` | the frame-thread entry the session calls in `onPostPhysics`, which calls the engine-free `tickWindow_Frame` |
 | `instanceFor`, `withInstance` | the world-and-role lookup (§1, §10) |
 
-Every caller in Unreal (`UESimNetHost.h`'s `stampClientReceived`, `stampHanded`, `stampServerReceived` and the base host's
-`noteWireSample`; the session's unregistration's `forgetCharacter`; the session's `wrapInputProvider`; og-sim-session's step and
+Every caller in Unreal (`UESimNetHost.h`'s `stampClientReceived`, `stampHanded`, `stampServerReceived` and the server host
+port's `noteWireSample`, which calls `noteServerWireSample_Internal`; the session's unregistration's `forgetCharacter`; the session's `wrapInputProvider`; og-sim-session's step and
 correction stamps) calls the derived object, so name lookup finds the engine-free class's members.
 
 **What differs from §1–§14:**
 
 - **§1, §6 (threads).** Each door asks its `SessionOp` row first (`SessionThreads.h`; the table is
-  `SessionLatencyDiagnostics-rationale.md` §4). `noteWireSample`'s game-thread `checkf` is its `LatencyServerWireSample` row. Before
-  the runtime starts nothing is checked; during a client's stopped drain the check is `DrainStopped`.
+  `SessionLatencyDiagnostics-rationale.md` §4). `noteWireSample`'s game-thread `checkf` was its `LatencyServerWireSample` row
+  (a frame row, task 37). Before the runtime starts nothing is checked; during a client's stopped drain the check is `DrainStopped`.
+- **§6 (the server's WIRE sample), og-session-runtime task 39.** The authority's round trip is read on the runner since
+  (`SimNetServerHost-rationale.md` §6), so its wire sample is og-sim-session's `noteServerWireSample_Internal`: posted to the mailbox
+  like the client's, drained by the window, its row `LatencyServerWireSample` a step row on the authority. It is one sample per
+  accepted input bundle with a reading, where the game-thread publish took one per frame per joined connection.
 - **§1 (the verbs).** `tick_GameThread`'s body is the engine-free `tickWindow_Frame`, in the same order with the same returns.
   `clockCountsInWindow` and `restartClockWindow` are the engine-free class's; nothing calls them today.
 - **§3 (the gate at 0).** The off arm's doors are the engine-free class's `kEnabled` false arm (no member, inline no-ops, the

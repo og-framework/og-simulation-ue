@@ -5,8 +5,6 @@
 <!-- lint-external-ref: FUEConnectionHandle -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
 <!-- lint-external-ref: UEConnectionHandle.h -- deleted by og-input-latency task P5-9 (the relay actors, their listeners, the Iris sim buffers, serializers and proofs, and UEConnectionHandle); kept in the history -->
 <!-- lint-external-ref: OnRep -- Unreal Engine symbol or file, outside every scan root -->
-<!-- lint-external-ref: UNetConnection::Close -- Unreal Engine symbol or file, outside every scan root -->
-<!-- lint-external-ref: ControlChannelClose -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: UNetConnection::InitBase -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: Net/Core/Connection/ConnectionHandle.h -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: UChildConnection::AssignConnectionHandle -- Unreal Engine symbol or file, outside every scan root -->
@@ -16,20 +14,24 @@
 <!-- lint-external-ref: UNetConnection::ReceivedRawPacket -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: CurrentTime -- Unreal Engine symbol or file, outside every scan root -->
 <!-- lint-external-ref: SimulatableNetSyncComponent.cpp -- deleted by og-input-latency task P5-8 (the net-sync component, the pawn's subobject, the bundle builder and the owner binding's net half); kept in the history -->
+<!-- lint-external-ref: UESimNetServerHost -- Unreal's base server host (the game-thread engine ping and its warnings), deleted by og-session-runtime task 39; kept in the history -->
+<!-- lint-external-ref: readRoundTripMs -- the server's engine-ping read, deleted by og-session-runtime task 39; kept in the history -->
+<!-- lint-external-ref: kNoRttReadingMs -- the server's ms sentinel, og-sim-net's kSimNetServerNoRttMs since og-session-runtime task 39; kept in the history -->
+<!-- lint-external-ref: EServerRttUnavailable -- the server's RTT causes, deleted by og-session-runtime task 39; kept in the history -->
 # `UESimNetHost.h` — rationale
 
 The server session's host (`SimNetServer`'s `HostT`) is `UESimNetLanesServerHost<TraitsT>`: og-sim-net's engine-free
 `SimNetServerHostCore` (`SimNetServerHost-rationale.md`, og-session-runtime task 31a) over `UESimNetServerHostPort<TraitsT>`, which
-is what the core needs from Unreal: the services (the clock, the log sink, the runner's round trip) and the world session's hooks
-(the reception tick, the two probe stamps, the unregistering hook). The port derives from `UESimNetServerHost<TraitsT>`, the
-game-thread round trip of an og-net connection and its warnings (§2, §13). The client's host
+is what the core needs from Unreal: the services (the clock, the log sink) and the world session's hooks (the reception tick, the
+two probe stamps, the unregistering hook, the wire sample). The round trip is the core's, from og-net's stats (§2, og-session-runtime
+task 39). The client's host
 is og-sim-net's `SimNetLinkClientHost`, inside the link (`SimNetLink-rationale.md` §7, og-session-runtime task 28); what the link
 needs from Unreal is here: `UESimNetLinkServices`, the link's engine services (the client's round trip and its warnings, the two
 log sinks, the wire-mismatch report), and `UESimNetLinkSession<TraitsT>`, the world session's hooks the lanes attach. Each answers
 from today's Unreal sources: the engine's ping, the latency probe, the log routes, and the world session's tier, floor and timing
 consumers. This file is the docs pointer of `UESimNetHost.h`; its prohibitions are in `UESimNetHost-guards.md`. The header also
-holds the engine primitives the hosts and the world session read: `LogOGRtt`, the RTT sentinels, `GetRootNetConnection`,
-`GetPlayerSlotForActor` and `readRoundTripMs` (§11), and its `.cpp` defines `LogOGRtt`.
+holds the engine primitives the hosts and the world session read: `LogOGRtt`, the client's RTT sentinel,
+`GetRootNetConnection` and `GetPlayerSlotForActor` (§11), and its `.cpp` defines `LogOGRtt`.
 
 **If this file and the source disagree, the source is authoritative and this file is stale.**
 
@@ -40,7 +42,8 @@ holds the engine primitives the hosts and the world session read: `LogOGRtt`, th
 | member | the server host's port (`UESimNetServerHostPort`) | the link's services (`UESimNetLinkServices`) | the session hooks (`UESimNetLinkSession`) |
 |---|---|---|---|
 | `nowSeconds` | `FPlatformTime::Seconds` | the same | — |
-| `rttMs(conn)` | on the runner, the published table (§13); its base `UESimNetServerHost`'s, on the game thread, the og-net connection's engine ping, plus the probe's wire sample (§2) | — | — |
+| `rttMs(conn)` | — (og-sim-net's core reads og-net's stats through the lanes' endpoint, §2) | — | — |
+| `noteWireSample` | the diagnostics' `noteServerWireSample_Internal`, on the runner (§2) | — | — |
 | `serverRttSeconds` | — | the server connection's engine ping, as last published (§5) | — |
 | `receptionTick` | the session's `getServerReceptionTick` (§3) | — | — |
 | `stampServerReceived`, `stampHanded` | the latency probe (§4), through the diagnostics' mailbox on the authority runner | — | — |
@@ -62,63 +65,21 @@ The port's hooks themselves check nothing.
 **The server host is not `final`.** og-sim-net detects a `noteDelivered` member by deriving a probe class from the host
 (`SimNetHost.h`), and its sessions `static_assert` the result, so a `final` host would not compile.
 
-## §2 The server's round trip
+## §2 The server's round trip (og-sim-net's since og-session-runtime task 39)
 
-`rttMs(conn)` looks the og-net id up in the driver (`UOGNetDriver::FindConnection`, through the host's
-`FServerConnectionLookup`, below) and reads that connection's engine ping with `readRoundTripMs` (§11.5). The value is the engine's raw
-`RoundTrip`, in milliseconds, with no smoothing on top: the tier table's own smoothing is the only one.
+The authority's round trip is og-sim-net's `SimNetServerHostCore::rttMs`: og-net's smoothed RTT for the connection, from the
+endpoint's stats, read on the runner, −1 until og-net has a sample (`SimNetServerHost-rationale.md` §6). The port answers none of
+it; it only takes the wire sample (`noteWireSample`, the diagnostics' `noteServerWireSample_Internal`, a mailbox door on the
+runner, `SessionLatencyDiagnostics-rationale.md` §4). The lanes' `SimLaneEndpoint` gives the core og-net's stats
+(`SimLaneEndpoint-rationale.md` §2).
 
-- **The wire sample.** When a session is bound, each reading is also added to the latency probe's wire hop
-  (`noteWireSample(rtt / 1000)`), as today's input bundle receipt does once per bundle (`UESimulatableOwnerBinding.h`). og-sim-net
-  calls `rttMs` once per accepted input bundle (`SimNetServer::receiveBundle`), so the rate is the same.
-- **No connection.** An og-net id with no Unreal connection (it closed between the receipt and the drain, or no driver) is a
-  reading that does not exist. `rttMs` returns `kNoRttReadingMs` (−1), which the reception coordinator skips: no tier is
-  derived or published (`UESimNetHost-guards.md` G-01). Unless the connection is one the host found and has since closed (the
-  next bullet but one), the host also logs a `[RttSample] SERVER tier RTT source unavailable (…)` warning to `LogOGRtt`.
-  `readRoundTripMs` takes a connection by reference (§11.5), so `rttMs` resolves the connection first; here the og-net id came
-  off the wire, so its absence is worth one line.
-- **A closing connection** (og-input-latency task P5-26, from P5-11's finding F1). In the frame of a graceful close
-  (`UNetConnection::Close`, reached from `ControlChannelClose`), og-sim-net can still drain an input bundle from the leaving
-  client, and `FindConnection` still finds its connection. `Close` has already set `USOCK_Closed` and reset the connection's
-  `FNetPing`, so before P5-26 the read logged the "no FNetPing on the connection - check net.NetPingEnabled" warning, a
-  misleading cause, and took a −1 ms wire sample the probe refused as `outOfOrder`. `rttMs` now returns `kNoRttReadingMs` for a
-  connection whose `IsClosingOrClosed()` is true, before the read: no warning, no wire sample, no tier
-  (`UESimNetHost-guards.md` G-11). A hard-killed client times out instead and never reaches this branch, which is why the
-  smokes before P5-11 did not show it.
-- **A connection that has gone** (og-input-latency task P5-17, rework 1, from P5-26's finding F-1). A graceful leave can also
-  drop the id from the driver before og-sim-net drains the leaver's last input bundle: `UOGNetConnection::CleanUp` calls
-  `UOGNetDriver::engineClosed`, which removes the id from the driver's map, and og-net's own close (the driver's `OnClosed`)
-  removes it too, while og-net keeps the connection, and delivers its sim lanes, until the engine lane's queue for it has
-  drained (at most `kDrainedCloseSeconds`, 0.2 s). P5-26's smoke logged `no UE connection for og-net id 3507600020` at
-  client2a's `Close` this way, and spent the `NoConnection` cause's one warning. So `rttMs` finds the connection through the
-  host's `FServerConnectionLookup` (`UESimNetHost-guards.md` G-12). Its `find` asks the driver and remembers each og-net id
-  it found. Those two driver paths, and the driver's own teardown, are the only ways an id leaves the driver's map, so a
-  remembered id the driver no longer has is a closed connection: `find` reports its miss with no cause (`missingCause` is
-  `None`), and `rttMs` returns the sentinel without a warning. An id the lookup never found still warns `NoConnection`: that
-  is the outage the warning is for. An id is remembered from its first found reading, so a connection first seen in its
-  closing frame (G-11) is remembered too.
-  The lookup keeps, per id, the time it first saw the id gone (its first miss, or a sweep that finds the driver no longer has
-  it), and forgets the id `kServerGoneConnectionForgetSeconds` (10 s) later; a `static_assert` holds that above og-net's
-  drained close, so a leaver's last bundles all arrive while it is remembered. The sweep runs when a new id is found, and a closed id
-  is forgotten at the first sweep more than 10 s after it was seen gone, so the map holds the live connections and the
-  closed ones not yet forgotten, at most one entry per join since. A forgotten id warns again if it is asked about, which
-  needs a bundle from a connection closed more than 10 s before, 50 times og-net's drained close.
-- **Warned once per cause.** Each cause (`EServerRttUnavailable`: no FNetPing, the ping type not enabled, an empty
-  accumulator, no Unreal connection, no driver) warns once per server host, through the host's `FServerRttWarnings`, one bit
-  per cause. Until og-input-latency task P5-26 the three ping causes shared one function-local `static` flag in
-  `readRoundTripMs`, one per binary, and the no-connection cause had its own member flag. A first warning of one ping cause, for
-  example a graceful close's, then silenced every later genuine outage of any ping cause for the life of the process. Each
-  text is the one it was, and the line still ends "One-shot warning.", now true per cause. The client host warns once per
-  cause too since og-input-latency task P5-17 (§5); `FServerRttWarnings` and the client's `FClientRttWarnings` are one class
-  template, `TRttCauseWarnings`, over each host's cause enum.
-- **The warning takes the cause's text.** The host logs through `logServerRttUnavailable` and `logServerRttUnavailableForId`,
-  which take the `const TCHAR*` from `serverRttUnavailableText`, not the enum. An enum argument does not compile, and `UE_LOG`
-  checks no argument against its `%s` here: the engine's format check, `UE_VALIDATE_FORMAT_STRINGS`, is 0 in this module's
-  build, because the game's targets set `DefaultBuildSettings` V4 and Unreal Build Tool enables the check from V5. The client
-  has the same split (§5), made in og-input-latency task P5-17, rework 2.
-- **Game thread only.** `FindConnection` `checkf`s the game thread, and so does the probe. The authority drains on its
-  runner, so the runner reads the round trip from the table the game thread fills through this member each frame
-  (`FRunnerRttTable`, `UESimNetLanes-rationale.md` §12).
+Until task 39 the round trip was the engine's ping of each og-net connection, read on the game thread: the base server host
+(`UESimNetServerHost`) found the connection through a lookup that remembered closed ids (so a graceful leave spent no
+no-connection warning), skipped a closing one, read its `RoundTrip` with `readRoundTripMs` (§11.5), warned once per cause on
+`LogOGRtt` and took the wire sample; the port published each connection's reading every frame into the runner's RTT table (one
+lock-free word per og-net id), and the runner read that copy. That was the last game-thread → runner data feed of the authority
+(design §4.4 rank 9). Its rules, `UESimNetHost-guards.md` G-01 and G-09 to G-13, are retired in that file's §R, two of them with
+successors in og-sim-net (G-03, G-04). The texts of this section before task 39 are in its history (root `2618a3d`).
 
 ## §3 The reception tick
 
@@ -257,18 +218,15 @@ nothing drove them but the brawler's `UESimNetHostsConceptTest.cpp`, which still
   og-sim-net's `SimNetServerHostServices` and `SimNetServerHostSession` and the lane endpoint `SimNetServerHostEndpoint`, the
   lanes' link client host is a `SimNetClientHost`, both hosts have the delivery hook, `UESimNetLinkServices` and `UESimNetLinkSession` model the link's concepts, the probe lane is the sim id, and the route table sends each og-sim-net tag to
   the Net route at Log;
-- the automation test `OGBrawler.SimNet.Hosts`: `rttMs` of an unknown og-net id returns the sentinel twice and warns once;
-  an `FServerRttWarnings` lets each cause through once, a second cause after the first (og-input-latency task P5-26); four
+- the automation test `OGBrawler.SimNet.Hosts`: the lanes' server host over a dropping endpoint whose `stats` has a 125 ms
+  reading for one og-net id reads that id's `rttMs` as 125 and another id's as og-sim-net's sentinel (og-session-runtime task 39;
+  until then the base host's `rttMs` of an unknown id returned the sentinel twice and warned once, and its per-cause warnings and
+  connection lookup were checked here too); four
   routed lines (three `[Warning]` lines and a token-less `[Roster.` line), logged through the lanes' server host's `log`
   (og-sim-net's core over the port), reach `LogOGNet`, the token-less one with the
   `[Warning]` token the route adds (it was checked at Log until P5-7), with `LogOGNet` raised to Log for the probe and restored
   after; a server's batch hook sends a staged clock once, at once, to an endpoint that counts and drops it, and an unchanged
-  clock is not sent again; an `FServerConnectionLookup` (og-input-latency task
-  P5-17, rework 1) with an unstarted driver, so that every lookup misses: a graceful leave (an id it found, then missed) has
-  no cause, so a later unknown og-net id still warns through the same `FServerRttWarnings`; the leaver's next bundle in its
-  drained close has no cause either; an id found and then dropped by the driver before any miss has none (the sweep); an id
-  closed more than the forget window before is forgotten and warns `NoConnection`; no driver reports `NoDriver`. It tests
-  the lookup with explicit times, not `rttMs`'s use of it (`UESimNetHost-guards.md` G-12); `warnClientRttUnavailableOnce`
+  clock is not sent again; `warnClientRttUnavailableOnce`
   (og-input-latency task P5-17, rework 2) called twice for every `EClientRttUnavailable` other than `None` with one
   `FClientRttWarnings` logs each cause's `[RttSample] CLIENT …` line exactly once, its text in the parentheses. It does not
   reach the services' `serverRttSeconds`, so its one call to the function is not tested. The
@@ -277,11 +235,12 @@ nothing drove them but the brawler's `UESimNetHostsConceptTest.cpp`, which still
 
 ## §11 The engine primitives (og-input-latency task P5-9)
 
-`LogOGRtt`, the two no-reading sentinels, `GetRootNetConnection`, `GetPlayerSlotForActor` and `readRoundTripMs` are free
-functions and constants at file scope in `UESimNetHost.h`. Until og-input-latency task P5-9 they were in
+`LogOGRtt`, the no-reading sentinels, `GetRootNetConnection`, `GetPlayerSlotForActor` and `readRoundTripMs` were free
+functions and constants at file scope in `UESimNetHost.h`; the server's sentinel and `readRoundTripMs` went with the server's
+engine read in og-session-runtime task 39 (§2). Until og-input-latency task P5-9 they were in
 `UEConnectionHandle.h`, with the UE connection handle `FUEConnectionHandle`, which nothing used after P5-7 and which was deleted
 with that header. They moved with their texts; each block below is the text as it stood, then what R0 found. The
-prohibitions among them are `UESimNetHost-guards.md` G-06 to G-10.
+prohibitions among them were `UESimNetHost-guards.md` G-06 to G-10; G-09 and G-10 are retired with the read.
 
 ### §11.1 `LogOGRtt`
 
@@ -298,7 +257,8 @@ As it stood:
 *R0:* the read sites are now two, both in this header: the server host's `rttMs`, which reads with `readRoundTripMs`
 (§11.5) and warns per cause (§2, og-input-latency task P5-26), and the client host's `serverRttSeconds`, which warns through `warnClientRttUnavailableOnce` (§5). The timing relay is deleted. `Config/DefaultEngine.ini` has no
 `LogOGRtt` entry. The category is defined in `UESimNetHost.cpp`, which exists for that; the old `.cpp` said the same, and that
-it was the header-only header's compile anchor, which `UESimNetHost.cpp` now also is.
+it was the header-only header's compile anchor, which `UESimNetHost.cpp` now also is. Since og-session-runtime task 39 the
+server's round trip is og-sim-net's, which warns on nothing (§2), so the client's read is the one site left on `LogOGRtt`.
 
 ### §11.2 The no-reading sentinels
 
@@ -311,7 +271,9 @@ As it stood:
 
 *R0:* both consumer claims verified (`ServerReceptionCoordinator.h`'s `noteRttSample`, `NetworkTimeEstimator.cpp`'s
 `updateRTT`). "Negative, never zero" is now a `static_assert` next to the constants, whose message names this text. The two
-returns that hand a sentinel on are guards G-01 and G-02.
+returns that hand a sentinel on are guards G-01 and G-02. Since og-session-runtime task 39 the server's millisecond sentinel is
+og-sim-net's `kSimNetServerNoRttMs`, with its own `static_assert` and its return guard `SimNetServerHost-guards.md` G-03 (G-01's
+successor); `kNoRttReadingSeconds` and G-02 stay here.
 
 ### §11.3 `GetRootNetConnection`
 
@@ -357,7 +319,7 @@ received bundle to the reception coordinator with the entry's index (`SimNetServ
 key is (the connection, this index), as the stability contract says. The prohibitions are guards G-06 (the own connection),
 G-07 (the child id) and G-08 (the saturation).
 
-### §11.5 `readRoundTripMs`
+### §11.5 The engine ping's type (`readRoundTripMs`, deleted by og-session-runtime task 39)
 
 As it stood:
 
@@ -426,8 +388,11 @@ returned −1000, negative and so skipped downstream by accident, and the check 
   per cause (§2). That replaced the one-shot `static` above, which let the first warning of any ping cause silence every later
   one. It takes the connection by reference, so the null branch, which nothing reached after `rttMs` gained its own
   no-connection sentinel, is gone: passing a null pointer no longer compiles. The texts of the three ping causes are unchanged.
-- The prohibitions are guards G-09 (the ping type) and G-10 (nothing on top of the reading). The client host's read
+- The prohibitions were guards G-09 (the ping type) and G-10 (nothing on top of the reading). The client host's read
   (`readServerRoundTrip`, §5) reads the same type for the same reason, untagged.
+- **og-session-runtime task 39** deleted the function with the server's engine read (§2); G-09 and G-10 are retired, G-10 with its
+  successor in og-sim-net (`SimNetServerHost-guards.md` G-04). The derivation above stays true of the client's engine-ping shadow
+  figure, `readServerRoundTrip`, which is the reason this subsection is kept.
 
 
 ## §12 The locked bindings (og-input-latency task P5-17)
@@ -435,19 +400,18 @@ returned −1000, negative and so skipped downstream by accident, and the check 
 Unreal's `FLockedSimNetBindings` is og-sim-net's `LockedSimNetBindings<LockT>` since og-session-runtime task 28, held by the link
 behind `UEFMutexLockableUImpl` (`SimNetLink-rationale.md` §8). Until then it was this header's, behind a `std::mutex`.
 
-## §13 The server's lanes host and the runner's RTT table (moved here by og-session-runtime task 28)
+## §13 The server's lanes host (moved here by og-session-runtime task 28)
 
-`kRunnerRttSlots`, `FRunnerRttTable` and `UESimNetLanesServerHost<TraitsT>` moved unchanged from `UESimNetLanes.h` to the end of
-this header in task 28's step (a): they are the authority runner's RTT readers and the session's server host, which stay on the
-Unreal side, and the lanes are a thin adapter over the link. What they do is `UESimNetLanes-rationale.md` §12 (the hosts, the RTT
-table, no RTT warning before the Join: `UESimNetHost-guards.md` G-13).
+`UESimNetLanesServerHost<TraitsT>` moved unchanged from `UESimNetLanes.h` to the end of this header in task 28's step (a), with the
+runner's RTT table: the session's server host stays on the Unreal side, and the lanes are a thin adapter over the link.
 
-**The server host's engine-free half is og-sim-net's since og-session-runtime task 31a** (`SimNetServerHost-rationale.md`):
-`UESimNetServerHost`'s `log` and `noteDelivered`, and the lanes' host's stamps and `onLifecycleUnregistering`, moved into
-`ogsimnet::SimNetServerHostCore`, and the `checkf` of `receptionTick` became its `OG_CHECK`. What stays here is the engine half:
-`UESimNetServerHost` (the game-thread round trip and its warnings), `UESimNetServerHostPort` (the old lanes' host's body, the
-runner's `rttMs` from `FRunnerRttTable` and its game-thread publish, now also the port's `logHost` and the session hooks, each one
-line to Unreal), and `UESimNetLanesServerHost`, the core over the port. The port sits in a private base,
-`UESimNetServerHostParts`, so it is built before the core stores its address, and is destroyed after it. The runtime names the
-host as its link's `ServerHost` (`UESimNetLanes::ServerHost`) and builds it from the driver, the endpoint and itself, unchanged. The server host is the world
-session's, not the link's; og-session-runtime task 31 moved it into the runtime's composition, which holds it on an authority.
+**The server host's engine-free half is og-sim-net's since og-session-runtime task 31a** (`SimNetServerHost-rationale.md`): the
+base host's `log` and `noteDelivered`, and the lanes' host's stamps and `onLifecycleUnregistering`, moved into
+`ogsimnet::SimNetServerHostCore`, and the `checkf` of `receptionTick` became its `OG_CHECK`. **Its round trip is og-sim-net's since
+og-session-runtime task 39** (§2): the base host, the runner's RTT table and its game-thread publish went. What stays here is
+`UESimNetServerHostPort` (the clock, `logHost` and the session hooks, each one line to Unreal) and `UESimNetLanesServerHost`, the
+core over the port and the lanes' `SimLaneEndpoint`. The port sits in a private base, `UESimNetServerHostParts`, so it is built
+before the core stores its address, and is destroyed after it. The runtime names the host as its link's `ServerHost`
+(`UESimNetLanes::ServerHost`) and builds it from the endpoint and itself (until task 39 from the driver too, for the engine read).
+The server host is the world session's, not the link's; og-session-runtime task 31 moved it into the runtime's composition, which
+holds it on an authority. A null session is a test's case (§1): the hosts concept test builds one to read `rttMs` and route lines.
