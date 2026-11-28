@@ -24,79 +24,49 @@ namespace
 		TEXT("frames (Chaos block mode 0). 1 = it also waits for this frame's step task."),
 		ECVF_Default);
 
-	FAutoConsoleTaskPriority CPrio_OGSimStepTask(
-		TEXT("TaskGraph.TaskPriorities.OGSimStepTask"),
-		TEXT("Task and thread priority for the client's Jolt step task (mirrors TaskGraph.TaskPriorities.PhysicsTickTask)"),
-		ENamedThreads::HighThreadPriority,
-		ENamedThreads::NormalTaskPriority,
-		ENamedThreads::HighTaskPriority);
-
 	TAutoConsoleVariable<int32> CVarSimRunInline(
 		TEXT("og.Sim.RunInline"),
 		0,
-		TEXT("Jolt configuration only. 1 = a client steps inline on the game thread instead of on a worker task. ")
-		TEXT("Read once, at the simulation manager's BeginPlay. The authority always steps inline."),
+		TEXT("Retired: a client always steps on a worker task. Any value but 0 is refused at the simulation manager's ")
+		TEXT("BeginPlay ([SimHost.Refused] knob=og.Sim.RunInline): that world starts no simulation session, and a dedicated ")
+		TEXT("server exits with code 3."),
 		ECVF_Default);
-}
 
-double SimulationEngineUImpl::nowSeconds() const
-{
-	return FPlatformTime::Seconds();
-}
+#if !UE_BUILD_SHIPPING
+	TAutoConsoleVariable<int32> CVarTestClientClockRatePpm(
+		TEXT("og.Sim.TestClientClockRatePpm"),
+		0,
+		TEXT("Test only (non-shipping): when not 0, the start-physics tick function hands the tick driver the frame's ")
+		TEXT("DeltaTime times (1 + this * 1e-6), an emulated clock-rate offset in parts per million. Read every frame. A ")
+		TEXT("free-running authority does not read the frame delta, so it reaches clients only."),
+		ECVF_Default);
 
-uint64_t SimulationEngineUImpl::frameNumber() const
-{
-	return GFrameCounter;
-}
-
-bool SimulationEngineUImpl::logEnabled(HostLogLevel level) const
-{
-	switch (level)
+	double testClientClockRateFrameDelta(double frameDeltaSeconds)
 	{
-	case HostLogLevel::Verbose:
-		return UE_LOG_ACTIVE(LogOGSimHost, Verbose);
-	case HostLogLevel::Log:
-		return UE_LOG_ACTIVE(LogOGSimHost, Log);
-	case HostLogLevel::Warning:
-		return UE_LOG_ACTIVE(LogOGSimHost, Warning);
+		const int32 ppm = CVarTestClientClockRatePpm.GetValueOnGameThread();
+		if (ppm == 0)
+			return frameDeltaSeconds;
+
+		static bool logged = false;
+		if (!logged)
+		{
+			logged = true;
+			UE_LOG(LogOGSimHost, Warning, TEXT("[SimHost.TestClockRate] ppm=%d"), ppm);
+		}
+		return frameDeltaSeconds * (1.0 + static_cast<double>(ppm) * 1e-6);
 	}
-	return false;
-}
-
-void SimulationEngineUImpl::log(HostLogLevel level, const char* line)
-{
-	switch (level)
-	{
-	case HostLogLevel::Verbose:
-		UE_LOG(LogOGSimHost, Verbose, TEXT("%hs"), line);
-		return;
-	case HostLogLevel::Log:
-		UE_LOG(LogOGSimHost, Log, TEXT("%hs"), line);
-		return;
-	case HostLogLevel::Warning:
-		UE_LOG(LogOGSimHost, Warning, TEXT("%hs"), line);
-		return;
-	}
-}
-
-ENamedThreads::Type SimulationEngineUImpl::stepTaskPriority()
-{
-	return CPrio_OGSimStepTask.Get();
-}
-
-void SimulationEngineUImpl::waitFor(const Handle& steps)
-{
-	checkf(steps.IsValid(),
-		TEXT("SimulationEngineUImpl::waitFor: the tick driver waits only for a step task it dispatched, so the event is ")
-		TEXT("valid. Was the frame host's IsValid filter before its waits."));
-	FTaskGraphInterface::Get().WaitUntilTaskCompletes(steps, ENamedThreads::GameThread_Local);
+#endif
 }
 
 void FSimulationStartStepsTickFunctionUImpl::ExecuteTick(float DeltaTime, ELevelTick TickType,
 	ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 {
 	check(startFrame != nullptr);
-	startFrame(target, static_cast<double>(DeltaTime));
+	double frameDeltaSeconds = static_cast<double>(DeltaTime);
+#if !UE_BUILD_SHIPPING
+	frameDeltaSeconds = testClientClockRateFrameDelta(frameDeltaSeconds);
+#endif
+	startFrame(target, frameDeltaSeconds);
 }
 
 FString FSimulationStartStepsTickFunctionUImpl::DiagnosticMessage()
@@ -131,9 +101,9 @@ int32 UETickDriverHost::requestedMaxCatchUpSteps()
 	return CVarSimMaxCatchUpSteps.GetValueOnGameThread();
 }
 
-bool UETickDriverHost::runInline()
+int32 UETickDriverHost::retiredRunInlineValue()
 {
-	return CVarSimRunInline.GetValueOnGameThread() != 0;
+	return CVarSimRunInline.GetValueOnGameThread();
 }
 
 void UETickDriverHost::registerTickFunctions(UObject& owner, ULevel& level, void* target,

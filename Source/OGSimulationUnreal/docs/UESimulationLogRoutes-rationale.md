@@ -1,12 +1,16 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 <!-- lint-external-ref: kOGGameLogRoutes -- retired name: the adapter table until task 19, renamed kOGAdapterLogRoutes (ruling Q4); it must not resolve -->
+<!-- lint-external-ref: Misc/Build.h -- Unreal Engine's Core header (USE_LOGGING_IN_SHIPPING, NO_LOGGING), outside every scan root -->
+<!-- lint-external-ref: Logging/LogMacros.h -- Unreal Engine's Core header (UE_LOG_ACTIVE under NO_LOGGING), outside every scan root -->
 # `UESimulationLogRoutes.h` and `.cpp` — rationale
 
 The Unreal side of og-simulation's log routes. `UESimulationLogRoutes.h` declares eight exported `LogOG*` categories,
-holds the adapter's route rows (`kOGAdapterLogRoutes`), concatenates them after og-simulation's own rows
-(`kSimulationLogRoutes`, og-simulation's `SimulationLogRoutes.h`) into one table, `kOGLogRoutes`, checks that table with
-five `static_assert`s, and defines the two things that read it: the router `RouteOGMessage`, and the macro
-`OG_LOG_ROUTED`. `UESimulationLogRoutes.cpp` defines the eight categories.
+holds the adapter's route rows (`kOGAdapterLogRoutes`), concatenates them after the engine-free rows
+(`ogsession::kComposedLogRoutes`, og-sim-session's `SessionLogRoutes.h`: og-simulation's, og-sim-net's and og-sim-session's
+blocks) into one table, `kOGLogRoutes`, checks that table with five `static_assert`s, and defines the things that read it:
+the router `RouteOGLine` with its two entry points `RouteOGMessage` and `RouteOGLevelLine`, the macro `OG_LOG_ROUTED`, the
+sink `UESessionLogSink`, the level check `ogLogWants` and the compile-time lookups. `UESimulationLogRoutes.cpp` defines the
+eight categories.
 
 The source holds the licence, a docs pointer and code; the `static_assert` messages are code. This file carries the why.
 It has no prohibition: `UESimulationLogRoutes-guards.md` has no live entry, because every ordering and level rule the
@@ -21,15 +25,19 @@ table has is a `static_assert` (§9).
 | name | what |
 |---|---|
 | `LogOGSim`, `LogOGSimTick`, `LogOGMgmt`, `LogOGNet`, `LogOG`, `LogOGRelayProbe`, `LogOGDivergenceProbe`, `LogOGResimProbe` | the eight routed categories, `OGSIMULATIONUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(…, Log, All)` in the header, `DEFINE_LOG_CATEGORY` in the `.cpp` (§3, §11) |
-| `OGLogRoute` | the seven routes a row can name, one per routed category except the fallback `LogOG` |
+| `OGLogRoute` | the eight routes a row can name: one per routed category of this header except the fallback `LogOG`, and `SimHost` (`LogOGSimHost`, declared in `OGSimulationUnreal.h`) |
 | `OGLogRouteEntry` | one row: a `TCHAR` prefix, an `OGLogRoute`, and `plainLevel` (§6) |
-| `kOGAdapterLogRoutes` | the adapter's 14 rows (§8) |
-| `ogLogRouteOf`, `ogLogVerbosityOf` | the two mappings from og-simulation's engine-free row fields to Unreal's (§8) |
-| `kOGSimulationLogRoutePrefixes` | og-simulation's `char` prefixes widened to `TCHAR` at compile time (§8) |
-| `kOGLogRoutes` | the concatenation, og-simulation's 25 rows first, then the adapter's 14 (§8) |
+| `kOGAdapterLogRoutes` | the adapter's 9 rows (§8) |
+| `ogLogRouteOf`, `ogLogVerbosityOf` | the two mappings from the engine-free row fields to Unreal's (§8) |
+| `kOGEngineFreeLogRoutePrefixes` | the engine-free rows' `char` prefixes widened to `TCHAR` at compile time (§8) |
+| `kOGLogRoutes` | the concatenation, the 47 engine-free rows first, then the adapter's 9 (§8) |
 | `ogLogRouteFor` | the first row whose prefix begins a line, at compile time (§7) |
 | `OG_LOG_ROUTED` | a direct log site that takes its level from its row (§7) |
-| `RouteOGMessage` | the router: one og-simulation log string to one category at one level (§2) |
+| `RouteOGLine`, `OGLevelToken` | the one router: a line to one category at one level, its level token printed or read (§2.2) |
+| `RouteOGMessage` | `RouteOGLine` with the token printed: one og-simulation log string to one category at one level (§2) |
+| `RouteOGLevelLine`, `UESessionLogSink` | `RouteOGLine` with the token read, not printed; the sink og-sim-session's knob intake writes to (§2.1) |
+| `ogLogWants` | whether a line of a route and level would be printed (§2.3) |
+| `ogLogRouteStartsWithNarrow`, `ogLevelLineBody`, `ogLogRouteForLevelLine`, `ogLogLevelOfLevelLine` | the same lookup on a `char` line at compile time: its row and its level (§2.1) |
 
 ## 2. The router — `RouteOGMessage`
 
@@ -51,8 +59,76 @@ closing bracket — so a future sub-tag needs no router edit and no new row.
 
 **`inline`, in the header, optimized.** The router is a plain `inline` function, so it is compiled in the module that
 calls it (a game module), from the header. It sits outside any `OGSIM_OPTIMIZE_OFF`/`ON` pair, so it compiles
-optimized, as it did before it moved here (§12). Its `EMIT_OG` helper macro is defined inside its body and `#undef`'d at
-its end, so it does not leak into the file that includes the header.
+optimized, as it did before it moved here (§12). Since og-session-runtime task 36 it is `RouteOGLine` with the token printed
+(§2.2); that function's `OG_EMIT_ROUTED_LINE` helper macro is defined inside its body and `#undef`'d at its end, so it does
+not leak into the file that includes the header.
+
+### 2.1 `RouteOGLevelLine`: the level token read, not printed (og-session-runtime task 23)
+
+og-sim-session's knob intake (`SessionKnobs.h`) writes each start-up line as one string through a `SessionLogSink`'s
+`logRouted`; a line that was a `Warning` `UE_LOG` carries a leading `[Warning]` token. Through `RouteOGMessage` the token would
+be printed, and the lines would no longer read as they did (`LogOGNet: Warning: [StateRotation] …`, which the gates' tag-set
+check compares byte for byte). `RouteOGLevelLine` walks the same table the same way (a `[Verbose]` or `[Warning]` token sets
+the level; the first row whose prefix the rest begins with picks the category; a remaining `Log` takes the row's
+`plainLevel`; no row means `LogOG`), and **prints the rest, without the token**. It decodes the line as UTF-8 (`UTF8_TO_TCHAR`),
+so an ini value with non-ASCII characters prints as it did. Since og-session-runtime task 36 it is `RouteOGLine` with the
+token read (§2.2). `RouteOGMessage`'s callers print the token, as before.
+
+**The `[Error]` token** (og-session-runtime task 28). og-sim-net's `SimNetLink` logs its disconnect request,
+`[SimNet.Host] role=client disconnect ...`, which was an `Error` `UE_LOG` to `LogOGNet` in the Unreal lanes, through its services'
+`logRouted`. So a level line may also begin with `[Error]` (seven characters): `RouteOGLevelLine` sets `Error` and prints the
+rest, the router's emit macro has an `Error` case, and the constexpr twins `ogLevelLineBody` and `ogLogLevelOfLevelLine` read it the same
+way. `RouteOGMessage` reads no `[Error]` token; no line it routes carries one. The automation test
+`OGBrawler.SimNet.DisconnectLine` (`UESimNetClockHeldLineTest.cpp`) compares the routed line with the old `UE_LOG` (text,
+category, level).
+
+`UESessionLogSink` is the stateless sink the Unreal session hands the knob functions (`logRouted` calls `RouteOGLevelLine`);
+the session `static_assert`s that it models og-sim-session's `SessionLogSink`. Since og-session-runtime task 24 the session's
+clock logs through the same router: `UESessionClockEngine` (in `UESimulationSession.h`) is its engine, `logRouted` calling
+`RouteOGLevelLine` and a `nowSeconds` of `FPlatformTime::Seconds()`, and a second `static_assert` there checks every clock
+format's category and level (`SessionClock-rationale.md` §8).
+
+`ogLogRouteForLevelLine` and `ogLogLevelOfLevelLine` are the same lookup on a `char` line, `constexpr`: the token compared
+and the tag matched ignoring ASCII case, as `FString::StartsWith` does for these prefixes. The Unreal session uses them in a
+`static_assert` over every knob format: each reaches `LogOGNet` at its old level (`UESimulationSession-rationale.md` §9.8).
+
+### 2.2 One router, the token printed or read (og-session-runtime task 36)
+
+`RouteOGMessage` and `RouteOGLevelLine` were two copies of one walk (task 23 kept the first unchanged; review_SR4_23 (b) lead
+item 1). Since task 36 each is a one-line call of `RouteOGLine(line, OGLevelToken)`, and the flag carries the three
+differences the two had:
+
+| | `OGLevelToken::Printed` (`RouteOGMessage`) | `OGLevelToken::Read` (`RouteOGLevelLine`) |
+|---|---|---|
+| the text | `FString(line)`: each byte widened as it is | `UTF8_TO_TCHAR(line)`: decoded |
+| the tokens read | `[Verbose]`, `[Warning]` | `[Verbose]`, `[Warning]`, `[Error]` |
+| what is printed | the whole line, the token included | the line after the token |
+
+The walk is the same for both: the first row whose prefix the body begins with picks the category, a remaining `Log` takes
+the row's `plainLevel`, no row means `LogOG`. So no line routes, decodes or prints differently; a line through
+`RouteOGMessage` that begins with `[Error]` still prints at `Log` with its whole text, as before.
+`OGBrawler.Session.LogRoutes.RouterFold` (`Source/OGBrawlerUnreal/UESessionLogRoutesTest.cpp`) sends every emitted line of
+the tree (og-sim-session's `tests/SessionLogRoutesEmittedTags.h`) and every route prefix, bare and behind each token, plus a
+non-ASCII line, through both entry points and through a transcription of the two old routers (`oldRouteOGMessage`,
+`oldRouteOGLevelLine`: OGSimulation `6a92dbb`'s `RouteOGMessage` and `RouteOGLevelLine`, statement for statement, over
+today's `kOGLogRoutes`), and compares text, category and level.
+
+### 2.3 `ogLogWants`: is a line's level on (og-session-runtime task 36)
+
+`ogLogWants(route, level)` returns whether a line of that route and level would be printed: the route's category (`LogOG`
+for no route) asked with `UE_LOG_ACTIVE` at that level. Its engine-free overload takes a `SimulationLogRoute` and a
+`HostLogLevel` and maps them with `ogLogRouteOf` and `ogLogVerbosityOf`. `SimulationEngineUImpl::wants`
+(`UESessionEngine.h`) and `UESessionLogSink::wants` call it, so the engine models og-sim-session's `SessionLogFilter`; the
+runtime asks it before it formats the per-step `[ReleaseBatch]` line (og-sim-session's `SessionLogRoutes-rationale.md` §5).
+`OGBrawler.Session.LogRoutes.Wants` checks its answers at three `LogOGNet` verbosities.
+
+**Shipping** (read from the engine's macros; no Shipping build was made). A target without logging has `NO_LOGGING` set
+(`USE_LOGGING_IN_SHIPPING` defaults to 0, `Misc/Build.h`), where `UE_LOG_ACTIVE` is the constant `(0)`
+(`Logging/LogMacros.h`); `ogLogWants` and both `wants` are inline, so the format behind the check is dead code there. The
+brawler's dedicated server keeps logging in Shipping (`bUseLoggingInShipping`, `Source/OGBrawlerUnrealServer.Target.cs`), and
+`[ReleaseBatch]` is an authority line, so there the check is a run-time read of `LogOGNet`'s verbosity, `Log` by default,
+and the line is skipped. Before task 36 the line was formatted and turned into an `FString` on every authority step in
+both builds, and `UE_LOG` dropped it after.
 
 ## 3. The categories
 
@@ -61,7 +137,7 @@ Seven categories take routed lines and one, `LogOG`, takes the rest.
 | category | what lands there |
 |---|---|
 | `LogOGSim` | rare simulation lifecycle: `[TimeResync.`, `[Resim.` (but not `[Resim.Input]`), `[ResimCheck.Divergence]`, `[ResimCheck.PrepareRestore]` |
-| `LogOGSimTick` | per-tick simulation lines: `[Resim.Input]`, `[ResimCheck.Check]`, `[ResimCheck.IsSimilar]`, `[ResimCheck.TriggerRewind]`, `[AuthoritySimulation]`, `[ClientPrediction]`, `[PredictionSimulation]`, `[PostPrediction]`, `[CollectInput]` |
+| `LogOGSimTick` | per-tick simulation lines: `[Resim.Input]`, `[ResimCheck.Check]`, `[ResimCheck.IsSimilar]`, `[AuthoritySimulation]`, `[ClientPrediction]`, `[PredictionSimulation]`, `[PostPrediction]`, `[CollectInput]` |
 | `LogOGMgmt` | manager and simulatable lifecycle: `SimulationManager:`, `tryRegister:`, `NewFramework:` |
 | `LogOGNet` | the replication channel and the reception coordinator: every `OGLogRoute::Net` row (§6) |
 | `LogOGRelayProbe`, `LogOGResimProbe`, `LogOGDivergenceProbe` | the three probe families (below; members in §5) |
@@ -181,7 +257,6 @@ task 80 every row behaved as `Log`.
 | `[ResimCheck.PrepareRestore]` | `LogOGSim` | – / ≤ 2.8 | `Log` |
 | `[ResimCheck.Check]` | `LogOGSimTick` | – / 142–172 | `Verbose` |
 | `[ResimCheck.IsSimilar]` | `LogOGSimTick` | – / 57–59 | `Verbose` |
-| `[ResimCheck.TriggerRewind]` | `LogOGSimTick` | Chaos only: one per physics step | `Verbose` |
 | `[AuthoritySimulation]` | `LogOGSimTick` | 60 / – | `Verbose` |
 | `[ClientPrediction]` | `LogOGSimTick` | – / 57–59 | `Verbose` |
 | `[PredictionSimulation]` | `LogOGSimTick` | – / 57–59 | `Verbose` |
@@ -198,11 +273,12 @@ task 80 every row behaved as `Log`.
 | `[InjectCorrectionState]` | `LogOGNet` | – / 57–59 | `Verbose` |
 | `[InjectCorrectionInput]` | `LogOGNet` | no emitter | `Log` |
 | `[DrainOutOfOrder]` | `LogOGNet` | no emitter | `Log` |
-| `[InputGap]`, `[InputDrop]`, `[DelayShift]`, `[InputStats]`, `[InputDomain]` | `LogOGNet` | token (`[Warning]`) | `Log` |
+| `[InputGap]`, `[InputDrop]`, `[DelayShift]`, `[InputStats]`, `[InputArrival.Window]`, `[InputDomain]` | `LogOGNet` | token (`[Warning]`) | `Log` |
 | `[Park]` | `LogOGNet` | 116 / – | `Verbose` |
 | `[Release]` | `LogOGNet` | 116 / – | `Verbose` |
 | `[ReleaseBatch]` | `LogOGNet` | 60 / – | `Verbose` |
 | `[RelaySkip]` | `LogOGNet` | token | `Log` |
+| `[RelayFlush]` | `LogOGNet` | token (`[Warning]`); no emitter is bound to this route yet (og-input-latency P2-5) | `Log` |
 | `[RelayProbe` | `LogOGRelayProbe` | token | `Log` |
 | `[DivergenceProbe` | `LogOGDivergenceProbe` | token | `Log` |
 | `SimulationManager:`, `tryRegister:`, `NewFramework:` | `LogOGMgmt` | ≤ 0.04 | `Log` |
@@ -213,8 +289,10 @@ Notes on the rows:
   callback (og-simulation's `SimulationNetSync.h`): the plain line once per input, the `DISCARD` line for the rare
   too-far-future anomaly, with no token. The more specific row keeps the anomaly at `Log`. The reachability
   `static_assert` keeps it ahead: below `[ReceiveLocalInput]` it could never be taken.
-* **`[ReleaseBatch]` is a row although `RouteOGMessage` never sees it.** A game logs it directly, with `OG_LOG_ROUTED`,
-  and its row exists so that site reads its level from the table.
+* **`[ReleaseBatch]` is og-sim-session's row.** Until og-session-runtime task 26 a game logged it directly, with
+  `OG_LOG_ROUTED`, and the row existed so that site read its level from the table; since then og-sim-session's
+  `SessionNetHooks.h` formats it and hands it to the engine's `logRouted`, and since task 36 only when `wants(Net, Verbose)`
+  is true (§2.3).
 * **`[Resim.Input]` and the token rows.** Their `plainLevel` has no effect today. `[Resim.Input]` is `Verbose` because it
   is a per-replayed-tick line; the token rows are `Log` so a future token-less line there is not hidden by accident.
 * **Four rows have no emitter in the tree:** `[SendRemoteInputToClients]` (its write is retired in og-simulation's
@@ -241,29 +319,75 @@ A direct site whose tag is shared by lines of different rates (a rare line and p
 end of the text, where no prefix row can reach) stays a `UE_LOG` at a fixed level; so does a tag with no row, which needs
 none.
 
-## 8. Two blocks: og-simulation's rows first, then the adapter's (og-tickdriver task 12)
+## 8. The engine-free block first, then the adapter's (og-tickdriver task 12; og-session-runtime task 36)
+
+**Since og-session-runtime task 36.** The first block is `ogsession::kComposedLogRoutes`, og-sim-session's composition
+(`SessionLogRoutes.h`) of og-simulation's `kSimulationLogRoutes` (28 rows), og-sim-net's `kSimNetLogRoutes` (4) and
+og-sim-session's `kSessionLogRoutes` (15): 47 engine-free rows, each a `char` prefix, a `SimulationLogRoute` and a
+`HostLogLevel`. The second is this module's `kOGAdapterLogRoutes`, 9 rows: `[ResimProbe`, `[ServerReceive]` and `[RelayProbe`
+(og-simulation emits them too, and the placement's tiebreak keeps them here; the two probe families' categories are this
+module's, §3), `[ClientPrediction]` (the game emits it), `NewFramework:` (this module's `UESimulatableOwnerBinding.h` and
+`UESimulationSession.h`), and the four rows nothing emits (§6). Each module now declares the rows for the lines it hands to
+a log sink; the placement rule and its tiebreak are og-sim-session's `SessionLogRoutes-rationale.md` §2.
+
+Task 36's step (a) moved og-simulation's `[SimNet.` and `[Roster.` rows to og-sim-net and the thirteen rows tasks 23–31 had
+added here (`[SimHost.` to `[Dilation.Authority]`) to og-sim-session, unchanged and in their order; step (b) made them
+engine-free rows, moved `[ReceiveCorrectionState]` and `[ClockSource.Held]` to og-sim-net and `[ReleaseBatch]`,
+`SimulationManager:` and `tryRegister:` to og-sim-session. No row's prefix, route or level changed; the rows' indexes did
+(og-sim-session's `tests/SessionLogRoutesTest.cpp` and `OGBrawler.Session.LogRoutes.Pin` pin the new order against the old
+table, and every prefix and emitted line against its old row).
+
+*The rest of this section, to "Why the concatenation changes no route", is the record of the two blocks before task 36.*
 
 **`kOGLogRoutes` is the concatenation of two tables.** The rows whose tags only og-simulation emits are engine-free
 data in og-simulation: `kSimulationLogRoutes` in its `SimulationLogRoutes.h`, with plain `char` prefixes, a
 `SimulationLogRoute` and a `HostLogLevel`. The rest are here, in `kOGAdapterLogRoutes`. `ogConcatenateLogRoutes` builds
-`kOGLogRoutes` at compile time: og-simulation's 25 rows first, then the adapter's 14, each block in the order the
-single table had before task 12. `RouteOGMessage`, `OG_LOG_ROUTED` and `ogLogRouteFor` read `kOGLogRoutes`.
+`kOGLogRoutes` at compile time: og-simulation's 30 rows first (25 until og-input-latency task 5b added
+`[InputArrival.Window]`, 26 until og-input-latency P3-1 added `[InputArrival.BackDate]`, 27 until og-input-latency
+P2-5 added `[RelayFlush]`, 28 until og-input-latency P5-4 added `[SimNet.` and `[Roster.`), then the adapter's 25 (24 until og-session-runtime task 28 added `[ClockSource.Held]`, 20 until og-session-runtime task 24 added the session clock's four, 14 until task 7b deleted
+`[ResimCheck.TriggerRewind]`, 13 until task 23 added the knob intake's seven), each block in the order the single table had
+before task 12, the seven and then the four appended at its end. `RouteOGMessage`, `OG_LOG_ROUTED` and `ogLogRouteFor` read
+`kOGLogRoutes`.
 
 **Which rows are og-simulation's** was decided by the emitters (og-tickdriver task 12): a row went to og-simulation when
 og-simulation alone emits its tag; its emitting files are listed in og-simulation's `SimulationLogRoutes-rationale.md`
-§5. The adapter's 14 rows are those a game's host also emits or alone emits (`[ResimProbe`, `[ServerReceive]` and
-`[RelayProbe` are emitted by both), plus the four with no emitter. All 14 moved here from the first game's module
+§5. `[SimNet.` and `[Roster.` are the exception, kept by decision (og-input-latency P5-7, 2026-11-18): og-sim-net, built on
+og-simulation, emits both families, and this module emits both too. They sit in og-simulation's block so every og-sim-net host
+has them (that file's §5). This module's emitters:
+- `UESimulationSession.h` prints one `[Warning][SimNet.Host]` start-up line per process through `RouteOGMessage`;
+- `UESimulationSession.h` (a refused driver, a refused `SimTrafficImmediate`) and `UESimNetLanes.h` (a client's disconnect
+  after a refused roster) print `[SimNet.Host]` lines directly with `UE_LOG(LogOGNet, Error, ...)`, past the table;
+- `UESimulationSession.h` emits `[Roster.BindMismatch]` on a client, through `ueSimNetHost::routeLine` (`UESimNetHost.h`).
+  Both of that header's hosts log every og-sim-net line through `routeLine` too. `routeLine` puts `[Warning]` in front of a token-less
+  `[Roster.` line, so the line prints at `Warning` and the game's shipped `LogOGNet=Warning` does not filter it out.
+
+The adapter's first 13 rows are those a game's host also emits or alone emits (`[ResimProbe`, `[ServerReceive]` and
+`[RelayProbe` are emitted by both), plus the four with no emitter. The last seven (og-session-runtime task 23) are the knob
+intake's tags, `[RelayDelayFloor]`, `[StateRotation]`, `[ResimGate]`, `[LatencyKnobs]`, `[ClockRecentre.Config]`,
+`[ClockSource.Config]` and `[Dilation.Config]`, each to `LogOGNet` at plain level `Log`: og-sim-session emits them through
+`RouteOGLevelLine`, which this module's session installs (§2.1). Until og-session-runtime task 24 the session also logged its
+other `[RelayDelayFloor]` lines directly with `UE_LOG(LogOGNet, …)`, past the table; since task 24 og-sim-session's session
+clock emits them through `RouteOGLevelLine` too, and the last four rows are its other tags, `[ConnectionTier]`,
+`[ClockSource.Window]`, `[Dilation.Window]` and `[Dilation.Authority]`, each to `LogOGNet` at plain level `Log` (a `Warning`
+line carries its token; `SessionClock-rationale.md` §8). No line `RouteOGMessage` routes begins with any of the eleven (grep of
+og-simulation, og-sim-net and this module at task 24: only the clock emits the four; og-simulation's `[Dilation.Window]`
+format is the window's, which only the clock logs), so the rows change no existing route. The adapter's last row,
+`[ClockSource.Held]` (og-session-runtime task 28), is og-sim-net's held clock-sample line, which `SimNetLink` routes as a level
+line with a `[Warning]` token so it keeps `LogOGNet` at `Warning` (`SimNetLink-rationale.md` §9); until then the Unreal lanes'
+client host logged it with a `UE_LOG` past the table, and no line `RouteOGMessage` routes begins with it; each closes with its `]`, so no
+wider family is caught. The 14 rows of task 19's day moved here from the first game's module
 unchanged in task 19 (Q5: the router stays one plain function and no game block exists); the table was renamed from
 `kOGGameLogRoutes` (Q4).
 
-**Why the concatenation changes no route.** A line can match two rows only if one row's prefix begins with the other's,
+**Why the concatenation changes no route.** (Still true of today's two blocks, and of og-sim-session's three.) A line can
+match two rows only if one row's prefix begins with the other's,
 because both begin the line. So if no prefix in one block begins with a prefix in the other, a line matches rows of one
 block at most, and its first match is the same whichever block comes first; within each block the order is the old one.
 `ogLogRouteBlocksAreDisjoint` checks that at compile time (§9). A later row added to either block is held to it.
 
 The two mappings live in one place each: `ogLogRouteOf` (`SimulationLogRoute` to `OGLogRoute`) and `ogLogVerbosityOf`
-(`HostLogLevel` to `ELogVerbosity`). Each og-simulation prefix is widened to `TCHAR` one `char` at a time
-(`kOGSimulationLogRoutePrefixes`, each entry sized by `ogLongestSimulationLogRoutePrefix`), which is exact for ASCII only.
+(`HostLogLevel` to `ELogVerbosity`). Each engine-free prefix is widened to `TCHAR` one `char` at a time
+(`kOGEngineFreeLogRoutePrefixes`, each entry sized by `ogLongestEngineFreeLogRoutePrefix`), which is exact for ASCII only.
 
 ## 9. What the compiler checks
 
@@ -271,14 +395,16 @@ Five `static_assert`s at namespace scope, and one inside every `OG_LOG_ROUTED` e
 
 | check | fails when |
 |---|---|
-| `ogSimulationLogRoutePrefixesArePrintableAscii` | an og-simulation prefix holds a character outside printable ASCII (the widening is exact for ASCII only) |
-| `ogLogRoutesAreAllMapped` | an og-simulation row's `SimulationLogRoute` has no `OGLogRoute` in `ogLogRouteOf`, so the router would drop its lines |
-| `ogLogRouteBlocksAreDisjoint` | a prefix in one block and a prefix in the other begin with one another, compared ignoring case |
+| `ogEngineFreeLogRoutePrefixesArePrintableAscii` | an engine-free prefix holds a character outside printable ASCII (the widening is exact for ASCII only) |
+| `ogLogRoutesAreAllMapped` | an engine-free row's `SimulationLogRoute` has no `OGLogRoute` in `ogLogRouteOf`, so the router would drop its lines |
+| `ogLogRouteBlocksAreDisjoint` | a prefix in the engine-free block and a prefix in the adapter's begin with one another, compared ignoring case |
 | `ogLogRoutesAreAllReachable` | a prefix begins with an earlier prefix, so the later row can never be taken. Its message says it replaced the ORDER IS LOAD-BEARING fence |
 | `ogLogRoutePlainLevelsAreLogOrVerbose` | a row's `plainLevel` is neither `Log` nor `Verbose` |
 | `OG_LOG_ROUTED`'s row lookup | the format's leading tag has no row |
 
-og-simulation asserts its own block's reachability and levels the same way (`allReachable`, `plainLevelsAreLogOrVerbose`).
+og-simulation and og-sim-net assert their own blocks' reachability and levels the same way (`allReachable`,
+`plainLevelsAreLogOrVerbose`), and og-sim-session asserts that its three blocks are disjoint and that the composition is
+reachable (`SessionLogRoutes-rationale.md` §3).
 
 **Seen failing.** Each arm was seen to fail when it was written (og-simulationscheduler-withjolt task 80, og-tickdriver
 task 12), and the reachability arm again for `[Resim.` moved above `[Resim.Input]` and widened to `[Resim`. Task 19
@@ -344,7 +470,8 @@ rule (the masks get one copy per DLL) is unaffected.
 ## 12. Provenance
 
 * **og-tickdriver task 12** split the single table into og-simulation's block and the game module's block, and added
-  `ogLogRouteBlocksAreDisjoint`, `ogLogRoutesAreAllMapped` and `ogSimulationLogRoutePrefixesArePrintableAscii`.
+  `ogLogRouteBlocksAreDisjoint`, `ogLogRoutesAreAllMapped` and the printable-ASCII check (since og-session-runtime task 36
+  `ogEngineFreeLogRoutePrefixesArePrintableAscii`, over the engine-free composition).
 * **og-simulationscheduler-withjolt task 80** added the `plainLevel` column, its assertion and `OG_LOG_ROUTED`.
 * **og-ue-simulationcomponentandmanagersplit task 19** moved the eight categories, the table and its checks,
   `ogLogRouteFor`, `OG_LOG_ROUTED` and `RouteOGMessage` here from the first game's module (BUSL-1.1), re-licensed MPL-2.0
@@ -354,3 +481,8 @@ rule (the masks get one copy per DLL) is unaffected.
   there, is an `inline` function in this header, still outside any optimize pair. Measured: no tag changed its category or
   level on any process of that task's harness sessions, and in the monolithic Game build the router's optimized code is
   the old code instruction for instruction (its name aside).
+* **og-session-runtime task 7b** deleted the `[ResimCheck.TriggerRewind]` row, so the adapter has 13 rows. Its only
+  emitter was the brawler's former Chaos host, which og-session-runtime task 3 deleted.
+* **og-session-runtime task 36** declared the rows per module (§8): the first block is og-sim-session's engine-free
+  composition, the adapter keeps 9 rows; the engine-free helpers and the printable-ASCII check were renamed for it
+  (`ogEngineFreeLogRoute…`). It folded the two routers into `RouteOGLine` (§2.2) and added `ogLogWants` (§2.3).

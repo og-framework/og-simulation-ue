@@ -3,7 +3,7 @@
 // docs/UEFMutexLockableUImpl-rationale.md · docs/UEFMutexLockableUImpl-guards.md
 
 #include "Async/Mutex.h"
-#include "OGSimulation/TickDriverThreadContext.h"
+#include "OGTickDriver/TickDriverThreadContext.h"
 
 class UEFMutexLockableUImpl
 {

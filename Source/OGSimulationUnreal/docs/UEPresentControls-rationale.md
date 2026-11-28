@@ -30,8 +30,8 @@ reading of them is `TickDriverBackendUImpl-rationale.md` §5 and §7.
 
 ## 2. When it is read
 
-Every frame, on the game thread: the brawler's `TickDriverBackendUImpl::beforePresent_GameThread` calls it as an
-argument of `present_GameThread`. Each variable is read with `GetValueOnGameThread`, in the field order of the table,
+Every frame, on the game thread: `UESessionPresentation::present` (since og-session-runtime task 31; the backend's
+present before) reads it and hands the runtime's present its controls. Each variable is read with `GetValueOnGameThread`, in the field order of the table,
 so a console change applies to the next frame. Until og-tickdriver task 15c the same body was the brawler's
 renderPresentControls, in TickDriverBackendUImpl.cpp (a historical name: the host's `.cpp`, deleted by og-tickdriver task 15e), with the same reads in the same order and on the same thread.
 
@@ -76,10 +76,11 @@ trace texts name no Chaos variable.
 
 ## 6. Both physics configurations
 
-The module is compiled in both configurations and the files have no `#if` arm, so the six variables register at module
-load in both. In the Chaos configuration nothing calls `fromConsoleVariables`, and the variables are never read. Until
-og-tickdriver task 15c they were in a whole-file Jolt arm of the game module, and the Chaos configuration did not have
-them (`UETickDriverHost-rationale.md` §4 says the same of the frame's four).
+The files have no `#if` arm, so the six variables register at module load. Until og-session-runtime tasks 3–6 removed the
+former Chaos configuration, the module was compiled in both configurations, and in the Chaos one nothing called
+`fromConsoleVariables` and the variables were never read; Jolt is the only configuration since, and its tick-driver host
+calls it on every present. Until og-tickdriver task 15c they were in a whole-file Jolt arm of the game module, and the
+Chaos configuration did not have them (`UETickDriverHost-rationale.md` §4 says the same of the frame's four).
 
 ## 7. Module placement
 

@@ -38,44 +38,16 @@ retired entries named were re-verified by og-tickdriver task 10 at their success
 
 ---
 
-## G-01 — `EndPlay` waits for every outstanding step task before any teardown
-
-*Was `OGBrawlerSimulationManager-guards.md` G-80; moved here by og-simulationscheduler-withjolt task 83, when the Jolt host left the UImpl. Only its site and its cross-references changed.*
-
-**Site:** `m_tickBackend.stop();` in `onEndPlayBegin`, after the frame host's tick functions are unregistered. *Moved
-by og-tickdriver task 15d (2026-10-18): the site was `m_tickDriver->stop();` inside `if (m_tickDriver.has_value())`;
-the tick driver is og-simulation's `SimulationTickBackend`'s member since then, and its `stop()` makes the same call
-under the same condition. The prohibition and its id are unchanged.* The session's `endPlay` calls `onEndPlayBegin` as its first
-statement (`UESimulationSession::endPlay`, which the brawler's actor calls from its `EndPlay` since
-og-ue-simulationcomponentandmanagersplit task 27a; the actor's `EndPlay` made the call before). *Reworded by og-tickdriver task 8 (2026-10-16): the wait was the frame host's `waitForOutstandingSteps`
-and is now the tick driver's `stop()`, which clears the driver's running flag and then waits for the pending and
-the blocking step task. The prohibition is unchanged.*
-
-**The prohibition** (og-simulationscheduler-withjolt task 54, design §9.1). ⛔ Do not move any
-`EndPlay` statement above this wait, and do not drop it. The order is: unregister the two tick
-functions (so no new step is dispatched), wait for the step task dispatched in this and earlier frames,
-then everything else (`UESimulationSession-guards.md` G-21's resets, the listener unregistration, the post-tick-flush unbind).
-The "do not move any statement above" half is typed in `UESimulationSession::endPlay`, above its
-`m_physicsBackend.onEndPlayBegin();`, and is guarded there: `UESimulationSession-guards.md` G-20 (the brawler's
-`OGBrawlerSimulationManager-guards.md` G-85 and G-64 until og-ue-simulationcomponentandmanagersplit task 27a). This entry's tag
-guards the wait itself (dropping it, or moving a statement above it inside `onEndPlayBegin`).
-
-**The consequence.** On a worker client the frame's step task runs on another thread through the rest
-of the frame. A teardown above the wait resets the coordinator or the tier cache, or unbinds what the
-step reads, while the step runs: a use-after-reset on a worker thread. The wait itself never deadlocks:
-it checks that this thread does not hold the world mutex (`SimulationTickDriver-guards.md` G-05, the successor of the
-retired frame-host G-05).
-
----
 
 ## G-06 — the world gravity is built with `simFrame::withHeight`, never as `kUp * g`
 
 *Added by og-sim-metres-yup task 7 (2026-10-25), when the literal `glm::vec3(0.f, 0.f, g)` was routed through the
 frame.*
 
-**Site:** `config.gravity = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(m_owner));` in `buildWorld`.
+**Site:** `config.gravity = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(m_owner.m_staticData));` in
+`buildWorld` (the hook took the session until og-session-runtime task 26, and takes its static data since).
 
-**The prohibition.** ⛔ Do not write the gravity as `simFrame::kUp * GameBindingT::gravity(m_owner)`, as `-kUp * …`,
+**The prohibition.** ⛔ Do not write the gravity as `simFrame::kUp * GameBindingT::gravity(m_owner.m_staticData)`, as `-kUp * …`,
 or through any other product of an axis and the scalar.
 
 **The consequence.** The game's gravity is negative (the brawler's movement gravity, which the session checks against the world's `GetGravityZ()`, Unreal's default −980 cm/s²). An axis times
@@ -146,12 +118,18 @@ written by og-tickdriver task 9 with the code.
 replicated slot; tag at the call) and G-02 (a wait returns no slot; tag at the wait's return), written by
 og-tickdriver task 5 with the code.
 
-**The caller's half has no tag, by decision.** The role is now computed in the game binding's `callWithSlotRequest`
-(the brawler's `BrawlerTickDriverGameUImpl`, `session.GetNetMode() != NM_Client`; in this class, on the owner,
-until og-tickdriver task 15e), outside the slot table. A client that passes `true` there makes the table
+**The caller's half has no tag, by decision.** The role is computed in this class's `callWithSlotRequest`
+(`m_owner.owner().GetNetMode() != NM_Client`, on the owner: until og-tickdriver task 15e and again since og-session-runtime
+task 26; in the brawler's binding in between) and passed to the game binding's `callWithSlotRequest`, outside the slot table. A client that passes `true` there makes the table
 assign a slot as the authority and then publish it through `SetAuthoritativePhysicsSlot`, whose `checkf` that it runs
 on the authority fires on the first client acquire in a development build: a run-time check, so no tag (as this
 entry's own "what breaks" said of the role line). The reverse edit, the authority passing `false`, makes the
 authority wait for a replicated slot that only it could write, so no character ever binds and every join logs
 `[SimHost.Slot] wait=WaitForReplication`. A pick typed in a caller that does not wait on the empty answer
 (`registerVizVolume`, `createBodies_GameThread`) had no check before task 10 and has none now.
+
+### G-01 — RETIRED by og-session-runtime task 31 (2026-11-26): moved with its site to og-sim-session
+
+**Was:** *"`EndPlay` waits for every outstanding step task before any teardown"*. Its tag sat at: its site
+
+**Why it retired.** Task 31 moved the session's composition, start and stop out of the Unreal adapter (and the tick backend out of its Unreal wrapper) into og-sim-session's engine-free `SessionRuntime.h`, or the engine's parts into `UESessionEngine.h`, the site with it. The entry moved with its text. **Successor:** `SessionRuntime-guards.md` G-05.

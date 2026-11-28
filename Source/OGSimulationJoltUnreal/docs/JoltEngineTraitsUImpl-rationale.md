@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- lint-external-ref: PhysicsBackendUImpl.h -- deleted by og-session-runtime task 31 (the brawler's engine seam header: its binding concept and the EngineTraits and EngineBinding aliases moved to the top of BrawlerSessionTraitsUImpl.h, its rationale with it); kept in the history -->
 # `JoltEngineTraitsUImpl` — rationale
 
 Companion to `Plugins/OGSimulation/Source/OGSimulationJoltUnreal/JoltEngineTraitsUImpl.h` and `.cpp` (og-tickdriver task 15a; moved to the
@@ -12,7 +13,7 @@ OGSimulationJoltUnreal module by og-tickdriver task 15e). Its guards are `JoltEn
 The engine traits of the Jolt engine: everything an Unreal game needs to know about Jolt that does not depend on the
 game. It models og-simulation's `PhysicsEngineTraits` (`PhysicsEngineTraits-rationale.md` §2 in og-simulation's docs,
 since og-tickdriver task 15f), and a game's seam selects it as its
-engine traits in its Jolt configuration (the brawler's is `PhysicsBackendUImpl.h`). Nothing in it names a game type:
+engine traits in its Jolt configuration (the brawler's is `BrawlerSessionTraitsUImpl.h`, since og-session-runtime task 31). Nothing in it names a game type:
 a game's own Jolt glue is its binding's (og-simulation's `PhysicsEngineTraits-rationale.md` §3).
 
 | member | what it is | where it was before og-tickdriver task 15a |
@@ -22,13 +23,13 @@ a game's own Jolt glue is its binding's (og-simulation's `PhysicsEngineTraits-ra
 | `kName` | `"jolt"` | kBackendName, `PhysicsBackendUImpl.h` |
 | `computeDeterminismFingerprint` | acquires the Jolt runtime with the caller's logger, takes og-simulation-jolt's `determinismFingerprint`, releases the runtime | `PhysicsBackendUImpl.h`, the same statements |
 | `logEngineMessage` | the Jolt log sink (§2) | logJoltToSimHost, in JoltBackendUImpl.cpp (the historical name of the host's `.cpp`, deleted by og-tickdriver task 15e) |
-| `kHasWorldHost`, `WorldHost` | `true`, and the world-host template (§4) | the alias JoltTickWorldHostUImpl in JoltBackendUImpl.h (historical names) named the template directly |
+| `WorldHost` | the world-host template (§4); until og-session-runtime task 6 also a world-host flag, `true` (og-simulation's concept requires the template of every engine since then) | the alias JoltTickWorldHostUImpl in JoltBackendUImpl.h (historical names) named the template directly |
 | `Statics`, `splitStatics` | og-simulation-jolt's `JoltTickStatics`, and a forward of its `joltTickWorldHost::splitStatics` (§5) | new in og-tickdriver task 15e: the host's `buildWorld` called the function directly |
 
 ## §2 The log sink
 
 `logEngineMessage` is the `JoltRuntime::LogFn` the tick-driver host puts in the world host's configuration
-(`config.log`, `TickDriverBackendUImpl::buildWorld`). It writes one `LogOGSimHost` line per message: at `Warning`
+(`config.log`, `TickDriverBackendUImpl::worldConfig`). It writes one `LogOGSimHost` line per message: at `Warning`
 when the message starts with `[Warning]`, otherwise at `Log`, with the text unchanged. The body is the old
 logJoltToSimHost, statement for statement.
 
@@ -48,7 +49,8 @@ configuration only. This module cannot see that switch (a game's define), so tas
 into the game's Jolt binding (lead ruling L4: no console variable newly registers in the Chaos configuration). Its
 name, default, help text, flags and read are unchanged; the host reads it through the binding
 (`TickDriverBackendUImpl-rationale.md` §9 and §12). Task 15e compared the console-variable dumps of both
-configurations before and after the move.
+configurations before and after the move. og-session-runtime task 3 deleted the brawler's backend switch with the former
+Chaos configuration, so the binding is compiled in every build of the game since.
 
 ## §4 The world-host template
 

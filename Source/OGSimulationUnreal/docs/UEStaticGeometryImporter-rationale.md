@@ -17,15 +17,15 @@ module. It names no game category and no physics backend. Its output type is og-
 (`StaticGeometry.h`), which it uses read-only.
 
 **Callers today:** the console command `og.sim.ImportStaticGeometry` in the same `.cpp` (§9), and the
-Jolt tick-driver host's world build (`TickDriverBackendUImpl::buildWorld`, `TickDriverBackendUImpl-rationale.md`), which
-imports the level with the game binding's category table and logs the report on every peer.
+session's static import (`ueSessionEngine::importStatics`, `UESessionEngine-rationale.md`, since og-session-runtime task 31;
+the Jolt tick-driver host's world build before), which imports the level with the game binding's category table and logs the report on every peer.
 
 ## 2. The category table is an input
 
 `CollisionCategories` bits are consumer-local ids, not engine channels (`QueryGeometry.h`). This
 module cannot know a game's ids, so the importer takes the table as `UEStaticCategoryChannel`
-pairs, one category to one `ECollisionChannel`, in the same shape as the table the brawler hands
-the Chaos query adapter (`BrawlerChaosBindingUImpl.cpp` :: `categoryChannels`).
+pairs, one category to one `ECollisionChannel`: the brawler's is `BrawlerJoltBindingUImpl::categoryChannels`, in the
+same shape as the table it handed the former Chaos query adapter (removed by og-session-runtime tasks 3–4).
 
 `addMapping` rejects (with an Error line) a category of 32 or more, a channel outside the enum, and
 a pair that repeats a category or a channel already mapped. A one-to-one table is what makes the

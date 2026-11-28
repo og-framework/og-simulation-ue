@@ -7,6 +7,8 @@ public class OGSimulation : ModuleRules
 	public OGSimulation(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		FPSemantics = FPSemanticsMode.Precise;
+		PrivatePCHHeaderFile = EngineDirectory + "/Source/Runtime/Core/Public/CoreSharedPCH.h";
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "glm" });
 

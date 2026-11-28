@@ -7,6 +7,8 @@ public class OGSimulationJoltUnreal : ModuleRules
 	public OGSimulationJoltUnreal(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		FPSemantics = FPSemanticsMode.Precise;
+		PrivatePCHHeaderFile = EngineDirectory + "/Source/Runtime/Engine/Public/EngineSharedPCH.h";
 		MinSourceFilesForUnityBuildOverride = 32;
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "OGSimulation", "OGSimulationUnreal", "OGSimulationJolt" });

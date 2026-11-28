@@ -4,3 +4,6 @@
 [submodule "Source/OGSimulationJolt/og-simulation-jolt"]
 	path = Source/OGSimulationJolt/og-simulation-jolt
 	url = https://github.com/og-framework/og-simulation-jolt.git
+[submodule "Source/OGNet/og-net"]
+	path = Source/OGNet/og-net
+	url = https://github.com/og-framework/og-net.git

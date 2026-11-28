@@ -4,26 +4,31 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "OGSimulation/CompilerControl.h"
-#include "OGSimulation/TickDriverConcepts.h"
-#include "OGSimulation/SimulationTickBackend.h"
 #include "OGSimulation/PhysicsEngineTraits.h"
+#include "OGSimulation/QueryGeometry.h"
 #include "OGSimulation/SimulationFrame.h"
-#include "OGSimulationUnreal/UEPresentControls.h"
 #include "OGSimulationUnreal/UERenderTargetTable.h"
-#include "OGSimulationUnreal/UEStaticGeometryImporter.h"
-#include "OGSimulationUnreal/UETickDriverHost.h"
+#include "OGNetUnreal/OGNetConnection.h"
+#include "OGSimSession/SessionRuntime.h"
+#include "OGSimSession/SessionTypes.h"
+#include "HAL/PlatformTime.h"
+#include "OGSimulationUnreal/UELatencyBudgetDiagnostics.h"
+#include "OGSimulationUnreal/UESessionEngine.h"
+#include "OGSimulationUnreal/UESimNetHost.h"
+#include "OGSimulationUnreal/UESimNetLanes.h"
+#include "OGSimulationUnreal/UESimulationLogRoutes.h"
 #include "Components/CapsuleComponent.h"
 #include "Templates/Casts.h"
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 class AActor;
-class UWorld;
+template <typename TraitsT> class UESimulationSession;
 
 template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-concept TickDriverBackendComposition = PhysicsEngineTraits<EngineTraitsT> && EngineTraitsT::kHasWorldHost
+concept TickDriverBackendComposition = PhysicsEngineTraits<EngineTraitsT>
 	&& PhysicsEngineBinding<EngineBindingT, EngineTraitsT>
 	&& TickDriverWorldHost<typename EngineTraitsT::template WorldHost<typename EngineBindingT::Simulatable>>
 	&& requires(const typename GameBindingT::Character& character, unsigned int id)
@@ -31,256 +36,233 @@ concept TickDriverBackendComposition = PhysicsEngineTraits<EngineTraitsT> && Eng
 		EngineBindingT::checkCapsuleContract(character, id);
 	};
 
-template <typename WorldHostT>
-struct TickDriverBackendWorldsUImpl
-{
-	SimulationEngineUImpl engine;
-	WorldHostT            host{ engine };
-};
-
 template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
 	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
 class TickDriverBackendUImpl
 {
 public:
-	using WorldHost   = typename EngineTraitsT::template WorldHost<typename EngineBindingT::Simulatable>;
-	using Worlds      = TickDriverBackendWorldsUImpl<WorldHost>;
-	using Simulatable = typename EngineBindingT::Simulatable;
 	using Session     = typename GameBindingT::Session;
+	using Runtime     = typename Session::Runtime;
 	using Component   = typename GameBindingT::Component;
 	using Character   = typename GameBindingT::Character;
+	using StaticData  = typename GameBindingT::StaticData;
+	using Simulatable = typename EngineBindingT::Simulatable;
+	using BodyRequest = ogsession::SessionBodyRequest<StaticData>;
+	using WorldConfig = typename EngineTraitsT::template WorldHost<Simulatable>::Config;
 
-	TickDriverBackendUImpl(Session& owner, Worlds& worlds)
-		: m_owner(owner)
-		, m_worlds(worlds)
-		, m_tickDriverGame(owner)
-		, m_tickBackend(m_tickDriverGame, worlds.host, m_frameHost.engine())
+	TickDriverBackendUImpl(Runtime& runtime, UERenderTargetTable& renderTargets)
+		: m_runtime(runtime)
+		, m_renderTargets(renderTargets)
 	{
 	}
 
 	TickDriverBackendUImpl(const TickDriverBackendUImpl&) = delete;
 	TickDriverBackendUImpl& operator=(const TickDriverBackendUImpl&) = delete;
 
-	void buildWorld(UWorld& world, float dt, bool worldIsAuthority);
-	void startStepping(UWorld& world, float dt, bool worldIsAuthority);
-	void onEndPlayBegin();
-	void onEndPlayWorld(UWorld&) {}
-	void beforePresent_GameThread();
-	void updateVisualization_GameThread();
+	static uint64 slotKeyFor(const AActor* owner) { return static_cast<uint64>(reinterpret_cast<UPTRINT>(owner)); }
 
-	typename EngineTraitsT::VizQuery&        editVizQuery();
-	const typename EngineTraitsT::VizReader& getVizReader() const;
-	std::optional<QueryVolumeId> registerVizVolume(const QueryVolumeDescriptor& descriptor, AActor& owner);
+	static ogsession::EntityKey entityKeyOf(const Component& owner) { return ogsession::EntityKey{ reinterpret_cast<std::uintptr_t>(&owner) }; }
 
-	bool createBodies_GameThread(Component& owner, Character& character, Simulatable& simulatable, unsigned int id);
-	void onRegistered_GameThread(Component& owner, unsigned int id);
-	void onUnregistered_GameThread(Component& owner, unsigned int id);
-
-	struct Diagnostics
+	static const Component& componentOf(ogsession::EntityKey key)
 	{
-		void sampleLatencyWindow_GameThread(bool) {}
-		void logLatencyWindow_GameThread(bool) {}
-	};
-	Diagnostics editDiagnostics() { return {}; }
+		checkf(key.value != 0u, TEXT("UESimulationSession: a client's lifecycle key is its simulatable component's address"));
+		return *reinterpret_cast<const Component*>(key.value);
+	}
+
+	static uint64_t bodyKeyOf(ogsession::EntityKey key)
+	{
+		const Component* const owner = reinterpret_cast<const Component*>(key.value);
+		return slotKeyFor(owner != nullptr ? owner->GetOwner() : nullptr);
+	}
+
+	static ogsession::RegisterRequest requestFor(unsigned int id, const Component& owner, bool withEntityFacts)
+	{
+		ogsession::RegisterRequest request;
+		request.simId     = id;
+		request.entityKey = entityKeyOf(owner);
+		if (!withEntityFacts)
+			return request;
+		AActor* const pawn = owner.GetOwner();
+		const UOGNetConnection* const ownerConnection = Cast<UOGNetConnection>(GetRootNetConnection(pawn));
+		const FTCHARToUTF8 debugName(pawn != nullptr ? *pawn->GetName() : TEXT("none"));
+		request.debugName       = std::string(debugName.Get());
+		request.ownerConnection = ownerConnection != nullptr ? ownerConnection->OGNetId : kInvalidSimConnection;
+		request.localIndex      = GetPlayerSlotForActor(pawn);
+		return request;
+	}
+
+	static WorldConfig worldConfig(bool worldIsAuthority, const StaticData& staticData)
+	{
+		WorldConfig config;
+		config.isAuthority      = worldIsAuthority;
+		config.runInline        = false;
+		// ⛔G-06  docs/TickDriverBackendUImpl-guards.md
+		config.gravity          = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(staticData));
+		config.contactCounts    = EngineBindingT::contactCountsEnabled();
+		config.mappedCategories = EngineBindingT::mappedCategories();
+		config.log              = &EngineTraitsT::logEngineMessage;
+		return config;
+	}
+
+	BodyRequest makeRequest(const ogsession::RegisterRequest& request)
+	{
+		Component& owner = *reinterpret_cast<Component*>(request.entityKey.value);
+		Character* const character = Cast<Character>(owner.GetOwner());
+		checkf(character != nullptr,
+			TEXT("UESimulationSession::tryRegister: the component must be attached to a TraitsT::Character — the ")
+			TEXT("first-call body pass reads that class's own root capsule"));
+		EngineBindingT::checkCapsuleContract(*character, request.simId);
+		const StaticData* const staticData = &owner.getStaticData();
+		return callWithSlotRequest(*owner.GetOwner(), [staticData](uint64_t key, const char* name, bool isAuthority,
+			std::optional<uint32_t> replicatedSlot, auto&&)
+		{
+			return BodyRequest{ key, std::string(name), isAuthority, replicatedSlot, staticData };
+		});
+	}
+
+	bool createBodies_GameThread(Component& owner, Character& character, Simulatable& simulatable, unsigned int id)
+	{
+		EngineBindingT::checkCapsuleContract(character, id);
+		const StaticData* const staticData = &owner.getStaticData();
+		return callWithSlotRequest(*owner.GetOwner(), [this, id, &simulatable, staticData](uint64_t key, const char* name,
+			bool isAuthority, std::optional<uint32_t> replicatedSlot, auto&& publish)
+		{
+			return m_runtime.acquireAndBind(BodyRequest{ key, std::string(name), isAuthority, replicatedSlot, staticData },
+				publish, id, simulatable);
+		});
+	}
+
+	std::optional<QueryVolumeId> registerVizVolume(const QueryVolumeDescriptor& descriptor, AActor& owner)
+	{
+		return callWithSlotRequest(owner, [this, &descriptor](uint64_t key, const char* name, bool isAuthority,
+			std::optional<uint32_t> replicatedSlot, auto&& publish)
+		{
+			return m_runtime.registerVizVolume(descriptor, BodyRequest{ key, std::string(name), isAuthority, replicatedSlot },
+				publish);
+		});
+	}
+
+	void onRegistered_GameThread(Component& owner, unsigned int id)
+	{
+		m_runtime.bodiesRegistered(id, slotKeyFor(owner.GetOwner()));
+		registerRenderTarget(owner, id);
+	}
+
+	void onUnregistered_GameThread(Component& owner, unsigned int id)
+	{
+		const uint64 key = slotKeyFor(owner.GetOwner());
+		m_runtime.forgetBodies(id, key, /*releaseSlot=*/false);
+		m_renderTargets.unregisterTarget(id);
+		if (owner.GetOwner() != nullptr)
+			m_runtime.releaseBodySlot(id, key);
+	}
+
+	void onRegisteredHost_GameThread(Component& owner, unsigned int id) { registerRenderTarget(owner, id); }
+	void onUnregisteredHost_GameThread(unsigned int id) { m_renderTargets.unregisterTarget(id); }
 
 private:
-	static uint64 slotKeyOf(const AActor* owner);
+	void registerRenderTarget(Component& owner, unsigned int id)
+	{
+		Character* const character = Cast<Character>(owner.GetOwner());
+		m_renderTargets.registerTarget(id, character, character != nullptr ? character->GetCapsuleComponent() : nullptr,
+			m_runtime.runsPrediction());
+	}
 
 	template <typename SlotCallF>
-	decltype(auto) callWithSlotRequest(AActor& owner, SlotCallF&& slotCall);
-
-	void startDriverStepping(UWorld& world, float dt, bool worldIsAuthority);
-
-	Session& m_owner;
-	Worlds&  m_worlds;
-
-	using TickBackend = SimulationTickBackend<GameBindingT, WorldHost, Simulatable, SimulationEngineUImpl>;
-
-	UETickDriverHost    m_frameHost;
-	GameBindingT        m_tickDriverGame;
-	UERenderTargetTable m_renderTargets;
-	TickBackend         m_tickBackend;
-
-	static constexpr bool compositionContractsHold()
+	decltype(auto) callWithSlotRequest(AActor& owner, SlotCallF&& slotCall)
 	{
-		static_assert(__builtin_offsetof(Worlds, engine) < __builtin_offsetof(Worlds, host),
-			"TickDriverBackendWorldsUImpl members construct in declaration order and destruct in REVERSE. The world host "
-			"holds its engine (the clock, the frame number and the LogOGSimHost sink of its lines) by reference from its "
-			"constructor on, so the engine must be built first and go last. Keep engine < host. The worlds, the runtime "
-			"lease and the contact counter are the host's own members (og-simulation-jolt's two destruction-order rows), "
-			"and were this struct's members and two static_asserts until og-tickdriver task 10. Was this struct's own "
-			"file-scope static_assert until og-tickdriver task 15b made the struct a template over the world host.");
-		static_assert(__builtin_offsetof(TickDriverBackendUImpl, m_frameHost) < __builtin_offsetof(TickDriverBackendUImpl, m_tickBackend)
-		           && __builtin_offsetof(TickDriverBackendUImpl, m_tickDriverGame) < __builtin_offsetof(TickDriverBackendUImpl, m_tickBackend),
-			"TickDriverBackendUImpl members destruct in REVERSE declaration order. The tick backend's driver and presenter "
-			"hold the frame host's engine and the game binding, and the driver's step driver unregisters its resync "
-			"callback from the manager's client clock when it goes, so the tick backend must go first. Keep m_frameHost "
-			"and m_tickDriverGame < m_tickBackend; that its driver goes before its presenter and the presenter before the "
-			"render source is og-simulation's SimulationTickBackend's own row; that all of them go while the manager is "
-			"alive is the session's own row (UESimulationSession's m_manager < m_physicsBackend, GameBindingT::Session since "
-			"og-ue-simulationcomponentandmanagersplit task 24a); and that the world host "
-			"(m_physicsBackendWorlds) outlives the driver is asserted in startDriverStepping. Was the rows 'm_frameHost, "
-			"m_tickDriverGame and m_presenter < m_tickDriver' and 'm_frameHost and m_renderSource < m_presenter' until "
-			"og-tickdriver task 15d moved the presenter, the driver and the render source into the tick backend.");
-		return true;
+		const uint64 key = slotKeyFor(&owner);
+		return GameBindingT::callWithSlotRequest(owner, key, m_runtime.isAuthority(),
+			[this, key](unsigned int storageKey) { return m_runtime.physicsSlotFor(key, storageKey); },
+			[this, key](uint32_t slot) { m_runtime.recordAuthoritativeSlot(key, slot); }, slotCall);
 	}
 
-	void assertCompositionContracts()
-	{
-		static_assert(compositionContractsHold());
-	}
+	Runtime&             m_runtime;
+	UERenderTargetTable& m_renderTargets;
 };
 
-#define HasAuthority HasAuthority_is_not_the_peer_role_in_TickDriverBackendUImpl_use_worldIsAuthority_or_runsPrediction
-
-OGSIM_OPTIMIZE_OFF
-
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::buildWorld(UWorld& world, float, bool worldIsAuthority)
+struct UESessionClockEngine
 {
-	const UEStaticImportResult import = UEStaticGeometryImporter(EngineBindingT::categoryChannels()).importWorld(world);
-	UEStaticGeometryImporter::logReport(import.report, worldIsAuthority ? TEXT("authority") : TEXT("client"));
-	const typename EngineTraitsT::Statics statics = EngineTraitsT::splitStatics(import.description, import.physicsOnly);
+	void logRouted(const char* line) { RouteOGLevelLine(line); }
+	double nowSeconds() const { return FPlatformTime::Seconds(); }
+};
 
-	typename WorldHost::Config config;
-	config.isAuthority      = worldIsAuthority;
-	config.runInline        = UETickDriverHost::runInline();
-	// ⛔G-06  docs/TickDriverBackendUImpl-guards.md
-	config.gravity          = simFrame::withHeight(glm::vec3(0.f), GameBindingT::gravity(m_owner));
-	config.contactCounts    = EngineBindingT::contactCountsEnabled();
-	config.mappedCategories = EngineBindingT::mappedCategories();
-	config.log              = &EngineTraitsT::logEngineMessage;
-	m_tickBackend.build(config, statics.queryable, statics.physicsOnly, m_owner.m_physAdapter, m_owner.m_physReaderAdapter,
-		m_owner.m_queryAdapter);
-}
+static_assert(ogsession::SessionClockEngine<UESessionClockEngine>,
+	"UESessionClockEngine is the session clock's engine: its lines through the log routes, and FPlatformTime::Seconds(), "
+	"the clock og-net stamps receive times with");
+static_assert(ogsession::sessionClock::kNoRttReadingSeconds == kNoRttReadingSeconds,
+	"og-sim-session's clock prints the same no-reading value as the Unreal client host's (UESimNetHost.h), -1");
 
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::startStepping(UWorld& world, float dt, bool worldIsAuthority)
+template <typename TraitsT>
+struct UESessionRuntimeTraits
 {
-	startDriverStepping(world, dt, worldIsAuthority);
-}
+	using Host          = UESimulationSession<TraitsT>;
+	using Game          = typename TraitsT::Game;
+	using Composition   = typename TraitsT::Composition;
+	using EngineTraits  = typename TraitsT::EngineTraits;
+	using StaticData    = typename TraitsT::StaticData;
+	using Simulatable   = typename TraitsT::Simulatable;
+	using PlayerInput   = typename TraitsT::PlayerInput;
+	using NetConfig     = typename TraitsT::NetConfig;
+	using Engine        = SimulationEngineUImpl;
+	using ClockEngine   = UESessionClockEngine;
+	using Link          = UESimNetLanes<TraitsT>;
+	using Server        = ogsimnet::SimNetServer<Composition, typename Link::ServerHost, typename Link::Transport>;
+	using Idle          = ogsimnet::SimNetIdle<ognetunreal::SimLaneEndpoint>;
+	using Diagnostics   = UELatencyBudgetDiagnostics<TraitsT>;
+	using GameBinding   = typename TraitsT::template SessionHooks<UESimulationSession<TraitsT>>;
+	using Bodies        = TickDriverBackendUImpl<GameBinding, EngineTraits, typename TraitsT::EngineBinding>;
 
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::onEndPlayBegin()
-{
-	m_frameHost.unregisterTickFunctions();
-	// ⛔G-01  docs/TickDriverBackendUImpl-guards.md
-	m_tickBackend.stop();
-}
+	static auto worldConfig(bool isAuthority, const StaticData& staticData) { return Bodies::worldConfig(isAuthority, staticData); }
+};
 
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::beforePresent_GameThread()
+namespace ueSimulationSessionHookNames
 {
-	m_tickBackend.present(UEPresentControls::fromConsoleVariables(EngineBindingT::kParkSnap), m_renderTargets);
-}
-
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::updateVisualization_GameThread()
-{
-	m_tickBackend.updateVisualization();
-}
-
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-typename EngineTraitsT::VizQuery& TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::editVizQuery()
-{
-	return m_tickBackend.editVizQuery();
-}
-
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-const typename EngineTraitsT::VizReader& TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::getVizReader() const
-{
-	return m_tickBackend.getVizReader();
-}
-
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-uint64 TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::slotKeyOf(const AActor* owner)
-{
-	return static_cast<uint64>(reinterpret_cast<UPTRINT>(owner));
-}
-
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-template <typename SlotCallF>
-decltype(auto) TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::callWithSlotRequest(AActor& owner, SlotCallF&& slotCall)
-{
-	return GameBindingT::callWithSlotRequest(m_owner, owner, slotKeyOf(&owner), slotCall);
-}
-
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-std::optional<QueryVolumeId> TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::registerVizVolume(const QueryVolumeDescriptor& descriptor, AActor& owner)
-{
-	return callWithSlotRequest(owner, [this, &descriptor](uint64_t key, const char* name, bool isAuthority,
-		std::optional<uint32_t> replicatedSlot, auto&& publish)
+	struct Names
 	{
-		return m_tickBackend.registerVizVolume(descriptor, key, name, isAuthority, replicatedSlot, publish);
-	});
-}
+		int beforeWorldBuild;
+		int emplaceSystems;
+		int neutralInput;
+		int installGameLoggers;
+		int afterSessionConfigured;
+		int backendFingerprint;
+		int rootBodyId;
+		int afterBodiesCreated;
+		int afterRegistered;
+		int onUnregistered;
+		int authorityPresentationSlice_Step;
+		int presentAuthoritySlice;
+	};
 
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-bool TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::createBodies_GameThread(Component& owner, Character& character,
-	Simulatable& simulatable, unsigned int id)
-{
-	EngineBindingT::checkCapsuleContract(character, id);
+	template <typename SessionT>
+	struct Probe : SessionT, Names {};
 
-	AActor* ownerActor = owner.GetOwner();
-	const typename GameBindingT::StaticData& staticData = owner.getStaticData();
-	return callWithSlotRequest(*ownerActor, [this, id, &simulatable, &staticData](uint64_t key, const char* name,
-		bool isAuthority, std::optional<uint32_t> replicatedSlot, auto&& publish)
+	template <typename GameT, typename StaticDataT, typename SimulatableT, typename CharacterT>
+	concept GameInstanceHooks = requires(GameT& game, UWorld& world, ENetMode netMode, bool flag, StaticDataT& staticData,
+		const SimulatableT& constSimulatable, SimulatableT& simulatable, CharacterT& character, unsigned int id)
 	{
-		return m_tickBackend.acquireAndBind(key, name, isAuthority, replicatedSlot, publish, id, simulatable, staticData);
-	});
+		game.beforeWorldBuild(world, netMode, flag, staticData);
+		game.afterSessionConfigured(netMode);
+		{ GameT::rootBodyId(constSimulatable) } -> std::same_as<BodyId>;
+		game.afterBodiesCreated(simulatable, character, id, flag, netMode);
+		game.afterRegistered(id, flag);
+		game.onUnregistered(id);
+	};
+
+	template <typename SessionT>
+	concept SharesNoHookName = requires
+	{
+		&Probe<SessionT>::beforeWorldBuild;
+		&Probe<SessionT>::emplaceSystems;
+		&Probe<SessionT>::neutralInput;
+		&Probe<SessionT>::installGameLoggers;
+		&Probe<SessionT>::afterSessionConfigured;
+		&Probe<SessionT>::backendFingerprint;
+		&Probe<SessionT>::rootBodyId;
+		&Probe<SessionT>::afterBodiesCreated;
+		&Probe<SessionT>::afterRegistered;
+		&Probe<SessionT>::onUnregistered;
+		&Probe<SessionT>::authorityPresentationSlice_Step;
+		&Probe<SessionT>::presentAuthoritySlice;
+	};
 }
-
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::onRegistered_GameThread(Component& owner, unsigned int id)
-{
-	m_tickBackend.onRegistered(id, slotKeyOf(owner.GetOwner()));
-	Character* const character = Cast<Character>(owner.GetOwner());
-	m_renderTargets.registerTarget(id, character, character != nullptr ? character->GetCapsuleComponent() : nullptr,
-		m_owner.runsPrediction());
-}
-
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::onUnregistered_GameThread(Component& owner, unsigned int id)
-{
-	const uint64 key = slotKeyOf(owner.GetOwner());
-	m_tickBackend.forgetPresenterTarget(id, key);
-	m_renderTargets.unregisterTarget(id);
-	if (owner.GetOwner() != nullptr)
-		m_tickBackend.releaseSlot(key, id);
-}
-
-template <typename GameBindingT, typename EngineTraitsT, typename EngineBindingT>
-	requires TickDriverBackendComposition<GameBindingT, EngineTraitsT, EngineBindingT>
-void TickDriverBackendUImpl<GameBindingT, EngineTraitsT, EngineBindingT>::startDriverStepping(UWorld& world, float dt, bool worldIsAuthority)
-{
-	static_assert(__builtin_offsetof(Session, m_physicsBackendWorlds)
-	                  < __builtin_offsetof(Session, m_physicsBackend),
-		"The session's members (GameBindingT::Session, a UESimulationSession) destruct in REVERSE declaration order. The tick driver built here "
-		"(in m_physicsBackend) holds the world host (in m_physicsBackendWorlds) by pointer and locks it and steps its world until it "
-		"stops, so the world host must outlive the driver. Keep m_physicsBackendWorlds < m_physicsBackend. Was implied by the owner's "
-		"two rows until og-tickdriver task 10, when the driver's world host moved out of this class.");
-
-	checkf(world.PersistentLevel != nullptr, TEXT("startDriverStepping: the world has no persistent level."));
-
-	typename TickBackend::Driver& tickDriver = m_tickBackend.start(static_cast<double>(dt), worldIsAuthority,
-		UETickDriverHost::requestedMaxCatchUpSteps());
-
-	m_frameHost.begin(m_owner.owner(), *world.PersistentLevel, tickDriver);
-}
-
-OGSIM_OPTIMIZE_ON
-
-#undef HasAuthority

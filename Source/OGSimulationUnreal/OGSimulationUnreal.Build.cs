@@ -7,9 +7,10 @@ public class OGSimulationUnreal : ModuleRules
 	public OGSimulationUnreal(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		FPSemantics = FPSemanticsMode.Precise;
+		PrivatePCHHeaderFile = EngineDirectory + "/Source/Runtime/Engine/Public/EngineSharedPCH.h";
 		bUseUnity = false;
 
-		PublicDependencyModuleNames.AddRange(new string[] { "Chaos", "Core", "PhysicsCore", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "OGSimulation" });
-		SetupIrisSupport(Target);
+		PublicDependencyModuleNames.AddRange(new string[] { "Chaos", "Core", "PhysicsCore", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "OGSimulation", "OGTickDriver", "OGNet", "OGNetUnreal", "OGSimulationNet", "OGSimulationSession" });
 	}
 }
